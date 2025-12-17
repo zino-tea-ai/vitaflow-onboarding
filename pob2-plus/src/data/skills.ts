@@ -305,3 +305,11 @@ export function getCompatibleSupports(skill: ActiveSkill): SupportGem[] {
 
 
 
+
+
+
+
+
+
+
+

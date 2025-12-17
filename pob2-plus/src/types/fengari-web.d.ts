@@ -16,3 +16,11 @@ declare module 'fengari-web' {
 
 
 
+
+
+
+
+
+
+
+

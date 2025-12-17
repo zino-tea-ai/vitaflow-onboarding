@@ -1,40 +1,36 @@
 /* ========================================
    PM Lab - 统一设计系统
    基于 Linear 风格的深色主题
+   遵循 cursorrules UI/UX 设计规范
    ======================================== */
 
 /* ==================== CSS 变量 ==================== */
 :root {
-    /* 背景色 */
-    --bg-primary: #0d0d0d;
-    --bg-secondary: #1a1a1a;
-    --bg-tertiary: #2a2a3a;
-    --bg-hover: rgba(139, 92, 246, 0.08);
-    --bg-active: rgba(94, 106, 210, 0.15);
+    /* 背景色 - Linear 风格 */
+    --bg-primary: #0a0a0a;
+    --bg-secondary: #111111;
+    --bg-card: #1a1a1a;
+    --bg-hover: rgba(255, 255, 255, 0.02);
+    --bg-active: rgba(255, 255, 255, 0.03);
     
     /* 文字色 */
-    --text-primary: #e1e1e1;
+    --text-primary: #ffffff;
     --text-secondary: #9ca3af;
     --text-muted: #6b7280;
-    --text-accent: #a5b4fc;
     
-    /* 强调色 */
-    --accent: #5E6AD2;
-    --accent-purple: #8B5CF6;
-    --accent-gradient: linear-gradient(135deg, #5E6AD2 0%, #8B5CF6 100%);
+    /* 边框 - 白色透明度层级 */
+    --border-default: rgba(255, 255, 255, 0.06);
+    --border-hover: rgba(255, 255, 255, 0.15);
+    --border-selected: #ffffff;
+    --border-subtle: rgba(255, 255, 255, 0.04);
     
     /* 功能色 */
-    --success: #10b981;
-    --success-hover: #059669;
+    --success: #22c55e;
+    --success-hover: #16a34a;
     --danger: #ef4444;
     --danger-hover: #dc2626;
     --warning: #f59e0b;
     --warning-hover: #d97706;
-    
-    /* 边框 */
-    --border-color: rgba(94, 106, 210, 0.12);
-    --border-color-light: rgba(94, 106, 210, 0.08);
-    --border-color-strong: rgba(94, 106, 210, 0.3);
     
     /* 圆角 */
     --radius-sm: 4px;
@@ -53,7 +49,6 @@
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
-    --shadow-accent: 0 4px 12px rgba(94, 106, 210, 0.4);
     
     /* 过渡 */
     --transition-fast: 0.15s ease;
@@ -61,7 +56,7 @@
     --transition-smooth: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     
     /* 字体 */
-    --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-family: 'Urbanist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --font-mono: 'SF Mono', 'Consolas', 'Monaco', monospace;
 }
 
@@ -95,9 +90,9 @@ a {
 
 /* 侧边栏 */
 .sidebar {
-    width: 260px;
+    width: 240px;
     background: var(--bg-secondary);
-    border-right: 1px solid var(--border-color);
+    border-right: 1px solid var(--border-default);
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
@@ -105,22 +100,33 @@ a {
 }
 
 .sidebar-header {
-    padding: 20px;
-    border-bottom: 1px solid var(--border-color);
+    height: 60px;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--border-default);
+    display: flex;
+    align-items: center;
 }
 
 .sidebar-section {
     padding: var(--spacing-lg);
-    border-bottom: 1px solid var(--border-color-light);
+    border-bottom: 1px solid var(--border-subtle);
 }
 
 .sidebar-section h3 {
-    font-size: 11px;
-    text-transform: uppercase;
+    font-size: 12px;
     color: var(--text-muted);
     margin-bottom: var(--spacing-md);
-    letter-spacing: 0.1em;
-    font-weight: 600;
+    letter-spacing: 0.02em;
+    font-weight: 500;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.sidebar-section h3 span {
+    font-size: 11px;
+    opacity: 0.5;
+    font-weight: 400;
 }
 
 /* 主内容区 */
@@ -137,7 +143,7 @@ a {
 .header {
     height: 56px;
     background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-default);
     display: flex;
     align-items: center;
     padding: 0 var(--spacing-xl);
@@ -181,90 +187,108 @@ a {
     letter-spacing: -0.01em;
 }
 
-/* ==================== 导航列表 ==================== */
+/* ==================== 导航列表 - Linear 风格 ==================== */
 .nav-list {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-xs);
+    gap: 0;
 }
 
 .nav-item {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
-    border-radius: var(--radius-md);
+    gap: 12px;
+    padding: 10px 0;
     cursor: pointer;
-    color: var(--text-secondary);
-    transition: var(--transition-smooth);
-    font-size: 13px;
-    border: 1px solid transparent;
+    color: var(--text-muted);
+    transition: var(--transition-fast);
+    font-size: 14px;
+    border-left: 2px solid transparent;
+    margin-left: -16px;
+    padding-left: 14px;
 }
 
 .nav-item:hover {
+    color: #fff;
     background: var(--bg-hover);
-    color: var(--text-primary);
 }
 
 .nav-item.active {
+    color: #fff;
+    border-left-color: #fff;
     background: var(--bg-active);
-    color: var(--text-accent);
-    border-color: var(--border-color-strong);
 }
 
 .nav-item .icon {
-    font-size: 18px;
-    width: 24px;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.7;
+}
+
+.nav-item.active .icon {
+    opacity: 1;
+}
+
+.nav-item .icon svg {
+    width: 18px;
+    height: 18px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.5;
+}
+
+.nav-item .nav-en {
+    opacity: 0.5;
+    font-size: 12px;
+    margin-left: 2px;
 }
 
 /* ==================== 项目列表 ==================== */
 .project-list {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-xs);
+    gap: 2px;
 }
 
 .project-item {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 12px 14px;
-    border-radius: var(--radius-md);
+    padding: 10px 12px;
     cursor: pointer;
-    transition: background var(--transition-normal), transform var(--transition-normal);
-    border: 1px solid transparent;
-    border-left: 3px solid transparent;
+    transition: var(--transition-smooth);
+    border-left: 2px solid transparent;
+    margin-left: -16px;
+    padding-left: 14px;
+    color: var(--text-secondary);
 }
 
 .project-item:hover {
+    color: #fff;
     background: var(--bg-hover);
-    transform: translateX(3px);
-}
-
-.project-item:active {
-    transform: translateX(1px) scale(0.98);
 }
 
 .project-item.active {
+    color: #fff;
+    border-left-color: #fff;
     background: var(--bg-active);
-    border-color: var(--border-color-strong);
-    border-left-color: var(--accent-purple);
-    color: var(--text-accent);
 }
 
 .project-item .project-logo {
-    width: 32px;
-    height: 32px;
-    border-radius: var(--radius-lg);
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 15px;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 600;
     color: #fff;
     flex-shrink: 0;
     text-transform: uppercase;
-    box-shadow: var(--shadow-sm);
 }
 
 .project-item .name {
@@ -277,15 +301,15 @@ a {
     font-size: 11px;
     color: var(--text-muted);
     font-family: var(--font-mono);
-    min-width: 32px;
+    min-width: 28px;
     text-align: right;
 }
 
-/* ==================== 按钮系统 ==================== */
+/* ==================== 按钮系统 - Linear 风格 ==================== */
 .btn {
     padding: 8px 16px;
     border-radius: var(--radius-md);
-    border: 1px solid transparent;
+    border: 1px solid var(--border-hover);
     cursor: pointer;
     font-size: 13px;
     font-weight: 500;
@@ -294,63 +318,73 @@ a {
     align-items: center;
     justify-content: center;
     gap: var(--spacing-xs);
+    background: transparent;
+    color: var(--text-secondary);
+}
+
+.btn:hover {
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.04);
 }
 
 .btn:active {
     transform: scale(0.97);
 }
 
-/* Primary 按钮 - 渐变紫色 */
+/* Primary 按钮 - 白色填充 */
 .btn-primary {
-    background: var(--accent-gradient);
-    color: #fff;
-    box-shadow: var(--shadow-sm);
+    background: #fff;
+    color: #000;
+    border-color: #fff;
 }
 
 .btn-primary:hover {
-    box-shadow: var(--shadow-accent);
-    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.9);
+    color: #000;
 }
 
-.btn-primary:active {
-    transform: translateY(0) scale(0.97);
-}
-
-/* Secondary 按钮 - 半透明 */
+/* Secondary 按钮 - 透明边框 */
 .btn-secondary {
-    background: rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.04);
     color: #d1d5db;
-    border-color: rgba(255, 255, 255, 0.12);
+    border-color: var(--border-hover);
 }
 
 .btn-secondary:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: var(--border-color-strong);
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.3);
+    color: #fff;
 }
 
 /* Success 按钮 - 绿色 */
 .btn-success {
     background: var(--success);
     color: white;
+    border-color: var(--success);
 }
 
 .btn-success:hover {
     background: var(--success-hover);
+    border-color: var(--success-hover);
 }
 
 /* Danger 按钮 - 红色 */
 .btn-danger {
     background: var(--danger);
     color: white;
+    border-color: var(--danger);
 }
 
 .btn-danger:hover {
     background: var(--danger-hover);
+    border-color: var(--danger-hover);
 }
 
 .btn-danger:disabled {
     background: #4a4a4a;
     color: #888;
+    border-color: #4a4a4a;
     cursor: not-allowed;
 }
 
@@ -358,27 +392,31 @@ a {
 .btn-warning {
     background: var(--warning);
     color: white;
+    border-color: var(--warning);
 }
 
 .btn-warning:hover {
     background: var(--warning-hover);
+    border-color: var(--warning-hover);
 }
 
 /* Ghost 按钮 - 无背景 */
 .btn-ghost {
     background: none;
     color: var(--text-muted);
+    border-color: transparent;
     padding: 6px 12px;
 }
 
 .btn-ghost:hover {
-    color: var(--text-primary);
+    color: #fff;
+    background: var(--bg-hover);
 }
 
 .btn-ghost.active {
     color: #fff;
-    background: rgba(94, 106, 210, 0.2);
-    border-color: var(--border-color-strong);
+    background: var(--bg-active);
+    border-color: var(--border-hover);
 }
 
 /* ==================== 表单元素 ==================== */
@@ -390,9 +428,9 @@ input[type="search"],
 textarea {
     padding: 8px 12px;
     border-radius: var(--radius-md);
-    background: var(--bg-tertiary);
+    background: var(--bg-secondary);
     color: var(--text-primary);
-    border: 1px solid rgba(94, 106, 210, 0.2);
+    border: 1px solid var(--border-default);
     font-size: 14px;
     font-family: var(--font-family);
     transition: var(--transition-fast);
@@ -401,40 +439,53 @@ textarea {
 input:focus,
 textarea:focus {
     outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
+    border-color: var(--border-hover);
 }
 
 /* 选择框 */
 select,
 .project-select {
     padding: 8px 12px;
-    border-radius: var(--radius-md);
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    border: 1px solid rgba(94, 106, 210, 0.2);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    color: #fff;
+    border: 1px solid var(--border-default);
     font-size: 14px;
     min-width: 150px;
     cursor: pointer;
     transition: var(--transition-fast);
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 32px;
 }
 
 select:focus,
 .project-select:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: var(--border-hover);
 }
 
 select:hover,
 .project-select:hover {
-    border-color: var(--border-color-strong);
+    border-color: var(--border-hover);
+}
+
+select option,
+.project-select option {
+    background: var(--bg-secondary);
+    color: #fff;
+    padding: 10px;
 }
 
 /* ==================== 信息栏 ==================== */
 .info-bar {
     background: var(--bg-secondary);
     padding: var(--spacing-md) var(--spacing-xl);
-    border-bottom: 1px solid var(--border-color-light);
+    border-bottom: 1px solid var(--border-default);
     display: flex;
     gap: var(--spacing-xl);
     font-size: 13px;
@@ -453,11 +504,7 @@ select:hover,
 }
 
 .info-value.selected {
-    color: var(--accent);
-}
-
-.info-value.inserted {
-    color: var(--accent-purple);
+    color: #fff;
 }
 
 .info-value.danger {
@@ -470,20 +517,20 @@ select:hover,
 
 /* ==================== 卡片 ==================== */
 .card {
-    background: var(--bg-secondary);
+    background: var(--bg-card);
     border-radius: var(--radius-lg);
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-default);
     overflow: hidden;
     transition: var(--transition-smooth);
 }
 
 .card:hover {
-    border-color: var(--border-color-strong);
+    border-color: var(--border-hover);
 }
 
 .card-header {
     padding: var(--spacing-lg);
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-default);
 }
 
 .card-body {
@@ -512,7 +559,7 @@ select:hover,
 .table th,
 .table td {
     padding: var(--spacing-md);
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-default);
     text-align: left;
 }
 
@@ -554,12 +601,12 @@ select:hover,
     max-width: 90%;
     max-height: 90vh;
     overflow: hidden;
-    box-shadow: var(--shadow-lg);
+    border: 1px solid var(--border-default);
 }
 
 .modal-header {
     padding: var(--spacing-lg) 20px;
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-default);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -577,7 +624,7 @@ select:hover,
 
 .modal-footer {
     padding: var(--spacing-lg) 20px;
-    border-top: 1px solid var(--border-color);
+    border-top: 1px solid var(--border-default);
     display: flex;
     justify-content: flex-end;
     gap: var(--spacing-md);
@@ -606,7 +653,7 @@ select:hover,
     color: var(--text-primary);
     padding: var(--spacing-md) var(--spacing-xl);
     border-radius: var(--radius-lg);
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-default);
     box-shadow: var(--shadow-lg);
     opacity: 0;
     transition: var(--transition-smooth);
@@ -625,7 +672,7 @@ select:hover,
 
 .toast.success {
     border-color: var(--success);
-    background: rgba(16, 185, 129, 0.15);
+    background: rgba(34, 197, 94, 0.15);
 }
 
 /* ==================== 徽章 ==================== */
@@ -639,12 +686,12 @@ select:hover,
 }
 
 .badge-primary {
-    background: rgba(94, 106, 210, 0.2);
-    color: var(--text-accent);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
 }
 
 .badge-success {
-    background: rgba(16, 185, 129, 0.2);
+    background: rgba(34, 197, 94, 0.2);
     color: var(--success);
 }
 
@@ -670,8 +717,8 @@ select:hover,
 .spinner {
     width: 24px;
     height: 24px;
-    border: 2px solid var(--border-color);
-    border-top-color: var(--accent);
+    border: 2px solid var(--border-default);
+    border-top-color: #fff;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
 }
@@ -691,12 +738,12 @@ select:hover,
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--bg-tertiary);
+    background: rgba(255, 255, 255, 0.1);
     border-radius: var(--radius-sm);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: #3a3a4a;
+    background: rgba(255, 255, 255, 0.15);
 }
 
 /* ==================== 工具类 ==================== */
@@ -713,7 +760,6 @@ select:hover,
 
 .text-muted { color: var(--text-muted); }
 .text-secondary { color: var(--text-secondary); }
-.text-accent { color: var(--text-accent); }
 .text-success { color: var(--success); }
 .text-danger { color: var(--danger); }
 .text-warning { color: var(--warning); }
@@ -727,4 +773,3 @@ select:hover,
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-

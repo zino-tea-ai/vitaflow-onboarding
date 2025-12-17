@@ -1156,7 +1156,7 @@
             <!-- 检查状态 -->
             <div class="sidebar-section" id="checkSection" style="display: none;">
                 <button class="check-btn" id="checkBtn" onclick="toggleCheckStatus()">
-                    <span>☐</span>
+                    <span class="check-icon"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></span>
                     <span>标记已检查</span>
                 </button>
             </div>
@@ -2384,7 +2384,7 @@
                 btn.innerHTML = `<span>✓</span><span>已检查${timeStr}</span>`;
             } else {
                 btn.classList.remove('checked');
-                btn.innerHTML = '<span>☐</span><span>标记已检查</span>';
+                btn.innerHTML = '<span class="check-icon"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></span><span>标记已检查</span>';
             }
         }
         
@@ -2501,7 +2501,7 @@
                             </div>
                         </td>
                         <td>
-                            <span class="rating">⭐ ${rating}</span>
+                            <span class="rating"><svg viewBox="0 0 24 24" width="12" height="12" fill="#fbbf24" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> ${rating}</span>
                         </td>
                         <td>
                             <span class="rating-count">${ratingCount}</span>
