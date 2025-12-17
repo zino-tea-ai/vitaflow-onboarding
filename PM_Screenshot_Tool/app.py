@@ -13,10 +13,21 @@ import shutil
 import hashlib
 import requests
 import subprocess
+import threading
 from datetime import datetime
 from io import BytesIO
 from PIL import Image
 from flask import Flask, render_template, request, jsonify, send_from_directory, make_response
+from flask_socketio import SocketIO, emit
+
+# Watchdog for file monitoring
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
+    print("[WARN] Watchdog not available, file monitoring disabled")
 
 # Selenium imports
 try:
@@ -36,6 +47,7 @@ except ImportError:
     print("[WARN] Database module not available, using JSON fallback")
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # 禁用Flask模板缓存（开发时使用）
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -68,6 +80,135 @@ THUMB_SIZES = {
 # 确保目录存在
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
+
+# 待处理截图目录
+PENDING_DIR = os.path.join(BASE_DIR, "pending_screenshots")
+os.makedirs(PENDING_DIR, exist_ok=True)
+
+# 傲软投屏配置
+APOWERSOFT_CONFIG_FILE = os.path.join(CONFIG_DIR, "apowersoft.json")
+
+def get_apowersoft_paths():
+    """获取可能的傲软投屏截图路径"""
+    username = os.environ.get('USERNAME') or os.environ.get('USER') or 'User'
+    possible_paths = [
+        os.path.join(os.environ.get('USERPROFILE', f'C:\\Users\\{username}'), 'Pictures', 'Apowersoft'),
+        os.path.join(os.environ.get('USERPROFILE', f'C:\\Users\\{username}'), 'Documents', 'Apowersoft'),
+        os.path.join(os.environ.get('USERPROFILE', f'C:\\Users\\{username}'), 'Pictures', 'ApowerMirror'),
+        os.path.join(os.environ.get('USERPROFILE', f'C:\\Users\\{username}'), 'Documents', 'ApowerMirror'),
+        # 也检查常见的截图目录
+        os.path.join(os.environ.get('USERPROFILE', f'C:\\Users\\{username}'), 'Pictures', 'Screenshots'),
+    ]
+    return possible_paths
+
+def detect_apowersoft_folder():
+    """自动检测傲软投屏截图文件夹"""
+    # 先检查配置文件
+    if os.path.exists(APOWERSOFT_CONFIG_FILE):
+        with open(APOWERSOFT_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            if config.get('path') and os.path.exists(config['path']):
+                return config['path']
+    
+    # 自动检测
+    for path in get_apowersoft_paths():
+        if os.path.exists(path):
+            # 保存检测到的路径
+            save_apowersoft_config(path)
+            return path
+    
+    return None
+
+def save_apowersoft_config(path):
+    """保存傲软配置"""
+    config = {'path': path, 'updated_at': datetime.now().isoformat()}
+    with open(APOWERSOFT_CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+# 文件监听器
+class ScreenshotHandler(FileSystemEventHandler):
+    """监听傲软截图文件夹的新文件"""
+    
+    def __init__(self):
+        self.last_event_time = {}
+        self.debounce_seconds = 1  # 防抖动
+    
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        
+        # 只处理图片文件
+        ext = os.path.splitext(event.src_path)[1].lower()
+        if ext not in ['.png', '.jpg', '.jpeg', '.webp']:
+            return
+        
+        # 防抖动：同一文件1秒内只处理一次
+        now = time.time()
+        if event.src_path in self.last_event_time:
+            if now - self.last_event_time[event.src_path] < self.debounce_seconds:
+                return
+        self.last_event_time[event.src_path] = now
+        
+        # 等待文件写入完成
+        time.sleep(0.5)
+        
+        # 复制到待处理目录
+        try:
+            filename = os.path.basename(event.src_path)
+            # 生成唯一文件名（带时间戳）
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            new_filename = f"pending_{timestamp}_{filename}"
+            dest_path = os.path.join(PENDING_DIR, new_filename)
+            
+            shutil.copy2(event.src_path, dest_path)
+            print(f"[SCREENSHOT] 新截图已捕获: {new_filename}")
+            
+            # 通过 WebSocket 通知前端
+            socketio.emit('new_screenshot', {
+                'filename': new_filename,
+                'path': dest_path,
+                'original': filename,
+                'timestamp': timestamp
+            })
+        except Exception as e:
+            print(f"[ERROR] 复制截图失败: {e}")
+
+# 全局监听器实例
+file_observer = None
+screenshot_handler = None
+
+def start_file_watcher():
+    """启动文件监听"""
+    global file_observer, screenshot_handler
+    
+    if not WATCHDOG_AVAILABLE:
+        print("[WARN] Watchdog 不可用，文件监听已禁用")
+        return False
+    
+    apowersoft_path = detect_apowersoft_folder()
+    if not apowersoft_path:
+        print("[WARN] 未检测到傲软投屏文件夹，文件监听已禁用")
+        return False
+    
+    try:
+        screenshot_handler = ScreenshotHandler()
+        file_observer = Observer()
+        file_observer.schedule(screenshot_handler, apowersoft_path, recursive=False)
+        file_observer.start()
+        print(f"[WATCHER] 开始监听傲软文件夹: {apowersoft_path}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] 启动文件监听失败: {e}")
+        return False
+
+def stop_file_watcher():
+    """停止文件监听"""
+    global file_observer
+    if file_observer:
+        file_observer.stop()
+        file_observer.join()
+        file_observer = None
+        print("[WATCHER] 文件监听已停止")
 
 # 加载API Keys
 API_KEYS_FILE = os.path.join(CONFIG_DIR, "api_keys.json")
@@ -2005,6 +2146,178 @@ def get_store_analysis_cache(app_name, filename):
     return jsonify({"success": False, "cached": False})
 
 
+# ==================== 傲软截图导入 API ====================
+
+@app.route("/api/pending-screenshots", methods=["GET"])
+def get_pending_screenshots():
+    """获取待处理截图列表"""
+    screenshots = []
+    
+    if os.path.exists(PENDING_DIR):
+        for filename in os.listdir(PENDING_DIR):
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                filepath = os.path.join(PENDING_DIR, filename)
+                stat = os.stat(filepath)
+                screenshots.append({
+                    'filename': filename,
+                    'size': stat.st_size,
+                    'created_at': datetime.fromtimestamp(stat.st_ctime).isoformat(),
+                    'modified_at': datetime.fromtimestamp(stat.st_mtime).isoformat()
+                })
+    
+    # 按创建时间排序（最新的在前）
+    screenshots.sort(key=lambda x: x['created_at'], reverse=True)
+    
+    return jsonify({
+        'success': True,
+        'screenshots': screenshots,
+        'count': len(screenshots)
+    })
+
+
+@app.route("/api/pending-screenshot/<filename>", methods=["GET"])
+def serve_pending_screenshot(filename):
+    """提供待处理截图文件"""
+    return send_from_directory(PENDING_DIR, filename)
+
+
+@app.route("/api/pending-screenshot/<filename>", methods=["DELETE"])
+def delete_pending_screenshot(filename):
+    """删除待处理截图"""
+    filepath = os.path.join(PENDING_DIR, filename)
+    
+    if os.path.exists(filepath):
+        os.remove(filepath)
+        return jsonify({'success': True, 'message': f'已删除: {filename}'})
+    
+    return jsonify({'success': False, 'error': '文件不存在'}), 404
+
+
+@app.route("/api/import-screenshot", methods=["POST"])
+def import_screenshot_to_project():
+    """将待处理截图导入到项目指定位置"""
+    data = request.json
+    
+    filename = data.get('filename')  # 待处理截图文件名
+    project_name = data.get('project')  # 目标项目
+    position = data.get('position', -1)  # 插入位置，-1 表示末尾
+    
+    if not filename or not project_name:
+        return jsonify({'success': False, 'error': '缺少必要参数'}), 400
+    
+    # 源文件
+    src_path = os.path.join(PENDING_DIR, filename)
+    if not os.path.exists(src_path):
+        return jsonify({'success': False, 'error': '待处理截图不存在'}), 404
+    
+    # 目标项目目录
+    project_dir = os.path.join(PROJECTS_DIR, project_name)
+    screens_dir = os.path.join(project_dir, "screens")
+    
+    if not os.path.exists(project_dir):
+        return jsonify({'success': False, 'error': '项目不存在'}), 404
+    
+    os.makedirs(screens_dir, exist_ok=True)
+    
+    # 获取现有截图列表
+    existing_screens = sorted([
+        f for f in os.listdir(screens_dir) 
+        if f.startswith("Screen_") and f.endswith(".png")
+    ])
+    
+    # 计算目标文件名
+    if position == -1 or position >= len(existing_screens):
+        # 追加到末尾
+        new_index = len(existing_screens) + 1
+        new_filename = f"Screen_{new_index:03d}.png"
+    else:
+        # 插入到指定位置，需要先移动后面的文件
+        # position 是 0-based index
+        insert_index = position + 1  # 转换为 1-based Screen 编号
+        
+        # 从后往前重命名，避免覆盖
+        for i in range(len(existing_screens), insert_index - 1, -1):
+            old_name = f"Screen_{i:03d}.png"
+            new_name = f"Screen_{i+1:03d}.png"
+            old_path = os.path.join(screens_dir, old_name)
+            new_path = os.path.join(screens_dir, new_name)
+            if os.path.exists(old_path):
+                os.rename(old_path, new_path)
+        
+        new_filename = f"Screen_{insert_index:03d}.png"
+    
+    # 复制并转换为 PNG
+    dest_path = os.path.join(screens_dir, new_filename)
+    
+    try:
+        # 使用 PIL 转换为 PNG
+        with Image.open(src_path) as img:
+            # 转换为 RGB（如果是 RGBA 或其他模式）
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            img.save(dest_path, 'PNG')
+        
+        # 删除待处理文件
+        os.remove(src_path)
+        
+        # 通知前端
+        socketio.emit('screenshot_imported', {
+            'project': project_name,
+            'filename': new_filename,
+            'position': position
+        })
+        
+        return jsonify({
+            'success': True,
+            'message': f'已导入到 {project_name}',
+            'filename': new_filename,
+            'position': position
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route("/api/apowersoft-config", methods=["GET"])
+def get_apowersoft_config():
+    """获取傲软配置"""
+    detected_path = detect_apowersoft_folder()
+    possible_paths = get_apowersoft_paths()
+    
+    return jsonify({
+        'success': True,
+        'current_path': detected_path,
+        'possible_paths': possible_paths,
+        'watcher_active': file_observer is not None and file_observer.is_alive() if file_observer else False
+    })
+
+
+@app.route("/api/apowersoft-config", methods=["POST"])
+def set_apowersoft_config():
+    """设置傲软路径并重启监听"""
+    data = request.json
+    path = data.get('path')
+    
+    if not path:
+        return jsonify({'success': False, 'error': '路径不能为空'}), 400
+    
+    if not os.path.exists(path):
+        return jsonify({'success': False, 'error': '路径不存在'}), 400
+    
+    # 保存配置
+    save_apowersoft_config(path)
+    
+    # 重启监听
+    stop_file_watcher()
+    started = start_file_watcher()
+    
+    return jsonify({
+        'success': True,
+        'path': path,
+        'watcher_started': started
+    })
+
+
 # ==================== 启动 ====================
 
 if __name__ == "__main__":
@@ -2015,7 +2328,17 @@ if __name__ == "__main__":
     print("启动服务器: http://localhost:5000")
     print("=" * 50)
     
+    # 启动文件监听
+    watcher_started = start_file_watcher()
+    if watcher_started:
+        print("[OK] 傲软截图监听已启动")
+    else:
+        print("[INFO] 傲软截图监听未启动（可手动配置路径）")
+    
     import webbrowser
     webbrowser.open("http://localhost:5000")
     
-    app.run(debug=False, port=5000)
+    try:
+        socketio.run(app, debug=False, port=5000, allow_unsafe_werkzeug=True)
+    finally:
+        stop_file_watcher()

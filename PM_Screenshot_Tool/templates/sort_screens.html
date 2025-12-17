@@ -1101,6 +1101,204 @@
             color: #fff;
             border: 1px solid rgba(255,255,255,0.1);
         }
+        
+        /* ==================== 待处理截图面板 ==================== */
+        .pending-section {
+            border-top: 1px solid rgba(255,255,255,0.06);
+        }
+        
+        .pending-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        
+        .pending-header h3 {
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .pending-badge {
+            background: #22c55e;
+            color: #000;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 10px;
+            min-width: 18px;
+            text-align: center;
+        }
+        
+        .pending-badge.empty {
+            background: rgba(255,255,255,0.1);
+            color: #6b7280;
+        }
+        
+        .pending-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .pending-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 8px;
+            cursor: grab;
+            transition: all 0.15s ease;
+        }
+        
+        .pending-item:hover {
+            background: rgba(255,255,255,0.04);
+            border-color: rgba(255,255,255,0.15);
+        }
+        
+        .pending-item:active {
+            cursor: grabbing;
+        }
+        
+        .pending-item.dragging {
+            opacity: 0.5;
+            border-color: #22c55e;
+        }
+        
+        .pending-thumb {
+            width: 40px;
+            height: 60px;
+            border-radius: 4px;
+            object-fit: cover;
+            background: #1a1a1a;
+            flex-shrink: 0;
+        }
+        
+        .pending-info {
+            flex: 1;
+            min-width: 0;
+        }
+        
+        .pending-name {
+            font-size: 12px;
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .pending-time {
+            font-size: 11px;
+            color: #6b7280;
+            margin-top: 2px;
+        }
+        
+        .pending-delete {
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            border: none;
+            background: transparent;
+            color: #6b7280;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+            flex-shrink: 0;
+        }
+        
+        .pending-delete:hover {
+            background: rgba(239,68,68,0.15);
+            color: #ef4444;
+        }
+        
+        .pending-empty {
+            text-align: center;
+            padding: 20px;
+            color: #6b7280;
+            font-size: 12px;
+        }
+        
+        .pending-empty-icon {
+            font-size: 24px;
+            margin-bottom: 8px;
+            opacity: 0.5;
+        }
+        
+        /* 插入指示器 */
+        .card.drop-before::before,
+        .card.drop-after::after {
+            content: '';
+            position: absolute;
+            left: -6px;
+            right: -6px;
+            height: 3px;
+            background: #22c55e;
+            border-radius: 2px;
+            z-index: 10;
+        }
+        
+        .card.drop-before::before {
+            top: -8px;
+        }
+        
+        .card.drop-after::after {
+            bottom: -8px;
+        }
+        
+        /* 拖拽时的网格高亮 */
+        .grid.drag-active {
+            background: rgba(34, 197, 94, 0.02);
+            border: 2px dashed rgba(34, 197, 94, 0.3);
+            border-radius: 8px;
+        }
+        
+        /* 傲软配置状态 */
+        .apowersoft-config {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+        }
+        
+        .apowersoft-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: #6b7280;
+        }
+        
+        .apowersoft-status .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #6b7280;
+        }
+        
+        .apowersoft-status .dot.active {
+            background: #22c55e;
+        }
+        
+        .apowersoft-btn {
+            font-size: 11px;
+            color: #9ca3af;
+            background: none;
+            border: none;
+            padding: 0;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        
+        .apowersoft-btn:hover {
+            color: #fff;
+        }
     </style>
 </head>
 <body>
@@ -1159,6 +1357,33 @@
                     <span class="check-icon"><svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></span>
                     <span>标记已检查</span>
                 </button>
+            </div>
+            
+            <!-- 待处理截图 -->
+            <div class="sidebar-section pending-section">
+                <div class="pending-header">
+                    <h3>
+                        待处理 <span style="font-size:11px;opacity:0.5;">Pending</span>
+                        <span class="pending-badge empty" id="pendingBadge">0</span>
+                    </h3>
+                </div>
+                <div class="pending-list" id="pendingList">
+                    <div class="pending-empty">
+                        <div class="pending-empty-icon">
+                            <svg viewBox="0 0 24 24" width="32" height="32" stroke="currentColor" fill="none" stroke-width="1.5">
+                                <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                        </div>
+                        <div>傲软截图会自动出现在这里</div>
+                    </div>
+                </div>
+                <div class="apowersoft-config">
+                    <div class="apowersoft-status">
+                        <span class="dot" id="watcherDot"></span>
+                        <span id="watcherStatus">检测中...</span>
+                        <button class="apowersoft-btn" onclick="showApowersoftConfig()">配置</button>
+                    </div>
+                </div>
             </div>
         </div>
         
@@ -1279,6 +1504,7 @@
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
     <script>
         let screens = [];
         let movedSet = new Set();      // 记录被移动过的卡片
@@ -1304,6 +1530,241 @@
         // 项目列表数据（用于进度统计）
         let allProjects = [];
         let projectStats = { total: 0, checked: 0, onboarding_marked: 0 };
+        
+        // ==================== 待处理截图 (傲软) ====================
+        let pendingScreenshots = [];
+        let socket = null;
+        let draggedPendingItem = null;
+        
+        // 初始化 WebSocket 连接
+        function initSocketIO() {
+            try {
+                socket = io();
+                
+                socket.on('connect', () => {
+                    console.log('[Socket] 已连接');
+                });
+                
+                socket.on('new_screenshot', (data) => {
+                    console.log('[Socket] 新截图:', data.filename);
+                    loadPendingScreenshots();
+                    showToast(`新截图已捕获: ${data.original}`);
+                });
+                
+                socket.on('screenshot_imported', (data) => {
+                    console.log('[Socket] 截图已导入:', data);
+                    if (data.project === currentProject) {
+                        // 重新加载当前项目
+                        loadProject();
+                    }
+                });
+                
+                socket.on('disconnect', () => {
+                    console.log('[Socket] 已断开');
+                });
+            } catch (e) {
+                console.warn('[Socket] 连接失败:', e);
+            }
+        }
+        
+        // 加载待处理截图列表
+        async function loadPendingScreenshots() {
+            try {
+                const res = await fetch('/api/pending-screenshots');
+                const data = await res.json();
+                
+                if (data.success) {
+                    pendingScreenshots = data.screenshots;
+                    renderPendingList();
+                    updatePendingBadge();
+                }
+            } catch (e) {
+                console.error('加载待处理截图失败:', e);
+            }
+        }
+        
+        // 渲染待处理截图列表
+        function renderPendingList() {
+            const list = document.getElementById('pendingList');
+            
+            if (pendingScreenshots.length === 0) {
+                list.innerHTML = `
+                    <div class="pending-empty">
+                        <div class="pending-empty-icon">
+                            <svg viewBox="0 0 24 24" width="32" height="32" stroke="currentColor" fill="none" stroke-width="1.5">
+                                <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                        </div>
+                        <div>傲软截图会自动出现在这里</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            list.innerHTML = pendingScreenshots.map(s => {
+                const time = new Date(s.created_at).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
+                return `
+                    <div class="pending-item" draggable="true" data-filename="${s.filename}"
+                         ondragstart="handlePendingDragStart(event)" 
+                         ondragend="handlePendingDragEnd(event)">
+                        <img class="pending-thumb" src="/api/pending-screenshot/${s.filename}" alt="">
+                        <div class="pending-info">
+                            <div class="pending-name">${s.filename.replace('pending_', '').substring(16)}</div>
+                            <div class="pending-time">${time}</div>
+                        </div>
+                        <button class="pending-delete" onclick="deletePendingScreenshot('${s.filename}')" title="删除">
+                            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" stroke-width="2">
+                                <path d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        // 更新待处理徽章
+        function updatePendingBadge() {
+            const badge = document.getElementById('pendingBadge');
+            const count = pendingScreenshots.length;
+            badge.textContent = count;
+            badge.className = count > 0 ? 'pending-badge' : 'pending-badge empty';
+        }
+        
+        // 删除待处理截图
+        async function deletePendingScreenshot(filename) {
+            try {
+                const res = await fetch(`/api/pending-screenshot/${filename}`, { method: 'DELETE' });
+                const data = await res.json();
+                
+                if (data.success) {
+                    loadPendingScreenshots();
+                    showToast('已删除');
+                } else {
+                    showToast(data.error || '删除失败', true);
+                }
+            } catch (e) {
+                showToast('删除失败: ' + e.message, true);
+            }
+        }
+        
+        // 待处理截图拖拽开始
+        function handlePendingDragStart(e) {
+            draggedPendingItem = e.target.closest('.pending-item');
+            draggedPendingItem.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', draggedPendingItem.dataset.filename);
+            e.dataTransfer.setData('application/x-pending-screenshot', 'true');
+            
+            // 高亮网格区域
+            const grid = document.getElementById('grid');
+            grid.classList.add('drag-active');
+        }
+        
+        // 待处理截图拖拽结束
+        function handlePendingDragEnd(e) {
+            if (draggedPendingItem) {
+                draggedPendingItem.classList.remove('dragging');
+                draggedPendingItem = null;
+            }
+            
+            // 移除网格高亮
+            const grid = document.getElementById('grid');
+            grid.classList.remove('drag-active');
+            
+            // 移除所有插入指示器
+            document.querySelectorAll('.card.drop-before, .card.drop-after').forEach(c => {
+                c.classList.remove('drop-before', 'drop-after');
+            });
+        }
+        
+        // 加载傲软配置状态
+        async function loadApowersoftConfig() {
+            try {
+                const res = await fetch('/api/apowersoft-config');
+                const data = await res.json();
+                
+                const dot = document.getElementById('watcherDot');
+                const status = document.getElementById('watcherStatus');
+                
+                if (data.watcher_active) {
+                    dot.classList.add('active');
+                    status.textContent = '监听中';
+                } else if (data.current_path) {
+                    dot.classList.remove('active');
+                    status.textContent = '未激活';
+                } else {
+                    dot.classList.remove('active');
+                    status.textContent = '未配置';
+                }
+            } catch (e) {
+                console.error('获取傲软配置失败:', e);
+            }
+        }
+        
+        // 显示傲软配置（简单版：使用 prompt）
+        async function showApowersoftConfig() {
+            const res = await fetch('/api/apowersoft-config');
+            const data = await res.json();
+            
+            let msg = '傲软投屏截图路径:\n\n';
+            msg += '当前: ' + (data.current_path || '未设置') + '\n\n';
+            msg += '可选路径:\n' + data.possible_paths.map((p, i) => `${i+1}. ${p}`).join('\n');
+            msg += '\n\n请输入新路径（留空保持不变）:';
+            
+            const newPath = prompt(msg, data.current_path || '');
+            
+            if (newPath && newPath !== data.current_path) {
+                try {
+                    const setRes = await fetch('/api/apowersoft-config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: newPath })
+                    });
+                    const setData = await setRes.json();
+                    
+                    if (setData.success) {
+                        showToast('配置已更新');
+                        loadApowersoftConfig();
+                    } else {
+                        showToast(setData.error || '配置失败', true);
+                    }
+                } catch (e) {
+                    showToast('配置失败: ' + e.message, true);
+                }
+            }
+        }
+        
+        // 导入待处理截图到项目
+        async function importPendingToProject(filename, position) {
+            if (!currentProject) {
+                showToast('请先选择一个项目', true);
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/import-screenshot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        filename: filename,
+                        project: currentProject,
+                        position: position
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    showToast(`已导入: ${data.filename}`);
+                    loadPendingScreenshots();
+                    loadProject(); // 重新加载项目截图
+                } else {
+                    showToast(data.error || '导入失败', true);
+                }
+            } catch (e) {
+                showToast('导入失败: ' + e.message, true);
+            }
+        }
         
         // 加载项目列表
         async function loadProjects() {
@@ -2601,6 +3062,11 @@
         
         // 初始化
         loadProjects();
+        
+        // 初始化待处理截图功能
+        initSocketIO();
+        loadPendingScreenshots();
+        loadApowersoftConfig();
     </script>
     
     <!-- 隐藏的文件上传输入 -->
@@ -2625,10 +3091,16 @@
                 e.stopPropagation();
             }
             
+            // 检查是否是有效的拖拽（文件或待处理截图）
+            function isValidDrag(e) {
+                return e.dataTransfer.types.includes('Files') || 
+                       e.dataTransfer.types.includes('application/x-pending-screenshot');
+            }
+            
             // 拖拽进入
             gridContainer.addEventListener('dragenter', (e) => {
                 if (!currentProject) return;
-                if (!e.dataTransfer.types.includes('Files')) return;
+                if (!isValidDrag(e)) return;
                 gridContainer.classList.add('drag-over');
             });
             
@@ -2643,7 +3115,7 @@
             // 拖拽悬停 - 显示插入位置指示器
             gridContainer.addEventListener('dragover', (e) => {
                 if (!currentProject) return;
-                if (!e.dataTransfer.types.includes('Files')) return;
+                if (!isValidDrag(e)) return;
                 
                 gridContainer.classList.add('drag-over');
                 
@@ -2655,7 +3127,7 @@
                 }
             });
             
-            // 放下文件
+            // 放下文件或待处理截图
             gridContainer.addEventListener('drop', async (e) => {
                 gridContainer.classList.remove('drag-over');
                 hideDragIndicator();
@@ -2665,6 +3137,20 @@
                     return;
                 }
                 
+                // 检查是否是待处理截图
+                const isPendingScreenshot = e.dataTransfer.types.includes('application/x-pending-screenshot');
+                
+                if (isPendingScreenshot) {
+                    // 从待处理区拖入的截图
+                    const filename = e.dataTransfer.getData('text/plain');
+                    if (filename) {
+                        await importPendingToProject(filename, dragInsertPosition);
+                    }
+                    dragInsertPosition = -1;
+                    return;
+                }
+                
+                // 文件拖拽上传
                 const files = Array.from(e.dataTransfer.files).filter(f => 
                     f.type.match(/image\/(png|jpeg|jpg)/)
                 );
