@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="view-transition" content="same-origin">
     <title>截图排序与筛选工具</title>
     <!-- Urbanist Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -10,6 +11,42 @@
     <link href="https://fonts.googleapis.com/css2?family=Urbanist:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/common.css">
     <style>
+        /* View Transition - 优化动画遮盖加载 */
+        @view-transition { navigation: auto; }
+        
+        /* 侧边栏保持静止 */
+        .sidebar { view-transition-name: sidebar; }
+        ::view-transition-old(sidebar),
+        ::view-transition-new(sidebar) {
+            animation: none;
+            mix-blend-mode: normal;
+        }
+        
+        /* 主内容区 - 交叉淡入淡出 */
+        .main-content { view-transition-name: main-content; }
+        ::view-transition-old(main-content) {
+            animation: fade-out 0.15s ease-out forwards;
+        }
+        ::view-transition-new(main-content) {
+            animation: fade-in 0.15s ease-in 0.1s forwards;
+            opacity: 0;
+        }
+        @keyframes fade-out {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+        @keyframes fade-in {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        /* 整体页面无动画 */
+        ::view-transition-old(root),
+        ::view-transition-new(root) {
+            animation: none;
+            mix-blend-mode: normal;
+        }
+        
         /* Linear Style - White Accent */
         * { font-family: 'Urbanist', -apple-system, BlinkMacSystemFont, sans-serif; }
         body { overflow: hidden; background: #0a0a0a; color: #fff; font-size: 14px; }
@@ -103,14 +140,35 @@
             width: 100%;
             padding: 10px 12px;
             border-radius: 8px;
-            background: rgba(255,255,255,0.04);
+            background: #111111;
             color: #fff;
             border: 1px solid rgba(255,255,255,0.1);
             font-size: 13px;
             cursor: pointer;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 32px;
         }
         .project-select:hover {
             border-color: rgba(255,255,255,0.2);
+        }
+        .project-select:focus {
+            outline: none;
+            border-color: rgba(255,255,255,0.3);
+        }
+        .project-select option {
+            background: #111111;
+            color: #fff;
+            padding: 10px;
+        }
+        .project-select option:checked,
+        .project-select option:hover {
+            background: rgba(255,255,255,0.1);
+            color: #fff;
         }
         
         /* 状态信息 */
@@ -246,9 +304,13 @@
             color: #fff;
         }
         .btn-mark.active {
-            background: rgba(255,255,255,0.08);
-            color: #fff;
-            border-color: rgba(255,255,255,0.2);
+            background: #22c55e;
+            color: #000;
+            border-color: #22c55e;
+            font-weight: 600;
+        }
+        .btn-mark.active:hover {
+            background: #16a34a;
         }
         
         /* 快捷键提示 */
@@ -616,7 +678,7 @@
         .grid {
             display: flex;
             flex-wrap: wrap;
-            gap: 8px;
+            gap: 12px;
             align-content: flex-start;
         }
         
@@ -678,13 +740,13 @@
         }
         
         .card {
-            width: 90px;
-            background: #111111;
-            border-radius: 6px;
+            width: 120px;
+            background: #1a1a1a;
+            border-radius: 8px;
             overflow: hidden;
             cursor: grab;
             transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
-            border: 2px solid transparent;
+            border: 2px solid rgba(255,255,255,0.15);
             position: relative;
             flex-shrink: 0;
         }
@@ -748,61 +810,65 @@
             text-shadow: 0 2px 4px rgba(0,0,0,0.5);
         }
         
-        /* Onboarding 范围样式 */
+        /* Onboarding 范围样式 - 简洁彩色方案 */
         .card.in-onboarding {
-            border-color: rgba(255,255,255,0.3);
-            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.3);
+            border-color: #22c55e;
         }
         
         .card.onboarding-start {
-            border-color: rgba(255,255,255,0.3);
+            border-color: #22c55e;
             border-width: 3px;
         }
         
-        .card.onboarding-start::before {
-            content: '开始';
+        .card.onboarding-start::after {
+            content: 'START';
             position: absolute;
-            bottom: 28px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(255,255,255,0.15);
-            color: white;
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 3px;
-            z-index: 5;
+            bottom: 24px;
+            left: 0;
+            right: 0;
+            background: #22c55e;
+            color: #000;
+            font-size: 11px;
+            padding: 5px 0;
+            text-align: center;
+            z-index: 10;
+            font-weight: 800;
+            letter-spacing: 1px;
         }
         
         .card.onboarding-end {
-            border-color: #fff;
+            border-color: #ef4444;
             border-width: 3px;
         }
         
-        .card.onboarding-end::before {
-            content: '结束';
+        .card.onboarding-end::after {
+            content: 'END';
             position: absolute;
-            bottom: 28px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(255,255,255,0.2);
-            color: white;
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 3px;
-            z-index: 5;
+            bottom: 24px;
+            left: 0;
+            right: 0;
+            background: #ef4444;
+            color: #fff;
+            font-size: 11px;
+            padding: 5px 0;
+            text-align: center;
+            z-index: 10;
+            font-weight: 800;
+            letter-spacing: 1px;
         }
         
         /* 标记模式提示条 */
         .mark-mode-bar {
-            background: #111111;
-            padding: 12px 24px;
+            background: #111;
+            padding: 14px 24px;
             display: none;
             align-items: center;
             justify-content: center;
-            gap: 16px;
+            gap: 20px;
             font-size: 14px;
             font-weight: 500;
-            color: white;
+            color: #fff;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
         }
         
         .mark-mode-bar.show {
@@ -812,28 +878,32 @@
         .mark-mode-bar .hint {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
         }
         
         .mark-mode-bar .step-badge {
-            background: rgba(255,255,255,0.2);
-            padding: 4px 12px;
+            background: #22c55e;
+            color: #000;
+            padding: 5px 14px;
             border-radius: 20px;
             font-size: 13px;
+            font-weight: 700;
         }
         
         .mark-mode-bar .btn-exit {
-            background: rgba(255,255,255,0.2);
-            border: none;
-            color: white;
-            padding: 6px 12px;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.3);
+            color: #fff;
+            padding: 6px 14px;
             border-radius: 4px;
             cursor: pointer;
             font-size: 13px;
+            font-weight: 500;
         }
         
         .mark-mode-bar .btn-exit:hover {
-            background: rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.1);
+            border-color: rgba(255,255,255,0.5);
         }
         
         /* 标记模式下的卡片样式 */
@@ -902,20 +972,20 @@
         
         .card-index {
             position: absolute;
-            top: 3px;
-            left: 3px;
-            background: rgba(0,0,0,0.8);
+            top: 4px;
+            left: 4px;
+            background: rgba(0,0,0,0.85);
             color: #fff;
-            font-size: 10px;
+            font-size: 11px;
             font-weight: 700;
-            padding: 1px 5px;
-            border-radius: 3px;
+            padding: 2px 6px;
+            border-radius: 4px;
             z-index: 1;
         }
         
         .card img {
             width: 100%;
-            height: 160px;
+            height: 213px;
             object-fit: cover;
             display: block;
             pointer-events: none;
@@ -923,11 +993,11 @@
         }
         
         .card-footer {
-            padding: 4px;
-            font-size: 9px;
-            color: #6b7280;
+            padding: 6px;
+            font-size: 10px;
+            color: #9ca3af;
             text-align: center;
-            background: #12121a;
+            background: #111111;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -974,32 +1044,62 @@
             opacity: 1;
         }
         
-        /* 快捷键提示 */
+        /* 快捷键提示 - 默认折叠，hover 展开 */
         .shortcuts-help {
             position: fixed;
             bottom: 24px;
             left: 24px;
-            background: rgba(26, 26, 46, 0.95);
-            padding: 12px 16px;
+            background: rgba(17, 17, 17, 0.95);
             border-radius: 8px;
             font-size: 12px;
             color: #9ca3af;
-            border: 1px solid #2a2a4a;
+            border: 1px solid rgba(255,255,255,0.1);
+            overflow: hidden;
+            transition: all 0.2s ease;
+            z-index: 100;
         }
-        
-        .shortcuts-help div {
-            margin: 4px 0;
+
+        .shortcuts-help .shortcuts-toggle {
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #6b7280;
+            font-size: 11px;
         }
-        
+
+        .shortcuts-help .shortcuts-toggle:hover {
+            color: #fff;
+        }
+
+        .shortcuts-help .shortcuts-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.2s ease, padding 0.2s ease;
+            padding: 0 14px;
+        }
+
+        .shortcuts-help:hover .shortcuts-content {
+            max-height: 200px;
+            padding: 0 14px 12px 14px;
+        }
+
+        .shortcuts-help .shortcuts-content div {
+            margin: 6px 0;
+        }
+
         .shortcuts-help kbd {
-            background: #2a2a3a;
-            padding: 2px 6px;
+            background: rgba(255,255,255,0.08);
+            padding: 3px 8px;
             border-radius: 4px;
             font-size: 11px;
-            margin-right: 8px;
+            margin-right: 10px;
             min-width: 60px;
             display: inline-block;
             text-align: center;
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.1);
         }
     </style>
 </head>
@@ -1007,6 +1107,7 @@
     <div class="app">
         <!-- 侧边栏 -->
         <div class="sidebar">
+            {% if not frame_mode %}
             <div class="sidebar-header">
                 <div class="logo">截图排序</div>
             </div>
@@ -1021,6 +1122,7 @@
                     <a href="/store" class="nav-item"><span class="icon"><svg viewBox="0 0 24 24"><path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg></span>商城对比 <span class="nav-en">Store</span></a>
                 </div>
             </div>
+            {% endif %}
             
             <!-- 项目选择 -->
             <div class="sidebar-section">
@@ -1124,12 +1226,15 @@
     </div>
     
     <div class="shortcuts-help">
-        <div><kbd>Ctrl+A</kbd> 全选</div>
-        <div><kbd>Delete</kbd> 删除选中</div>
-        <div><kbd>Ctrl+Z</kbd> 撤销</div>
-        <div><kbd>← →</kbd> 导航</div>
-        <div><kbd>Esc</kbd> 取消选择</div>
-        <div><kbd>拖拽</kbd> 排序/插入</div>
+        <div class="shortcuts-toggle">⌨ 快捷键</div>
+        <div class="shortcuts-content">
+            <div><kbd>Ctrl+A</kbd> 全选</div>
+            <div><kbd>Delete</kbd> 删除选中</div>
+            <div><kbd>Ctrl+Z</kbd> 撤销</div>
+            <div><kbd>← →</kbd> 导航</div>
+            <div><kbd>Esc</kbd> 取消选择</div>
+            <div><kbd>拖拽</kbd> 排序/插入</div>
+        </div>
     </div>
     
     <div class="toast" id="toast"></div>

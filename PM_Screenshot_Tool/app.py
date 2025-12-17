@@ -167,8 +167,38 @@ def load_synonyms():
 
 @app.route("/")
 def index():
-    """主页"""
-    return render_template("index.html")
+    """主页 - 使用 App Shell"""
+    return render_template("app.html")
+
+
+@app.route("/page/<page_name>")
+def page_frame(page_name):
+    """iframe 内嵌页面（无侧边栏）"""
+    page_map = {
+        'home': 'index.html',
+        'sort': 'sort_screens.html',
+        'onboarding': 'onboarding.html',
+        'store': 'store_comparison.html'
+    }
+    template = page_map.get(page_name)
+    if template:
+        return render_template(template, frame_mode=True)
+    return "Not Found", 404
+
+
+@app.route("/full/<page_name>")
+def full_page(page_name):
+    """完整页面（有侧边栏，用于直接访问）"""
+    page_map = {
+        'home': 'index.html',
+        'sort': 'sort_screens.html',
+        'onboarding': 'onboarding.html',
+        'store': 'store_comparison.html'
+    }
+    template = page_map.get(page_name)
+    if template:
+        return render_template(template, frame_mode=False)
+    return "Not Found", 404
 
 
 @app.route("/classify")

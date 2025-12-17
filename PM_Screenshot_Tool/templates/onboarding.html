@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="view-transition" content="same-origin">
     <title>Onboarding 截图查看</title>
     <!-- Urbanist Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -10,6 +11,42 @@
     <link href="https://fonts.googleapis.com/css2?family=Urbanist:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/common.css">
     <style>
+        /* View Transition - 优化动画遮盖加载 */
+        @view-transition { navigation: auto; }
+        
+        /* 侧边栏保持静止 */
+        .sidebar { view-transition-name: sidebar; }
+        ::view-transition-old(sidebar),
+        ::view-transition-new(sidebar) {
+            animation: none;
+            mix-blend-mode: normal;
+        }
+        
+        /* 主内容区 - 交叉淡入淡出 */
+        .main { view-transition-name: main-content; }
+        ::view-transition-old(main-content) {
+            animation: fade-out 0.15s ease-out forwards;
+        }
+        ::view-transition-new(main-content) {
+            animation: fade-in 0.15s ease-in 0.1s forwards;
+            opacity: 0;
+        }
+        @keyframes fade-out {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+        @keyframes fade-in {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        /* 整体页面无动画 */
+        ::view-transition-old(root),
+        ::view-transition-new(root) {
+            animation: none;
+            mix-blend-mode: normal;
+        }
+        
         /* Linear Style - White Accent */
         * { font-family: 'Urbanist', -apple-system, BlinkMacSystemFont, sans-serif; }
         body { overflow: hidden; background: #0a0a0a; color: #fff; font-size: 14px; }
@@ -334,6 +371,7 @@
     <div class="app">
         <!-- 侧边栏 -->
         <div class="sidebar">
+            {% if not frame_mode %}
             <div class="sidebar-header">
                 <div class="logo">Onboarding 分析</div>
             </div>
@@ -347,6 +385,7 @@
                     <a href="/store" class="nav-item"><span class="icon"><svg viewBox="0 0 24 24"><path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg></span>商城对比 <span class="nav-en">Store</span></a>
                 </div>
             </div>
+            {% endif %}
             
             <div class="sidebar-section" style="flex:1; display:flex; flex-direction:column;">
                 <h3>项目列表 <span>Projects</span></h3>
