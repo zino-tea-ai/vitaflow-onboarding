@@ -245,7 +245,7 @@
         }
         .btn-mark.active {
             background: rgba(245, 158, 11, 0.15);
-            color: #fbbf24;
+            color: #fff;
             border-color: rgba(245, 158, 11, 0.3);
             animation: pulse 1.5s ease-in-out infinite;
         }
@@ -369,7 +369,7 @@
         .store-modal-header h2 {
             margin: 0;
             font-size: 20px;
-            color: #f59e0b;
+            color: #fff;
         }
         
         .store-modal-body {
@@ -434,7 +434,7 @@
         }
         
         .store-table .rating {
-            color: #fbbf24;
+            color: #fff;
             font-weight: 600;
         }
         
@@ -444,7 +444,7 @@
         }
         
         .store-table .screenshots-btn {
-            background: #3b82f6;
+            background: #fff; color: #000;
             color: white;
             border: none;
             padding: 4px 10px;
@@ -484,7 +484,7 @@
         .store-screenshots-header h3 {
             margin: 0;
             font-size: 14px;
-            color: #f59e0b;
+            color: #fff;
         }
         
         .store-screenshots-grid {
@@ -512,7 +512,7 @@
         }
         
         .store-screenshot-item:hover img {
-            border-color: #f59e0b;
+            border-color: #fff;
         }
         
         /* 已删除截图面板 */
@@ -754,12 +754,12 @@
         
         /* Onboarding 范围样式 */
         .card.in-onboarding {
-            border-color: #10b981;
+            border-color: rgba(255,255,255,0.3);
             box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.3);
         }
         
         .card.onboarding-start {
-            border-color: #10b981;
+            border-color: rgba(255,255,255,0.3);
             border-width: 3px;
         }
         
@@ -769,7 +769,7 @@
             bottom: 28px;
             left: 50%;
             transform: translateX(-50%);
-            background: #10b981;
+            background: rgba(255,255,255,0.15);
             color: white;
             font-size: 10px;
             padding: 2px 6px;
@@ -778,7 +778,7 @@
         }
         
         .card.onboarding-end {
-            border-color: #f59e0b;
+            border-color: #fff;
             border-width: 3px;
         }
         
@@ -788,7 +788,7 @@
             bottom: 28px;
             left: 50%;
             transform: translateX(-50%);
-            background: #f59e0b;
+            background: rgba(255,255,255,0.2);
             color: white;
             font-size: 10px;
             padding: 2px 6px;
@@ -868,7 +868,7 @@
         }
         
         .onboarding-info .ob-label {
-            color: #10b981;
+            color: #9ca3af;
             font-weight: 600;
         }
         
@@ -878,7 +878,7 @@
         }
         
         .onboarding-info .ob-count {
-            color: #f59e0b;
+            color: #fff;
         }
         
         .card-checkbox {
@@ -950,7 +950,7 @@
             position: fixed;
             bottom: 24px;
             right: 24px;
-            background: #10b981;
+            background: rgba(255,255,255,0.15);
             color: white;
             padding: 12px 20px;
             border-radius: 8px;
@@ -1837,7 +1837,7 @@
             const toDelete = toDeleteSet.has(file);
             
             let positionHtml = `原位置: #${origIdx + 1} → 当前: #${idx + 1}`;
-            if (moved) positionHtml += ' <span style="color:#f59e0b;">已移动</span>';
+            if (moved) positionHtml += ' <span style="color:#9ca3af;">已移动</span>';
             if (toDelete) positionHtml += ' <span style="color:#ef4444;">待删除</span>';
             
             document.getElementById('previewPosition').innerHTML = positionHtml;
@@ -2413,7 +2413,7 @@
                             ${screenshotCount > 0 ? 
                                 `<button class="screenshots-btn" onclick="showStoreScreenshots('${app.name}')">查看截图</button>` : 
                                 '-'}
-                            <button class="screenshots-btn" onclick="goToProject('downloads_2024/${app.name}')" style="background: #10b981; margin-left: 4px;">查看应用</button>
+                            <button class="screenshots-btn" onclick="goToProject('downloads_2024/${app.name}')" style="background: #fff; color: #000; margin-left: 4px;">查看应用</button>
                         </td>
                     </tr>
                 `;

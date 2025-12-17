@@ -1418,7 +1418,7 @@
         .highlight-item.visual { border-left-color: #34d399; }
         .highlight-item.interaction { border-left-color: #60a5fa; }
         .highlight-item.conversion { border-left-color: #f472b6; }
-        .highlight-item.emotional { border-left-color: #fbbf24; }
+        .highlight-item.emotional { border-left-color: #9ca3af; }
         .highlight-category {
             font-size: 10px;
             text-transform: uppercase;
@@ -1823,7 +1823,7 @@
         // 步骤标注
         let projectSteps = {};        // { projectName: { filename: stepNumber } }
         
-        const productColors = ['#667eea', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#fb7185'];
+        const productColors = ['#6b7280', '#9ca3af', '#a1a1a1', '#d1d5db', '#e5e7eb', '#f3f4f6'];
         
         // ===== 辅助函数：获取页面类型信息 =====
         function getPageTypeInfo(typeId) {
@@ -3384,7 +3384,7 @@
             } else if (status.status === 'partial') {
                 statusHtml = `
                     <div style="padding:16px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:8px;margin-bottom:20px;">
-                        <div style="color:#fbbf24;font-weight:600;margin-bottom:4px;">⚠️ 部分已分析 / Partially Analyzed</div>
+                        <div style="color:#9ca3af;font-weight:600;margin-bottom:4px;">部分已分析 / Partially Analyzed</div>
                         <div style="color:#9ca3af;font-size:13px;">${status.message}</div>
                     </div>
                 `;
