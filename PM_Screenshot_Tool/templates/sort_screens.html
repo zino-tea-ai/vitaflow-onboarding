@@ -1381,6 +1381,7 @@
                     <div class="apowersoft-status">
                         <span class="dot" id="watcherDot"></span>
                         <span id="watcherStatus">检测中...</span>
+                        <button class="apowersoft-btn" onclick="importFromApowersoft()">导入</button>
                         <button class="apowersoft-btn" onclick="showApowersoftConfig()">配置</button>
                     </div>
                 </div>
@@ -1701,6 +1702,23 @@
             }
         }
         
+        // 从傲软文件夹导入已有截图
+        async function importFromApowersoft() {
+            try {
+                showToast('正在导入...');
+                const res = await fetch('/api/import-from-apowersoft', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message);
+                    loadPendingScreenshots();
+                } else {
+                    showToast(data.error || '导入失败', true);
+                }
+            } catch (e) {
+                showToast('导入失败: ' + e.message, true);
+            }
+        }
+        
         // 显示傲软配置（简单版：使用 prompt）
         async function showApowersoftConfig() {
             const res = await fetch('/api/apowersoft-config');
@@ -1757,7 +1775,9 @@
                 if (data.success) {
                     showToast(`已导入: ${data.filename}`);
                     loadPendingScreenshots();
-                    loadProject(); // 重新加载项目截图
+                    
+                    // 增量添加新卡片到末尾
+                    insertCardAt(data.filename, screens.length);
                 } else {
                     showToast(data.error || '导入失败', true);
                 }
@@ -1922,12 +1942,15 @@
                 card.dataset.file = item.file;
                 card.dataset.index = idx;
                 
+                // 从文件名提取编号显示
+                const fileNum = item.file.replace('Screen_', '').replace('.png', '');
+                
                 // 添加 loading="lazy" 实现原生懒加载
                 card.innerHTML = `
                     <span class="card-checkbox">✓</span>
-                    <span class="card-index">${idx + 1}</span>
+                    <span class="card-index">${fileNum}</span>
                     <img src="/api/thumb/${currentProject}/screens/${item.file}?size=small${cacheBuster}" alt="${item.file}" loading="lazy">
-                    <div class="card-footer">${item.file.replace('Screen_', '').replace('.png', '')}</div>
+                    <div class="card-footer">${fileNum}</div>
                 `;
                 
                 // 点击事件（使用闭包绑定 file，从 data-index 动态获取索引）

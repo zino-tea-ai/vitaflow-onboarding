@@ -193,9 +193,9 @@ def start_file_watcher():
     try:
         screenshot_handler = ScreenshotHandler()
         file_observer = Observer()
-        file_observer.schedule(screenshot_handler, apowersoft_path, recursive=False)
+        file_observer.schedule(screenshot_handler, apowersoft_path, recursive=True)  # 递归监听子目录
         file_observer.start()
-        print(f"[WATCHER] 开始监听傲软文件夹: {apowersoft_path}")
+        print(f"[WATCHER] 开始监听傲软文件夹: {apowersoft_path} (含子目录)")
         return True
     except Exception as e:
         print(f"[ERROR] 启动文件监听失败: {e}")
@@ -2210,44 +2210,115 @@ def import_screenshot_to_project():
     if not os.path.exists(src_path):
         return jsonify({'success': False, 'error': '待处理截图不存在'}), 404
     
-    # 目标项目目录
-    project_dir = os.path.join(PROJECTS_DIR, project_name)
+    # 目标项目目录 - 标准化路径分隔符
+    project_name_normalized = project_name.replace('/', os.sep).replace('\\', os.sep)
+    
+    # 尝试在多个位置查找项目
+    # 1. 先尝试 BASE_DIR (处理 downloads_2024/xxx 这种路径)
+    project_dir = os.path.join(BASE_DIR, project_name_normalized)
+    if not os.path.exists(project_dir):
+        # 2. 再尝试 PROJECTS_DIR
+        project_dir = os.path.join(PROJECTS_DIR, project_name_normalized)
+    
     screens_dir = os.path.join(project_dir, "screens")
+    
     
     if not os.path.exists(project_dir):
         return jsonify({'success': False, 'error': '项目不存在'}), 404
-    
-    os.makedirs(screens_dir, exist_ok=True)
-    
-    # 获取现有截图列表
-    existing_screens = sorted([
-        f for f in os.listdir(screens_dir) 
-        if f.startswith("Screen_") and f.endswith(".png")
-    ])
+
+    try:
+        # 检测现有的截图目录和命名格式
+        # 格式1: screens/Screen_001.png (projects 目录)
+        # 格式2: 0001.png (downloads_2024 目录)
+        screens_dir_exists = os.path.exists(screens_dir)
+        root_pngs = [f for f in os.listdir(project_dir) if f.endswith('.png') and len(f) >= 4 and f[:4].isdigit()]
+        
+        if root_pngs and not screens_dir_exists:
+            # 使用格式2：直接在项目根目录，命名 0001.png
+            actual_screens_dir = project_dir
+            use_old_format = True
+            existing_screens = sorted(root_pngs)  # 按文件名排序
+        else:
+            # 使用格式1：screens 子目录，命名 Screen_001.png
+            actual_screens_dir = screens_dir
+            use_old_format = False
+            os.makedirs(screens_dir, exist_ok=True)
+            existing_screens = sorted([
+                f for f in os.listdir(screens_dir)
+                if f.startswith("Screen_") and f.endswith(".png")
+            ])
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'格式检测失败: {str(e)}'}), 500
     
     # 计算目标文件名
-    if position == -1 or position >= len(existing_screens):
+    # 提取所有文件的编号并排序
+    file_numbers = []
+    for f in existing_screens:
+        try:
+            if use_old_format:
+                num = int(os.path.splitext(f)[0])
+            else:
+                num = int(f.replace("Screen_", "").replace(".png", ""))
+            file_numbers.append(num)
+        except:
+            pass
+    file_numbers.sort()
+    
+    max_num = max(file_numbers) if file_numbers else 0
+    
+    # 判断是追加还是插入
+    if position == -1 or position >= len(file_numbers):
         # 追加到末尾
-        new_index = len(existing_screens) + 1
-        new_filename = f"Screen_{new_index:03d}.png"
+        if use_old_format:
+            new_filename = f"{max_num + 1:04d}.png"
+        else:
+            new_filename = f"Screen_{max_num + 1:03d}.png"
     else:
-        # 插入到指定位置，需要先移动后面的文件
+        # 插入到指定位置
         # position 是 0-based index
-        insert_index = position + 1  # 转换为 1-based Screen 编号
+        # 检查插入位置前后的编号，看是否有空洞可以利用
         
-        # 从后往前重命名，避免覆盖
-        for i in range(len(existing_screens), insert_index - 1, -1):
-            old_name = f"Screen_{i:03d}.png"
-            new_name = f"Screen_{i+1:03d}.png"
-            old_path = os.path.join(screens_dir, old_name)
-            new_path = os.path.join(screens_dir, new_name)
-            if os.path.exists(old_path):
-                os.rename(old_path, new_path)
+        if position == 0:
+            # 插入到最前面
+            prev_num = 0
+            next_num = file_numbers[0]
+        else:
+            prev_num = file_numbers[position - 1]
+            next_num = file_numbers[position] if position < len(file_numbers) else max_num + 1
         
-        new_filename = f"Screen_{insert_index:03d}.png"
+        # 检查是否有空洞（prev_num 和 next_num 之间有未使用的编号）
+        if next_num - prev_num > 1:
+            # 有空洞，使用空洞中的第一个编号
+            insert_at_num = prev_num + 1
+            # 不需要移动任何文件
+        else:
+            # 没有空洞，需要移动后面的文件
+            insert_at_num = next_num
+            
+            # 从最大编号开始，向后移动所有 >= insert_at_num 的文件
+            for num in sorted(file_numbers, reverse=True):
+                if num >= insert_at_num:
+                    if use_old_format:
+                        old_name = f"{num:04d}.png"
+                        new_name = f"{num + 1:04d}.png"
+                    else:
+                        old_name = f"Screen_{num:03d}.png"
+                        new_name = f"Screen_{num + 1:03d}.png"
+                    old_path = os.path.join(actual_screens_dir, old_name)
+                    new_path = os.path.join(actual_screens_dir, new_name)
+                    if os.path.exists(old_path):
+                        os.rename(old_path, new_path)
+        
+        # 新文件使用插入位置的编号
+        if use_old_format:
+            new_filename = f"{insert_at_num:04d}.png"
+        else:
+            new_filename = f"Screen_{insert_at_num:03d}.png"
     
     # 复制并转换为 PNG
-    dest_path = os.path.join(screens_dir, new_filename)
+    dest_path = os.path.join(actual_screens_dir, new_filename)
+    
     
     try:
         # 使用 PIL 转换为 PNG
@@ -2256,6 +2327,7 @@ def import_screenshot_to_project():
             if img.mode in ('RGBA', 'P'):
                 img = img.convert('RGB')
             img.save(dest_path, 'PNG')
+        
         
         # 删除待处理文件
         os.remove(src_path)
@@ -2278,17 +2350,51 @@ def import_screenshot_to_project():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route("/api/import-from-apowersoft", methods=["POST"])
+def import_from_apowersoft():
+    """手动从傲软文件夹导入已有截图到待处理区"""
+    apowersoft_path = detect_apowersoft_folder()
+    if not apowersoft_path:
+        return jsonify({'success': False, 'error': '未配置傲软路径'}), 400
+    
+    imported_count = 0
+    # 递归查找所有图片
+    for root, dirs, files in os.walk(apowersoft_path):
+        for filename in files:
+            ext = os.path.splitext(filename)[1].lower()
+            if ext in ['.png', '.jpg', '.jpeg', '.webp']:
+                src_path = os.path.join(root, filename)
+                # 生成唯一文件名
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                new_filename = f"pending_{timestamp}_{imported_count:03d}_{filename}"
+                dest_path = os.path.join(PENDING_DIR, new_filename)
+                
+                # 避免重复导入（检查文件大小和修改时间）
+                if not os.path.exists(dest_path):
+                    try:
+                        shutil.copy2(src_path, dest_path)
+                        imported_count += 1
+                    except Exception as e:
+                        print(f"[WARN] 导入失败: {filename} - {e}")
+    
+    return jsonify({
+        'success': True,
+        'imported_count': imported_count,
+        'message': f'已导入 {imported_count} 张截图'
+    })
+
+
 @app.route("/api/apowersoft-config", methods=["GET"])
 def get_apowersoft_config():
     """获取傲软配置"""
     detected_path = detect_apowersoft_folder()
     possible_paths = get_apowersoft_paths()
-    
+    watcher_status = file_observer is not None and file_observer.is_alive() if file_observer else False
     return jsonify({
         'success': True,
         'current_path': detected_path,
         'possible_paths': possible_paths,
-        'watcher_active': file_observer is not None and file_observer.is_alive() if file_observer else False
+        'watcher_active': watcher_status
     })
 
 
