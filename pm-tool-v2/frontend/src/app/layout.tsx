@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Urbanist, JetBrains_Mono } from "next/font/google";
+import { Urbanist, JetBrains_Mono, Outfit } from "next/font/google";
 import "./globals.css";
 
 // 复刻老版字体: Urbanist
@@ -7,6 +7,14 @@ const urbanist = Urbanist({
   variable: "--font-urbanist",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
+  display: "swap",
+});
+
+// VitaFlow 字体: Outfit
+const outfit = Outfit({
+  variable: "--font-outfit",
+  subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700"],
   display: "swap",
 });
 
@@ -31,7 +39,7 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" className="dark">
       <body
-        className={`${urbanist.variable} ${jetbrainsMono.variable} antialiased`}
+        className={`${urbanist.variable} ${jetbrainsMono.variable} ${outfit.variable} antialiased`}
         style={{ fontFamily: "var(--font-urbanist)" }}
       >
         {children}

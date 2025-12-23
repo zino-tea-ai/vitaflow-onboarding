@@ -577,3 +577,68 @@
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* 隐藏滚动条（用于移动端 Demo） */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* ==================== 
+   VitaFlow 设计系统
+   基于 Figma 设计稿复刻
+   ==================== */
+
+:root {
+  /* VitaFlow 配色 */
+  --vitaflow-bg: #F2F1F6;
+  --vitaflow-primary: #2B2735;
+  --vitaflow-secondary: #999999;
+  --vitaflow-card: #FFFFFF;
+  --vitaflow-shadow: 0px 0px 2px 0px #E8E8E8;
+  --vitaflow-shadow-lg: 0px 0px 4px 0px #E8E8E8;
+  
+  /* VitaFlow 字体 */
+  --font-outfit: 'Outfit', sans-serif;
+}
+
+/* VitaFlow 容器样式 */
+.vitaflow-screen {
+  font-family: var(--font-outfit);
+  background: var(--vitaflow-bg);
+  color: var(--vitaflow-primary);
+}
+
+/* VitaFlow 卡片样式 */
+.vitaflow-card {
+  background: var(--vitaflow-card);
+  border-radius: 12px;
+  box-shadow: var(--vitaflow-shadow);
+}
+
+/* VitaFlow 按钮样式 */
+.vitaflow-btn {
+  background: var(--vitaflow-primary);
+  color: white;
+  border-radius: 24px;
+  font-family: var(--font-outfit);
+  font-weight: 500;
+  padding: 16px 32px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.vitaflow-btn:hover {
+  opacity: 0.9;
+  transform: scale(1.02);
+}
+
+.vitaflow-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
