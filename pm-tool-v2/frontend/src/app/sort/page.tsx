@@ -97,6 +97,7 @@ export default function SortPage() {
     resetZoom,
     setLastClickedIndex,
     lastClickedIndex,
+    insertScreenshotAt,
   } = useSortStore()
 
   // Local State
@@ -107,6 +108,7 @@ export default function SortPage() {
   const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null)
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
   const [newlyAdded, setNewlyAdded] = useState<string | null>(null)
+  const [externalImportedFile, setExternalImportedFile] = useState<string | null>(null) // 外部拖拽导入的文件名
   
   // Refs
   const contentRef = useRef<HTMLDivElement>(null)
@@ -176,8 +178,8 @@ export default function SortPage() {
       if (e.key === 'Delete' && selectedFiles.size > 0) {
         const count = selectedFiles.size
         if (count <= 10 || window.confirm(`确定要删除 ${count} 张截图吗？`)) {
-          deleteSelected(selectedProject)
-        }
+        deleteSelected(selectedProject)
+      }
       }
       if (e.key === 'Escape') { deselectAll(); setPreviewIndex(null) }
       if (e.key === 'ArrowLeft' && previewIndex !== null) { prevPreview() }
@@ -196,15 +198,30 @@ export default function SortPage() {
   }, [])
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
-    const { active, over } = event
-    setActiveId(null)
+      const { active, over } = event
+      setActiveId(null)
 
-    if (over && active.id !== over.id) {
+      if (over && active.id !== over.id) {
       const oldIndex = sortedScreenshots.findIndex(s => s.filename === active.id)
       const newIndex = sortedScreenshots.findIndex(s => s.filename === over.id)
-      reorder(oldIndex, newIndex)
-    }
-  }, [sortedScreenshots, reorder])
+      
+      // 更新预览索引：如果正在预览的图片被移动了，跟随它的新位置
+      if (previewIndex !== null) {
+        if (previewIndex === oldIndex) {
+          // 正在预览的图片被拖动，更新到新位置
+          setPreviewIndex(newIndex)
+        } else if (oldIndex < previewIndex && newIndex >= previewIndex) {
+          // 图片从预览位置前面移到后面，预览索引减 1
+          setPreviewIndex(previewIndex - 1)
+        } else if (oldIndex > previewIndex && newIndex <= previewIndex) {
+          // 图片从预览位置后面移到前面，预览索引加 1
+          setPreviewIndex(previewIndex + 1)
+        }
+      }
+      
+        reorder(oldIndex, newIndex)
+      }
+  }, [sortedScreenshots, reorder, previewIndex, setPreviewIndex])
 
   const handleCardClick = useCallback((e: React.MouseEvent, index: number, filename: string) => {
     setPreviewIndex(index)
@@ -286,8 +303,12 @@ export default function SortPage() {
           setUploadMessage(`✓ 已插入 ${result.new_filename}`)
           setNewlyAdded(result.new_filename)
           setTimeout(() => { setUploadMessage(null); setNewlyAdded(null) }, 3000)
+          // 通知 PendingPanel 标记该文件为已导入
+          setExternalImportedFile(filename)
         }
-      } catch (error) { toast.error('导入失败: ' + (error as Error).message) }
+      } catch (error) {
+        toast.error('导入失败: ' + (error as Error).message)
+      }
       return
     }
 
@@ -322,6 +343,11 @@ export default function SortPage() {
     if (selectedProject) fetchData(selectedProject)
   }, [selectedProject, fetchData])
 
+  // 自动导入时直接追加截图（不刷新整个列表）
+  const handleAppendScreenshot = useCallback((filename: string) => {
+    insertScreenshotAt({ filename, path: '' }, sortedScreenshots.length)
+  }, [sortedScreenshots.length, insertScreenshotAt])
+
   const handleDeleteSelected = useCallback(() => {
     if (!selectedProject) return
     const count = selectedFiles.size
@@ -338,20 +364,171 @@ export default function SortPage() {
 
   // ==================== Render ====================
 
+  // 内联样式定义
+  const pageStyles = {
+    pendingSidebar: {
+      width: '320px',
+      flexShrink: 0,
+      borderRight: '1px solid var(--border-default)',
+      overflow: 'hidden' as const,
+      padding: '12px',
+      display: 'flex',
+      flexDirection: 'column' as const,
+    },
+    mainContent: {
+      flex: 1,
+      display: 'flex',
+      flexDirection: 'column' as const,
+      minWidth: 0,
+    },
+    topbarActions: {
+      display: 'flex',
+      gap: '8px',
+      marginLeft: '16px',
+      alignItems: 'center',
+      flexShrink: 1,
+      minWidth: 0,
+      overflowX: 'auto' as const,
+      overflowY: 'hidden' as const,
+      paddingBottom: '2px', // 防止滚动条遮挡
+    },
+    btnGhost: {
+      background: 'none',
+      color: 'var(--text-muted)',
+      border: '1px solid transparent',
+      padding: '6px 12px',
+      borderRadius: '6px',
+      cursor: 'pointer',
+      fontSize: '13px',
+      fontWeight: 500,
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '6px',
+      whiteSpace: 'nowrap' as const,
+      lineHeight: 1.4,
+    },
+    btnGhostDanger: {
+      color: 'var(--danger)',
+    },
+    btnGhostActive: {
+      color: '#fff',
+      background: 'var(--bg-active)',
+    },
+    btnGhostSuccess: {
+      background: 'var(--success)',
+      color: '#fff',
+    },
+    contentArea: {
+      flex: 1,
+      overflow: 'auto',
+      position: 'relative' as const,
+    },
+    dropOverlay: {
+      position: 'absolute' as const,
+      inset: 0,
+      background: 'rgba(245, 158, 11, 0.05)',
+      border: '3px dashed #f59e0b',
+      borderRadius: '12px',
+      zIndex: 5,
+      display: 'flex',
+      alignItems: 'flex-start' as const,
+      justifyContent: 'center',
+      paddingTop: '20px',
+      pointerEvents: 'none' as const,
+    },
+    dropMessage: {
+      background: 'rgba(0,0,0,0.9)',
+      padding: '12px 24px',
+      borderRadius: '8px',
+      color: '#f59e0b',
+      fontSize: '14px',
+      fontWeight: 500,
+    },
+    uploadToast: {
+      position: 'fixed' as const,
+      bottom: '24px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      background: '#22c55e',
+      color: '#fff',
+      padding: '12px 24px',
+      borderRadius: '8px',
+      fontSize: '14px',
+      fontWeight: 500,
+      zIndex: 100,
+      boxShadow: '0 4px 20px rgba(34, 197, 94, 0.4)',
+    },
+    emptyState: {
+      display: 'flex',
+      flexDirection: 'column' as const,
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: '400px',
+      color: 'var(--text-muted)',
+      gap: '16px',
+    },
+    loadingState: {
+      display: 'flex',
+      height: '256px',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    errorMessage: {
+      padding: '12px 16px',
+      background: 'rgba(239, 68, 68, 0.2)',
+      color: 'var(--danger)',
+      borderRadius: '8px',
+      marginBottom: '16px',
+    },
+    deletedPanel: {
+      background: 'var(--bg-card)',
+      borderRadius: '8px',
+      marginBottom: '16px',
+      padding: '16px',
+    },
+    deletedBatch: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: '8px 12px',
+      background: 'var(--bg-secondary)',
+      borderRadius: '6px',
+      marginTop: '8px',
+      fontSize: '13px',
+    },
+    sortGrid: {
+      display: 'grid',
+      position: 'relative' as const,
+      transition: 'gap 200ms ease',
+      paddingBottom: '300px', // 底部留白，方便滚动查看
+    },
+    dropIndicator: {
+      position: 'absolute' as const,
+      left: '-6px',
+      top: 0,
+      bottom: 0,
+      width: '4px',
+      background: '#f59e0b',
+      borderRadius: '2px',
+      zIndex: 10,
+      boxShadow: '0 0 10px rgba(245, 158, 11, 0.8)',
+    },
+  }
+
   return (
     <AppLayout>
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* 左侧待处理区 */}
-        <div className="pending-sidebar">
-          <PendingPanel selectedProject={selectedProject} onImportSuccess={handleImportSuccess} />
+        <div style={pageStyles.pendingSidebar}>
+          <PendingPanel selectedProject={selectedProject} onImportSuccess={handleImportSuccess} onAppendScreenshot={handleAppendScreenshot} externalImportedFile={externalImportedFile} />
         </div>
 
         {/* 主内容区 */}
-        <div className="main-content">
+        <div style={pageStyles.mainContent}>
           {/* 顶栏 */}
-          <div className="topbar">
-            <h1 className="topbar-title">截图排序</h1>
-            <div style={{ flex: 1 }} />
+          <div className="topbar" style={{ overflow: 'visible' }}>
+            <h1 style={{ fontSize: '15px', fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', flexShrink: 0 }}>截图排序</h1>
+            <div style={{ flex: 1, minWidth: '8px' }} />
 
             {/* 缩放控制 */}
             {selectedProject && sortedScreenshots.length > 0 && (
@@ -374,33 +551,32 @@ export default function SortPage() {
 
             {/* 操作按钮 */}
             {selectedProject && sortedScreenshots.length > 0 && (
-              <div className="topbar-actions">
-                <button className="btn-ghost" onClick={() => selectedFiles.size > 0 ? deselectAll() : selectAll()}>
+              <div style={pageStyles.topbarActions}>
+                <button style={pageStyles.btnGhost} onClick={() => selectedFiles.size > 0 ? deselectAll() : selectAll()}>
                   {selectedFiles.size > 0 ? <><X size={16} />取消 ({selectedFiles.size})</> : <><CheckSquare size={16} />全选</>}
                 </button>
 
                 {selectedFiles.size > 0 && (
-                  <button className="btn-ghost" onClick={handleDeleteSelected} disabled={saving} style={{ color: 'var(--danger)' }}>
+                  <button style={{ ...pageStyles.btnGhost, ...pageStyles.btnGhostDanger }} onClick={handleDeleteSelected} disabled={saving}>
                     <Trash2 size={16} />删除 ({selectedFiles.size})
                   </button>
                 )}
 
                 {deletedBatches.length > 0 && (
-                  <button className={`btn-ghost ${showDeleted ? 'active' : ''}`} onClick={() => setShowDeleted(!showDeleted)}>
+                  <button style={{ ...pageStyles.btnGhost, ...(showDeleted ? pageStyles.btnGhostActive : {}) }} onClick={() => setShowDeleted(!showDeleted)}>
                     <RotateCcw size={16} />已删除 ({deletedBatches.reduce((a, b) => a + b.count, 0)})
                   </button>
                 )}
 
                 {hasChanges && (
                   <>
-                    <button className="btn-ghost" onClick={() => selectedProject && saveSortOrder(selectedProject)} disabled={saving}>
+                    <button style={pageStyles.btnGhost} onClick={() => selectedProject && saveSortOrder(selectedProject)} disabled={saving}>
                       <Save size={16} />保存排序
                     </button>
-                    <button 
-                      className="btn-ghost" 
-                      onClick={() => selectedProject && applySortOrder(selectedProject)} 
+                    <button
+                      style={{ ...pageStyles.btnGhost, ...pageStyles.btnGhostSuccess }}
+                      onClick={() => selectedProject && applySortOrder(selectedProject)}
                       disabled={saving}
-                      style={{ background: 'var(--success)', color: '#fff' }}
                     >
                       <Check size={16} />{saving ? '应用中...' : '应用并重命名'}
                     </button>
@@ -425,15 +601,15 @@ export default function SortPage() {
           {/* 内容区 */}
           <div 
             ref={contentRef}
-            className="content-area" 
+            style={pageStyles.contentArea}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
             {/* 拖拽提示 */}
             {isDragOver && (
-              <div className="drop-overlay">
-                <div className="drop-message">
+              <div style={pageStyles.dropOverlay}>
+                <div style={pageStyles.dropMessage}>
                   {dropTargetIndex !== null && dropTargetIndex < sortedScreenshots.length
                     ? `释放插入到位置 ${dropTargetIndex + 1}`
                     : '释放添加到末尾'}
@@ -442,11 +618,11 @@ export default function SortPage() {
             )}
             
             {/* 上传成功提示 */}
-            {uploadMessage && <div className="upload-toast">{uploadMessage}</div>}
+            {uploadMessage && <div style={pageStyles.uploadToast}>{uploadMessage}</div>}
 
             {/* 空状态 */}
             {!selectedProject && (
-              <div className="empty-state">
+              <div style={pageStyles.emptyState}>
                 <ArrowUpDown size={48} />
                 <p>请选择一个项目来排序截图</p>
               </div>
@@ -454,26 +630,41 @@ export default function SortPage() {
 
             {/* 加载中 */}
             {selectedProject && loading && (
-              <div className="loading-state"><div className="spinner" /></div>
+              <div style={pageStyles.loadingState}><div className="spinner" /></div>
             )}
 
             {/* 错误 */}
-            {error && <div className="error-message">{error}</div>}
+            {error && <div style={pageStyles.errorMessage}>{error}</div>}
 
             {/* 已删除面板 */}
             <AnimatePresence>
               {showDeleted && deletedBatches.length > 0 && (
-                <div className="deleted-panel">
-                  <h3>已删除的截图</h3>
-                  {deletedBatches.map((batch) => (
-                    <div key={batch.timestamp} className="deleted-batch">
+                <div style={pageStyles.deletedPanel}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>已删除的截图</h3>
+                      {deletedBatches.map((batch) => (
+                    <div key={batch.timestamp} style={pageStyles.deletedBatch}>
                       <span>{batch.count} 张截图 - {batch.timestamp}</span>
-                      <button onClick={() => selectedProject && restoreBatch(selectedProject, batch.timestamp)} disabled={saving}>
+                      <button 
+                        onClick={() => selectedProject && restoreBatch(selectedProject, batch.timestamp)} 
+                        disabled={saving}
+                          style={{
+                          padding: '4px 8px',
+                          fontSize: '12px',
+                          background: 'transparent',
+                          border: '1px solid var(--border-default)',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                          gap: '4px',
+                          color: 'var(--text-primary)',
+                        }}
+                          >
                         <RotateCcw size={12} />恢复
-                      </button>
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
               )}
             </AnimatePresence>
 
@@ -488,26 +679,26 @@ export default function SortPage() {
                 <SortableContext items={sortedScreenshots.map(s => s.filename)} strategy={rectSortingStrategy}>
                   <div
                     ref={gridRef}
-                    className="sort-grid"
                     style={{
+                      ...pageStyles.sortGrid,
                       gridTemplateColumns: `repeat(auto-fill, minmax(${getCardMinWidth(zoom)}px, 1fr))`,
                       gap: `${Math.round(10 * (zoom / 100))}px`,
                     }}
                   >
                     {sortedScreenshots.map((screenshot, index) => (
                       <div key={screenshot.filename} style={{ position: 'relative' }}>
-                        {isDragOver && dropTargetIndex === index && <div className="drop-indicator" />}
+                        {isDragOver && dropTargetIndex === index && <div style={pageStyles.dropIndicator} />}
                         <div data-screenshot-card>
-                          <SortableScreenshot
-                            screenshot={screenshot}
-                            projectName={selectedProject}
-                            index={index}
-                            isSelected={selectedFiles.has(screenshot.filename)}
+                      <SortableScreenshot
+                        screenshot={screenshot}
+                        projectName={selectedProject}
+                        index={index}
+                        isSelected={selectedFiles.has(screenshot.filename)}
                             isNewlyAdded={screenshot.filename === newlyAdded}
                             onCardClick={(e) => handleCardClick(e, index, screenshot.filename)}
-                            onboardingStart={onboardingRange.start}
-                            onboardingEnd={onboardingRange.end}
-                          />
+                        onboardingStart={onboardingRange.start}
+                        onboardingEnd={onboardingRange.end}
+                      />
                         </div>
                       </div>
                     ))}
@@ -524,7 +715,7 @@ export default function SortPage() {
 
             {/* 空列表 */}
             {selectedProject && !loading && sortedScreenshots.length === 0 && (
-              <div className="empty-state">该项目没有截图</div>
+              <div style={pageStyles.emptyState}>该项目没有截图</div>
             )}
           </div>
         </div>
@@ -560,137 +751,6 @@ export default function SortPage() {
         )}
       </AnimatePresence>
 
-      <style jsx>{`
-        .pending-sidebar {
-          width: 280px;
-          flex-shrink: 0;
-          border-right: 1px solid var(--border-default);
-          overflow-y: auto;
-          padding: 12px;
-        }
-        .main-content {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-        }
-        .topbar-actions {
-          display: flex;
-          gap: 8px;
-          margin-left: 16px;
-        }
-        .content-area {
-          flex: 1;
-          overflow: auto;
-          position: relative;
-        }
-        .drop-overlay {
-          position: absolute;
-          inset: 0;
-          background: rgba(245, 158, 11, 0.05);
-          border: 3px dashed #f59e0b;
-          border-radius: 12px;
-          z-index: 5;
-          display: flex;
-          align-items: flex-start;
-          justify-content: center;
-          padding-top: 20px;
-          pointer-events: none;
-        }
-        .drop-message {
-          background: rgba(0,0,0,0.9);
-          padding: 12px 24px;
-          border-radius: 8px;
-          color: #f59e0b;
-          font-size: 14px;
-          font-weight: 500;
-        }
-        .upload-toast {
-          position: fixed;
-          bottom: 24px;
-          left: 50%;
-          transform: translateX(-50%);
-          background: #22c55e;
-          color: #fff;
-          padding: 12px 24px;
-          border-radius: 8px;
-          font-size: 14px;
-          font-weight: 500;
-          z-index: 100;
-          box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4);
-        }
-        .empty-state {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          height: 400px;
-          color: var(--text-muted);
-          gap: 16px;
-        }
-        .loading-state {
-          display: flex;
-          height: 256px;
-          align-items: center;
-          justify-content: center;
-        }
-        .error-message {
-          padding: 12px 16px;
-          background: rgba(239, 68, 68, 0.2);
-          color: var(--danger);
-          border-radius: 8px;
-          margin-bottom: 16px;
-        }
-        .deleted-panel {
-          background: var(--bg-card);
-          border-radius: 8px;
-          margin-bottom: 16px;
-          padding: 16px;
-        }
-        .deleted-panel h3 {
-          font-size: 14px;
-          font-weight: 600;
-          margin-bottom: 12px;
-        }
-        .deleted-batch {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 8px 12px;
-          background: var(--bg-secondary);
-          border-radius: 6px;
-          margin-top: 8px;
-          font-size: 13px;
-        }
-        .deleted-batch button {
-          padding: 4px 8px;
-          font-size: 12px;
-          background: transparent;
-          border: 1px solid var(--border-default);
-          border-radius: 4px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          color: var(--text-primary);
-        }
-        .sort-grid {
-          display: grid;
-          position: relative;
-          transition: gap 200ms ease;
-        }
-        .drop-indicator {
-          position: absolute;
-          left: -6px;
-          top: 0;
-          bottom: 0;
-          width: 4px;
-          background: #f59e0b;
-          border-radius: 2px;
-          z-index: 10;
-          box-shadow: 0 0 10px rgba(245, 158, 11, 0.8);
-        }
-      `}</style>
     </AppLayout>
   )
 }

@@ -88,28 +88,39 @@ export function PreviewPanel({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: '16px',
+          padding: '8px',
           overflow: 'hidden',
+          minHeight: 0, // 关键：允许 flex 子元素收缩
         }}
       >
         <AnimatePresence mode="wait">
           {screenshot ? (
-            <motion.img
+            <motion.div
               key={screenshot.filename}
-              src={getScreenshotUrl(projectName, screenshot.filename)}
-              alt={screenshot.filename}
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ duration: 0.15 }}
               style={{
-                maxWidth: '100%',
-                maxHeight: '100%',
-                objectFit: 'contain',
-                borderRadius: '8px',
-                boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+                width: '100%',
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
               }}
-            />
+            >
+              <img
+                src={getScreenshotUrl(projectName, screenshot.filename)}
+                alt={screenshot.filename}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  borderRadius: '12px',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                }}
+              />
+            </motion.div>
           ) : (
             <span style={{ color: '#6b7280', fontSize: '13px' }}>
               点击卡片查看大图

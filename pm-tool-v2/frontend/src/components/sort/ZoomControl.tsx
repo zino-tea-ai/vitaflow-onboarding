@@ -1,8 +1,57 @@
 'use client'
 
+import { useState } from 'react'
 import { ZoomIn, ZoomOut } from 'lucide-react'
 import { ZOOM_CONFIG } from '@/types/sort'
 import type { ZoomControlProps } from '@/types/sort'
+
+// 内联样式定义
+const styles = {
+  container: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '4px 8px',
+    background: 'var(--bg-secondary)',
+    borderRadius: '8px',
+  },
+  btn: {
+    padding: '4px',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: '4px',
+    color: 'var(--text-secondary)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'color 150ms, background 150ms',
+  },
+  btnDisabled: {
+    color: 'var(--text-muted)',
+    cursor: 'not-allowed',
+  },
+  btnHover: {
+    background: 'rgba(255,255,255,0.1)',
+    color: 'var(--text-primary)',
+  },
+  value: {
+    padding: '2px 8px',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: '4px',
+    color: 'var(--text-primary)',
+    cursor: 'pointer',
+    fontSize: '12px',
+    fontFamily: 'var(--font-mono)',
+    fontWeight: 500,
+    minWidth: '48px',
+    transition: 'background 150ms',
+  },
+  valueChanged: {
+    background: 'rgba(59, 130, 246, 0.2)',
+  },
+}
 
 export function ZoomControl({
   zoom,
@@ -15,13 +64,20 @@ export function ZoomControl({
   const isAtMin = zoom <= min
   const isAtMax = zoom >= max
   const isDefault = zoom === ZOOM_CONFIG.default
+  const [hoveredBtn, setHoveredBtn] = useState<string | null>(null)
 
   return (
-    <div className="zoom-control">
+    <div style={styles.container}>
       <button
         onClick={onZoomOut}
         disabled={isAtMin}
-        className={`zoom-control__btn ${isAtMin ? 'zoom-control__btn--disabled' : ''}`}
+        style={{
+          ...styles.btn,
+          ...(isAtMin ? styles.btnDisabled : {}),
+          ...(hoveredBtn === 'out' && !isAtMin ? styles.btnHover : {}),
+        }}
+        onMouseEnter={() => setHoveredBtn('out')}
+        onMouseLeave={() => setHoveredBtn(null)}
         title="缩小 (Ctrl+-)"
       >
         <ZoomOut size={16} />
@@ -29,7 +85,13 @@ export function ZoomControl({
       
       <button
         onClick={onReset}
-        className={`zoom-control__value ${!isDefault ? 'zoom-control__value--changed' : ''}`}
+        style={{
+          ...styles.value,
+          ...(!isDefault ? styles.valueChanged : {}),
+          ...(hoveredBtn === 'reset' ? { background: 'rgba(255,255,255,0.1)' } : {}),
+        }}
+        onMouseEnter={() => setHoveredBtn('reset')}
+        onMouseLeave={() => setHoveredBtn(null)}
         title="重置缩放 (Ctrl+0)"
       >
         {zoom}%
@@ -38,61 +100,17 @@ export function ZoomControl({
       <button
         onClick={onZoomIn}
         disabled={isAtMax}
-        className={`zoom-control__btn ${isAtMax ? 'zoom-control__btn--disabled' : ''}`}
+        style={{
+          ...styles.btn,
+          ...(isAtMax ? styles.btnDisabled : {}),
+          ...(hoveredBtn === 'in' && !isAtMax ? styles.btnHover : {}),
+        }}
+        onMouseEnter={() => setHoveredBtn('in')}
+        onMouseLeave={() => setHoveredBtn(null)}
         title="放大 (Ctrl++)"
       >
         <ZoomIn size={16} />
       </button>
-
-      <style jsx>{`
-        .zoom-control {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          padding: 4px 8px;
-          background: var(--bg-secondary);
-          border-radius: 8px;
-        }
-        .zoom-control__btn {
-          padding: 4px;
-          background: transparent;
-          border: none;
-          border-radius: 4px;
-          color: var(--text-secondary);
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          transition: color 150ms, background 150ms;
-        }
-        .zoom-control__btn:hover:not(.zoom-control__btn--disabled) {
-          background: rgba(255,255,255,0.1);
-          color: var(--text-primary);
-        }
-        .zoom-control__btn--disabled {
-          color: var(--text-muted);
-          cursor: not-allowed;
-        }
-        .zoom-control__value {
-          padding: 2px 8px;
-          background: transparent;
-          border: none;
-          border-radius: 4px;
-          color: var(--text-primary);
-          cursor: pointer;
-          font-size: 12px;
-          font-family: var(--font-mono);
-          font-weight: 500;
-          min-width: 48px;
-          transition: background 150ms;
-        }
-        .zoom-control__value:hover {
-          background: rgba(255,255,255,0.1);
-        }
-        .zoom-control__value--changed {
-          background: rgba(59, 130, 246, 0.2);
-        }
-      `}</style>
     </div>
   )
 }

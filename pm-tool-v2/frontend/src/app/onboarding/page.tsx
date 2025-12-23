@@ -834,8 +834,9 @@ export default function OnboardingPage() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                padding: '24px',
+                padding: '60px 80px',
                 position: 'relative',
+                minHeight: 0,
               }}
               onClick={(e) => e.stopPropagation()}
             >
@@ -850,10 +851,12 @@ export default function OnboardingPage() {
                 )}
                 alt={screenshots[viewerIndex].filename}
                 style={{
-                  maxHeight: '100%',
+                  height: '100%',
+                  width: 'auto',
                   maxWidth: '100%',
                   objectFit: 'contain',
-                  borderRadius: '8px',
+                  borderRadius: '16px',
+                  boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
                 }}
               />
 

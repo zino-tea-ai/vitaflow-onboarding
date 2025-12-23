@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import projects, screenshots, onboarding, sort, classify, store, export, pending
+from app.routers import projects, screenshots, onboarding, sort, classify, store, export, pending, branch, analysis, vision, builder
 
 
 # 创建 FastAPI 应用
@@ -36,6 +36,10 @@ app.include_router(classify.router, prefix="/api", tags=["Classification"])
 app.include_router(store.router, prefix="/api", tags=["Store"])
 app.include_router(export.router, prefix="/api", tags=["Export"])
 app.include_router(pending.router, prefix="/api", tags=["Pending"])
+app.include_router(branch.router, prefix="/api", tags=["Branch"])
+app.include_router(analysis.router, prefix="/api", tags=["Analysis"])
+app.include_router(vision.router, prefix="/api", tags=["Vision Analysis"])
+app.include_router(builder.router, prefix="/api", tags=["Builder"])
 app.include_router(projects.router, prefix="/api", tags=["Projects"])
 
 

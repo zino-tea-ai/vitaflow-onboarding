@@ -29,20 +29,26 @@ function buildQueryString(params: object): string {
  * 通用请求函数
  */
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
-  })
+  const url = `${API_BASE}${endpoint}`
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(error.detail || `API Error: ${response.status}`)
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options?.headers,
+      },
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }))
+      throw new Error(error.detail || `API Error: ${response.status}`)
+    }
+
+    return response.json()
+  } catch (err) {
+    throw err
   }
-
-  return response.json()
 }
 
 // ==================== 项目 API ====================
@@ -79,22 +85,22 @@ export async function getScreenshots(
 }
 
 /**
- * 获取截图 URL
+ * 缓存版本号 - 在应用排序后更新，用于强制刷新图片
+ */
+let imageCacheVersion = Date.now()
+
+/**
+ * 获取截图 URL（大图）
  */
 export function getScreenshotUrl(projectName: string, filename: string): string {
-  return `${API_BASE}/screenshots/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`
+  return `${API_BASE}/screenshots/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}?v=${imageCacheVersion}`
 }
 
 /**
- * 缓存版本号 - 在应用排序后更新
- */
-let thumbnailCacheVersion = Date.now()
-
-/**
- * 更新缩略图缓存版本（强制刷新所有缩略图）
+ * 更新图片缓存版本（强制刷新所有图片，包括大图和缩略图）
  */
 export function invalidateThumbnailCache(): void {
-  thumbnailCacheVersion = Date.now()
+  imageCacheVersion = Date.now()
 }
 
 /**
@@ -105,7 +111,7 @@ export function getThumbnailUrl(
   filename: string,
   size: 'small' | 'medium' | 'large' = 'small'
 ): string {
-  return `${API_BASE}/thumbnails/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}?size=${size}&v=${thumbnailCacheVersion}`
+  return `${API_BASE}/thumbnails/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}?size=${size}&v=${imageCacheVersion}`
 }
 
 // ==================== Onboarding API ====================
@@ -475,7 +481,7 @@ export async function uploadScreenshot(
   formData.append('project', project)
   formData.append('file', file)
   
-  const response = await fetch(`${API_BASE}/api/upload-screenshot`, {
+  const response = await fetch(`${API_BASE}/upload-screenshot`, {
     method: 'POST',
     body: formData,
   })
@@ -513,4 +519,11 @@ export async function saveApowersoftConfig(
  */
 export async function importFromApowersoft(): Promise<{ success: boolean; imported: number }> {
   return fetchApi('/import-from-apowersoft', { method: 'POST' })
+}
+
+/**
+ * 清除傲软目录中的所有截图
+ */
+export async function clearPendingScreenshots(): Promise<{ success: boolean; deleted: number; message: string }> {
+  return fetchApi('/clear-pending-screenshots', { method: 'POST' })
 }

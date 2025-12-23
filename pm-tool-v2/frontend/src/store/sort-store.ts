@@ -52,6 +52,7 @@ interface SortState {
   nextPreview: () => void
   reset: () => void
   insertScreenshotAt: (screenshot: Screenshot, index: number) => void
+  appendScreenshot: (screenshot: Screenshot) => void
 }
 
 const initialState = {
@@ -288,6 +289,14 @@ export const useSortStore = create<SortState>((set, get) => ({
       sortedScreenshots: newSorted,
       hasChanges: true,
     })
+  },
+
+  appendScreenshot: (screenshot: Screenshot) => {
+    // 使用 set 函数形式确保获取最新状态（Zustand 最佳实践）
+    set((state) => ({
+      sortedScreenshots: [...state.sortedScreenshots, screenshot],
+      hasChanges: true,
+    }))
   },
 }))
 

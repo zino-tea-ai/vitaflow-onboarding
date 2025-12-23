@@ -22,11 +22,12 @@ def get_all_projects() -> list[Project]:
         for item in settings.downloads_dir.iterdir():
             if item.is_dir() and "_backup" not in item.name:
                 project = _load_project_from_downloads_dir(item)
-                if project and project.screen_count > 0:
+                if project:
+                    # 显示所有项目，包括空项目（screen_count = 0）
                     projects.append(project)
     
-    # 按截图数量排序
-    projects.sort(key=lambda x: -x.screen_count)
+    # 按截图数量排序（空项目排在最后）
+    projects.sort(key=lambda x: (-x.screen_count if x.screen_count > 0 else float('inf')))
     
     return projects
 

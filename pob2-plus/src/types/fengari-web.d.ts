@@ -40,3 +40,28 @@ declare module 'fengari-web' {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

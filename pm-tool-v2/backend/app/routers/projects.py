@@ -24,7 +24,18 @@ async def list_projects(
     - **search**: 按名称搜索
     - **checked**: 过滤检查状态
     """
+    # #region agent log
+    import json as _json
+    with open(r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log", "a", encoding="utf-8") as _f:
+        _f.write(_json.dumps({"location":"projects.py:list_projects","message":"API_CALLED","data":{"source":source,"search":search},"timestamp":__import__("time").time()*1000,"hypothesisId":"A"}) + "\n")
+    # #endregion
+    
     projects = get_all_projects()
+    
+    # #region agent log
+    with open(r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log", "a", encoding="utf-8") as _f:
+        _f.write(_json.dumps({"location":"projects.py:list_projects","message":"PROJECTS_LOADED","data":{"count":len(projects)},"timestamp":__import__("time").time()*1000,"hypothesisId":"A"}) + "\n")
+    # #endregion
     
     # 过滤
     if source:

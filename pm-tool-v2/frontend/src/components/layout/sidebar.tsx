@@ -6,7 +6,7 @@ import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useProjectStore } from '@/store/project-store'
-import { Home, Settings, LayoutGrid, Play, ArrowUpDown, Tags, Store } from 'lucide-react'
+import { Home, Settings, LayoutGrid, Play, ArrowUpDown, Tags, Store, GitBranch, FlaskConical, BarChart3, Sparkles, Smartphone } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001'
 
@@ -93,6 +93,16 @@ export function Sidebar() {
               <span className="project-name">分类</span>
             </motion.div>
           </Link>
+          <Link href="/branch">
+            <motion.div
+              className={`project-item ${pathname === '/branch' ? 'active' : ''}`}
+              whileHover={{ x: 2 }}
+              transition={{ duration: 0.15 }}
+            >
+              <GitBranch size={18} style={{ opacity: 0.7 }} />
+              <span className="project-name">分支流程</span>
+            </motion.div>
+          </Link>
           <Link href="/store">
             <motion.div
               className={`project-item ${pathname === '/store' ? 'active' : ''}`}
@@ -101,6 +111,50 @@ export function Sidebar() {
             >
               <Store size={18} style={{ opacity: 0.7 }} />
               <span className="project-name">商店对比</span>
+            </motion.div>
+          </Link>
+          <Link href="/flow-lab">
+            <motion.div
+              className={`project-item ${pathname === '/flow-lab' ? 'active' : ''}`}
+              whileHover={{ x: 2 }}
+              transition={{ duration: 0.15 }}
+            >
+              <FlaskConical size={18} style={{ opacity: 0.7, color: '#f59e0b' }} />
+              <span className="project-name">Flow Lab</span>
+              <span style={{ fontSize: '10px', color: '#f59e0b', marginLeft: '4px' }}>实验</span>
+            </motion.div>
+          </Link>
+          <Link href="/analysis/compare">
+            <motion.div
+              className={`project-item ${pathname.startsWith('/analysis') ? 'active' : ''}`}
+              whileHover={{ x: 2 }}
+              transition={{ duration: 0.15 }}
+            >
+              <BarChart3 size={18} style={{ opacity: 0.7, color: '#ec4899' }} />
+              <span className="project-name">竞品分析</span>
+              <span style={{ fontSize: '10px', color: '#ec4899', marginLeft: '4px' }}>NEW</span>
+            </motion.div>
+          </Link>
+          <Link href="/builder">
+            <motion.div
+              className={`project-item ${pathname === '/builder' ? 'active' : ''}`}
+              whileHover={{ x: 2 }}
+              transition={{ duration: 0.15 }}
+            >
+              <Sparkles size={18} style={{ opacity: 0.7, color: '#a855f7' }} />
+              <span className="project-name">构建器</span>
+              <span style={{ fontSize: '10px', color: '#a855f7', marginLeft: '4px' }}>NEW</span>
+            </motion.div>
+          </Link>
+          <Link href="/onboarding-demo">
+            <motion.div
+              className={`project-item ${pathname === '/onboarding-demo' ? 'active' : ''}`}
+              whileHover={{ x: 2 }}
+              transition={{ duration: 0.15 }}
+            >
+              <Smartphone size={18} style={{ opacity: 0.7, color: '#ec4899' }} />
+              <span className="project-name">VitaFlow Demo</span>
+              <span style={{ fontSize: '10px', color: '#ec4899', marginLeft: '4px' }}>🎯</span>
             </motion.div>
           </Link>
         </nav>

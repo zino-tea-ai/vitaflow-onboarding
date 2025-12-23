@@ -314,6 +314,30 @@ async def save_config(config: ApowersoftConfig):
     return {"success": True, "message": "配置已保存"}
 
 
+@router.post("/clear-pending-screenshots")
+async def clear_pending_screenshots():
+    """清除傲软目录中的所有截图"""
+    source_path = detect_apowersoft_folder()
+    
+    if not source_path or not os.path.exists(source_path):
+        raise HTTPException(status_code=400, detail="傲软目录未配置或不存在")
+
+    deleted = 0
+    errors = []
+    for filename in os.listdir(source_path):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            file_path = os.path.join(source_path, filename)
+            if os.path.isfile(file_path):
+                try:
+                    os.remove(file_path)
+                    deleted += 1
+                except Exception as e:
+                    errors.append(str(e))
+                    print(f"删除文件失败: {file_path}, 错误: {e}")
+    
+    return {"success": True, "deleted": deleted, "message": f"已清除 {deleted} 张截图"}
+
+
 @router.post("/import-from-apowersoft")
 async def import_all_from_apowersoft():
     """从傲软目录导入所有截图到待处理区"""

@@ -23,6 +23,19 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8001
     
+    # AI API Keys (支持多种环境变量名称)
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 如果 PM_TOOL_ 前缀的变量为空，尝试读取标准环境变量
+        import os
+        if not self.openai_api_key or self.openai_api_key == "your_openai_api_key_here":
+            self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not self.anthropic_api_key or self.anthropic_api_key == "your_anthropic_api_key_here":
+            self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    
     # 数据目录 - 使用独立的数据副本（不再依赖老版本）
     data_dir: Path = _DATA_DIR
     

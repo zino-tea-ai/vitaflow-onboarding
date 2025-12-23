@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   getPendingScreenshots,
@@ -8,6 +8,7 @@ import {
   importScreenshot,
   getApowersoftConfig,
   saveApowersoftConfig,
+  clearPendingScreenshots,
   type PendingScreenshot,
   type ApowersoftConfig,
 } from '@/lib/api'
@@ -17,15 +18,19 @@ import {
   RefreshCw,
   Check,
   ImageIcon,
+  Trash2,
+  Zap,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
 interface PendingPanelProps {
   selectedProject: string | null
   onImportSuccess: () => void
+  onAppendScreenshot?: (filename: string) => void // 自动导入时追加截图到父组件
+  externalImportedFile?: string | null // 外部导入的文件名（通过拖拽导入）
 }
 
-export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelProps) {
+export function PendingPanel({ selectedProject, onImportSuccess, onAppendScreenshot, externalImportedFile }: PendingPanelProps) {
   const [screenshots, setScreenshots] = useState<PendingScreenshot[]>([])
   const [loading, setLoading] = useState(false)
   const [config, setConfig] = useState<ApowersoftConfig | null>(null)
@@ -34,19 +39,89 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
   const [saving, setSaving] = useState(false)
   const [importing, setImporting] = useState<string | null>(null)
   const [lastImported, setLastImported] = useState<string | null>(null)
+  const [importedFiles, setImportedFiles] = useState<Set<string>>(new Set()) // 已导入的文件列表
+  
+  // 自动导入模式
+  const [autoImport, setAutoImport] = useState(false)
+  const knownFilesRef = useRef<Set<string>>(new Set()) // 使用 ref 避免 stale closure
+  const isAutoImportingRef = useRef(false) // 锁机制防止并发
+  const selectedProjectRef = useRef(selectedProject) // 保持最新引用
+
+  // 同步 selectedProject 到 ref
+  useEffect(() => {
+    selectedProjectRef.current = selectedProject
+    // 切换项目时关闭自动导入
+    if (!selectedProject) {
+      setAutoImport(false)
+    }
+  }, [selectedProject])
+
+  // 处理外部导入（从拖拽导入）
+  useEffect(() => {
+    if (externalImportedFile) {
+      setImportedFiles(prev => new Set(prev).add(externalImportedFile))
+    }
+  }, [externalImportedFile])
+
+  // 自动导入新截图
+  const autoImportNewFiles = useCallback(async (newScreenshots: PendingScreenshot[]) => {
+    const currentProject = selectedProjectRef.current
+    if (!currentProject || isAutoImportingRef.current) return
+    
+    // 检测新文件
+    const newFiles = newScreenshots.filter(s => !knownFilesRef.current.has(s.filename))
+    if (newFiles.length === 0) return
+    
+    // 按创建时间排序（确保顺序正确）
+    const sortedNewFiles = newFiles.sort((a, b) => 
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    )
+    
+    isAutoImportingRef.current = true
+    
+    try {
+      for (const file of sortedNewFiles) {
+        // 再次检查项目是否改变
+        if (selectedProjectRef.current !== currentProject) break
+        
+        const result = await importScreenshot(currentProject, file.filename)
+        if (result.success && result.new_filename) {
+          // 使用父组件回调追加截图，确保使用同一个 store 实例
+          if (onAppendScreenshot) {
+            onAppendScreenshot(result.new_filename)
+          }
+          
+          setImportedFiles(prev => new Set(prev).add(file.filename))
+          setLastImported(result.new_filename)
+          toast.success(`自动导入 ${result.new_filename}`, { duration: 1500 })
+        }
+      }
+    } finally {
+      isAutoImportingRef.current = false
+    }
+  }, [onAppendScreenshot])
 
   // 加载待处理截图
   const loadPending = useCallback(async () => {
     setLoading(true)
     try {
       const data = await getPendingScreenshots()
+      const currentFiles = new Set(data.screenshots.map(s => s.filename))
+      
+      // 自动导入模式：检测并导入新文件
+      if (autoImport && selectedProjectRef.current) {
+        await autoImportNewFiles(data.screenshots)
+      }
+      
+      // 更新已知文件列表
+      knownFilesRef.current = currentFiles
       setScreenshots(data.screenshots)
     } catch (error) {
       console.error('Failed to load pending screenshots:', error)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [autoImport, autoImportNewFiles])
 
   // 加载配置
   const loadConfig = useCallback(async () => {
@@ -64,10 +139,30 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
     loadPending()
     loadConfig()
     
-    // 每 10 秒刷新一次
-    const interval = setInterval(loadPending, 10000)
+    // 每 1 秒刷新一次
+    const interval = setInterval(loadPending, 1000)
     return () => clearInterval(interval)
   }, [loadPending, loadConfig])
+  
+  // 切换自动导入模式
+  const toggleAutoImport = useCallback(() => {
+    if (!selectedProject) {
+      toast.error('请先选择一个项目')
+      return
+    }
+    
+    setAutoImport(prev => {
+      const newValue = !prev
+      if (newValue) {
+        // 开启时，记录当前所有文件为已知（不导入旧文件）
+        knownFilesRef.current = new Set(screenshots.map(s => s.filename))
+        toast.success('自动导入已开启：新截图将自动追加到项目末尾')
+      } else {
+        toast.info('自动导入已关闭')
+      }
+      return newValue
+    })
+  }, [selectedProject, screenshots])
 
   // 保存配置
   const handleSaveConfig = async () => {
@@ -82,6 +177,30 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
       toast.error('保存配置失败: ' + (error as Error).message)
     } finally {
       setSaving(false)
+    }
+  }
+
+  // 清除所有待处理截图
+  const handleClearAll = async () => {
+    if (screenshots.length === 0) {
+      toast.info('没有需要清除的截图')
+      return
+    }
+    
+    if (!confirm(`确定要清除全部 ${screenshots.length} 张待处理截图吗？\n\n此操作不可恢复！`)) {
+      return
+    }
+    
+    try {
+      const result = await clearPendingScreenshots()
+      if (result.success) {
+        toast.success(result.message)
+        setImportedFiles(new Set()) // 清空已导入标记
+        await loadPending()
+      }
+    } catch (error) {
+      console.error('Failed to clear screenshots:', error)
+      toast.error('清除失败: ' + (error as Error).message)
     }
   }
 
@@ -100,6 +219,9 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
         setLastImported(result.new_filename || filename)
         toast.success(`已导入 ${result.new_filename || filename}`)
         setTimeout(() => setLastImported(null), 3000)
+        
+        // 标记为已导入
+        setImportedFiles(prev => new Set(prev).add(filename))
         
         await loadPending()
         onImportSuccess()
@@ -129,6 +251,9 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
         background: 'var(--bg-card)',
         borderRadius: '8px',
         overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
       }}
     >
       {/* 标题栏 */}
@@ -160,6 +285,24 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
         </div>
 
         <div style={{ display: 'flex', gap: '4px' }}>
+          {/* 自动导入开关 */}
+          <button
+            onClick={toggleAutoImport}
+            disabled={!selectedProject}
+            style={{
+              padding: '4px',
+              background: autoImport ? 'var(--warning)' : 'transparent',
+              border: 'none',
+              color: autoImport ? '#000' : (selectedProject ? 'var(--text-muted)' : 'var(--text-muted)'),
+              cursor: selectedProject ? 'pointer' : 'not-allowed',
+              borderRadius: '4px',
+              opacity: selectedProject ? 1 : 0.5,
+              transition: 'all 0.2s',
+            }}
+            title={autoImport ? '关闭自动导入' : '开启自动导入（新截图自动追加到末尾）'}
+          >
+            <Zap size={14} />
+          </button>
           <button
             onClick={loadPending}
             disabled={loading}
@@ -174,6 +317,22 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
             title="刷新"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
+          <button
+            onClick={handleClearAll}
+            disabled={screenshots.length === 0}
+            style={{
+              padding: '4px',
+              background: 'transparent',
+              border: 'none',
+              color: screenshots.length > 0 ? 'var(--error)' : 'var(--text-muted)',
+              cursor: screenshots.length > 0 ? 'pointer' : 'not-allowed',
+              borderRadius: '4px',
+              opacity: screenshots.length === 0 ? 0.5 : 1,
+            }}
+            title="清除全部"
+          >
+            <Trash2 size={14} />
           </button>
           <button
             onClick={() => setShowConfig(!showConfig)}
@@ -261,7 +420,7 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
       <div
         style={{
           padding: '12px',
-          maxHeight: '300px',
+          flex: 1,
           overflowY: 'auto',
         }}
       >
@@ -287,7 +446,9 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
               gap: '10px',
             }}
           >
-            {screenshots.slice(0, 12).map((screenshot) => (
+            {screenshots.slice(0, 12).map((screenshot) => {
+              const isImported = importedFiles.has(screenshot.filename)
+              return (
               <div
                 key={screenshot.filename}
                 draggable={!!selectedProject}
@@ -299,10 +460,11 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
                   overflow: 'hidden',
                   cursor: selectedProject ? 'grab' : 'not-allowed',
                   position: 'relative',
-                  opacity: importing === screenshot.filename ? 0.5 : 1,
+                  opacity: importing === screenshot.filename ? 0.5 : isImported ? 0.6 : 1,
                   transition: 'transform 0.15s, box-shadow 0.15s',
+                  border: isImported ? '2px solid var(--success)' : 'none',
                 }}
-                title={selectedProject ? `拖拽到右侧排序区域导入` : '请先选择项目'}
+                title={isImported ? '已导入' : (selectedProject ? `拖拽到右侧排序区域导入` : '请先选择项目')}
                 onMouseEnter={(e) => {
                   if (selectedProject) {
                     e.currentTarget.style.transform = 'scale(1.05)'
@@ -351,8 +513,27 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
                     <RefreshCw size={16} className="animate-spin" style={{ color: '#fff' }} />
                   </div>
                 )}
+                {/* 已导入标记 */}
+                {isImported && !importing && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: '4px',
+                      right: '4px',
+                      background: 'var(--success)',
+                      borderRadius: '50%',
+                      width: '20px',
+                      height: '20px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Check size={12} style={{ color: '#fff' }} />
+                  </div>
+                )}
               </div>
-            ))}
+            )})}
           </div>
         )}
 
@@ -371,26 +552,27 @@ export function PendingPanel({ selectedProject, onImportSuccess }: PendingPanelP
       </div>
 
       {/* 底部提示 */}
-      {screenshots.length > 0 && (
         <div
           style={{
             padding: '8px 12px',
             borderTop: '1px solid var(--border-default)',
             fontSize: '11px',
-            color: lastImported ? 'var(--success)' : 'var(--text-muted)',
+          color: autoImport ? 'var(--warning)' : (lastImported ? 'var(--success)' : 'var(--text-muted)'),
             textAlign: 'center',
             transition: 'color 0.2s',
+          background: autoImport ? 'rgba(251, 191, 36, 0.1)' : 'transparent',
           }}
         >
-          {lastImported ? (
+        {autoImport ? (
+          <>⚡ 自动导入中... 截图将自动追加</>
+        ) : lastImported ? (
             <>✓ 已导入 {lastImported}</>
           ) : selectedProject ? (
-            <>拖拽到右侧导入到项目</>
+          <>拖拽到右侧导入 或 点击 ⚡ 开启自动导入</>
           ) : (
             <>请先选择项目</>
           )}
         </div>
-      )}
     </div>
   )
 }

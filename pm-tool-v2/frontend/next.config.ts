@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:8001/api/:path*',
+        destination: 'http://localhost:8002/api/:path*',
       },
     ]
   },
@@ -17,7 +17,7 @@ const nextConfig: NextConfig = {
       {
         protocol: 'http',
         hostname: 'localhost',
-        port: '8001',
+        port: '8002',
       },
     ],
   },

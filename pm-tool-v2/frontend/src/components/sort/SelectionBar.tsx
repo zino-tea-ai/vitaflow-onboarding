@@ -4,6 +4,60 @@ import { motion } from 'framer-motion'
 import { CheckSquare, X, Trash2 } from 'lucide-react'
 import type { SelectionBarProps } from '@/types/sort'
 
+// 内联样式定义（替代 style jsx 解决 scoped CSS 问题）
+const styles = {
+  bar: {
+    position: 'fixed' as const,
+    bottom: '24px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: 'rgba(30, 30, 30, 0.95)',
+    backdropFilter: 'blur(12px)',
+    borderRadius: '12px',
+    padding: '12px 20px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255,255,255,0.1)',
+    zIndex: 1000,
+  },
+  info: {
+    color: '#fff',
+    fontSize: '14px',
+    fontWeight: 500,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  icon: {
+    color: '#3b82f6',
+  },
+  divider: {
+    width: '1px',
+    height: '24px',
+    background: 'rgba(255,255,255,0.2)',
+  },
+  btn: {
+    padding: '8px 16px',
+    border: 'none',
+    borderRadius: '8px',
+    fontSize: '13px',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    transition: 'background 150ms, opacity 150ms',
+  },
+  btnSecondary: {
+    background: 'rgba(255,255,255,0.1)',
+    color: '#fff',
+  },
+  btnDanger: {
+    background: '#ef4444',
+    color: '#fff',
+  },
+}
+
 export function SelectionBar({
   selectedCount,
   onDeselect,
@@ -18,18 +72,18 @@ export function SelectionBar({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 50 }}
       transition={{ duration: 0.2, ease: [0.25, 1, 0.5, 1] }}
-      className="selection-bar"
+      style={styles.bar}
     >
-      <span className="selection-bar__info">
-        <CheckSquare size={18} className="selection-bar__icon" />
+      <span style={styles.info}>
+        <CheckSquare size={18} style={styles.icon} />
         已选择 {selectedCount} 张截图
       </span>
       
-      <div className="selection-bar__divider" />
+      <div style={styles.divider} />
       
       <button
         onClick={onDeselect}
-        className="selection-bar__btn selection-bar__btn--secondary"
+        style={{ ...styles.btn, ...styles.btnSecondary }}
       >
         <X size={14} />
         取消选择
@@ -38,74 +92,16 @@ export function SelectionBar({
       <button
         onClick={onDelete}
         disabled={disabled}
-        className="selection-bar__btn selection-bar__btn--danger"
+        style={{ 
+          ...styles.btn, 
+          ...styles.btnDanger,
+          opacity: disabled ? 0.6 : 1,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+        }}
       >
         <Trash2 size={14} />
         删除选中
       </button>
-
-      <style jsx>{`
-        .selection-bar {
-          position: fixed;
-          bottom: 24px;
-          left: 50%;
-          transform: translateX(-50%);
-          background: rgba(30, 30, 30, 0.95);
-          backdrop-filter: blur(12px);
-          border-radius: 12px;
-          padding: 12px 20px;
-          display: flex;
-          align-items: center;
-          gap: 16px;
-          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255,255,255,0.1);
-          z-index: 1000;
-        }
-        .selection-bar__info {
-          color: #fff;
-          font-size: 14px;
-          font-weight: 500;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .selection-bar__icon {
-          color: #3b82f6;
-        }
-        .selection-bar__divider {
-          width: 1px;
-          height: 24px;
-          background: rgba(255,255,255,0.2);
-        }
-        .selection-bar__btn {
-          padding: 8px 16px;
-          border: none;
-          border-radius: 8px;
-          font-size: 13px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          transition: background 150ms, opacity 150ms;
-        }
-        .selection-bar__btn--secondary {
-          background: rgba(255,255,255,0.1);
-          color: #fff;
-        }
-        .selection-bar__btn--secondary:hover {
-          background: rgba(255,255,255,0.15);
-        }
-        .selection-bar__btn--danger {
-          background: #ef4444;
-          color: #fff;
-        }
-        .selection-bar__btn--danger:hover:not(:disabled) {
-          background: #dc2626;
-        }
-        .selection-bar__btn--danger:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-        }
-      `}</style>
     </motion.div>
   )
 }
