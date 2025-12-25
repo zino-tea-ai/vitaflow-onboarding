@@ -1,0 +1,599 @@
+import asyncio
+import json
+import os
+import time
+from typing import Any, TypeVar
+import contextvars
+
+import aioconsole
+import anthropic
+import dotenv
+import openai
+import PIL.Image
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionContentPartImageParam,
+    ChatCompletionMessageParam,
+    ChatCompletionToolParam,
+)
+
+from skillweaver.util.image_to_base64 import image_to_base64, image_to_data_url
+from skillweaver.util.perfmon import monitor
+
+# 修复 sniffio 与 nest_asyncio 的冲突
+# 在 nest_asyncio 环境中，sniffio 无法正确检测异步库，需要手动设置
+try:
+    import sniffio
+    # 设置 sniffio 的上下文变量，告诉它我们在 asyncio 环境中
+    sniffio.current_async_library_cvar.set("asyncio")
+except (ImportError, AttributeError):
+    pass
+
+# 尝试导入 Google Generative AI (旧版本)
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
+dotenv.load_dotenv()
+
+Function = dict
+NoArgs = object()
+
+ResponseFormatT = TypeVar("ResponseFormatT")
+
+
+def _is_claude_model(model_name: str) -> bool:
+    """检查是否是 Claude 模型"""
+    return "claude" in model_name.lower() or "opus" in model_name.lower()
+
+
+def _is_gemini_model(model_name: str) -> bool:
+    """检查是否是 Gemini 模型"""
+    return "gemini" in model_name.lower()
+
+
+async def completion_anthropic(
+    client: anthropic.AsyncAnthropic,
+    model: str,
+    messages: list,
+    json_mode=False,
+    json_schema=None,
+    tools: list[Function] = [],
+    args: dict = None,
+    key="general",
+) -> Any:
+    """Anthropic Claude 完成函数 - 基于最新文档"""
+    if args is None:
+        args = {}
+    
+    tries = 5
+    backoff = 4
+    
+    for i in range(tries):
+        try:
+            start_time = time.time()
+            
+            # 转换消息格式为 Anthropic 格式
+            anthropic_messages = []
+            system_message = ""
+            
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                
+                if role == "system":
+                    system_message = content if isinstance(content, str) else str(content)
+                    continue
+                
+                if isinstance(content, list):
+                    # 处理多模态内容
+                    anthropic_content = []
+                    for item in content:
+                        if item.get("type") == "text":
+                            anthropic_content.append({"type": "text", "text": item.get("text", "")})
+                        elif item.get("type") == "image_url":
+                            # 转换图像格式
+                            url = item.get("image_url", {}).get("url", "")
+                            if url.startswith("data:"):
+                                # 解析 data URL
+                                parts = url.split(";")
+                                media_type = parts[0].split(":")[1] if ":" in parts[0] else "image/png"
+                                data = url.split(",")[1] if "," in url else ""
+                                anthropic_content.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": data,
+                                    }
+                                })
+                        elif item.get("type") == "image":
+                            anthropic_content.append(item)
+                    content = anthropic_content
+                else:
+                    content = content if isinstance(content, str) else str(content)
+                
+                anthropic_messages.append({
+                    "role": role,
+                    "content": content,
+                })
+            
+            # 添加 JSON 指令到 system message
+            if json_mode or json_schema:
+                json_instruction = "\n\nIMPORTANT: You MUST respond with valid JSON only. No markdown, no explanation, just pure JSON."
+                if json_schema:
+                    schema_str = json.dumps(json_schema.get("schema", json_schema), indent=2)
+                    json_instruction += f"\n\nYour response must conform to this JSON schema:\n{schema_str}"
+                system_message = (system_message or "") + json_instruction
+            
+            # 构建请求参数
+            request_params = {
+                "model": model,
+                "max_tokens": 4096,
+                "messages": anthropic_messages,
+            }
+            
+            if system_message:
+                request_params["system"] = system_message
+            
+            # 调用 API
+            response = await client.messages.create(**request_params)
+            
+            end_time = time.time()
+            monitor.log_timing_event("lm/" + key, start_time, end_time)
+            
+            # 提取响应内容
+            content = ""
+            if response.content:
+                for block in response.content:
+                    if hasattr(block, 'text'):
+                        content += block.text
+            
+            input_tokens = response.usage.input_tokens if response.usage else 0
+            output_tokens = response.usage.output_tokens if response.usage else 0
+            monitor.log_token_usage(key, "anthropic:" + model, input_tokens, output_tokens)
+            
+            if json_mode or json_schema:
+                # 尝试提取 JSON
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    # 尝试从代码块中提取
+                    if "```json" in content:
+                        content = content.split("```json")[1].split("```")[0].strip()
+                    elif "```" in content:
+                        content = content.split("```")[1].split("```")[0].strip()
+                    return json.loads(content)
+            
+            return content
+            
+        except Exception as e:
+            if i < tries - 1:
+                await aioconsole.aprint(f"Anthropic error: {e}. Retrying...")
+                await asyncio.sleep(backoff)
+                backoff = min(30, backoff * 2)
+            else:
+                await aioconsole.aprint("Reached maximum number of tries. Raising.")
+                raise
+
+
+async def completion_gemini(
+    model: str,
+    messages: list,
+    json_mode=False,
+    json_schema=None,
+    tools: list[Function] = [],
+    args: dict = None,
+    key="general",
+) -> Any:
+    """Google Gemini 完成函数 - 基于最新文档"""
+    if not GEMINI_AVAILABLE:
+        raise ImportError("google-generativeai is not installed. Run: pip install google-generativeai")
+    
+    if args is None:
+        args = {}
+    
+    tries = 5
+    backoff = 4
+    
+    for i in range(tries):
+        try:
+            start_time = time.time()
+            
+            # 配置 Gemini
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("GOOGLE_API_KEY not set")
+            genai.configure(api_key=api_key)
+            
+            # 创建模型
+            gemini_model = genai.GenerativeModel(model)
+            
+            # 转换消息格式
+            prompt_parts = []
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get("type") == "text":
+                            text = item.get("text", "")
+                            if role == "system":
+                                prompt_parts.insert(0, f"System instruction: {text}\n\n")
+                            else:
+                                prompt_parts.append(text)
+                        elif item.get("type") == "image_url":
+                            # Gemini 需要特殊处理图像
+                            url = item.get("image_url", {}).get("url", "")
+                            if url.startswith("data:"):
+                                import base64
+                                data = url.split(",")[1] if "," in url else ""
+                                image_bytes = base64.b64decode(data)
+                                # Gemini 使用 Part 对象
+                                prompt_parts.append({
+                                    "mime_type": "image/png",
+                                    "data": image_bytes
+                                })
+                else:
+                    if role == "system":
+                        prompt_parts.insert(0, f"System instruction: {content}\n\n")
+                    else:
+                        prompt_parts.append(str(content))
+            
+            # 添加 JSON 指令
+            if json_mode or json_schema:
+                json_instruction = "\n\nIMPORTANT: Respond with valid JSON only. No markdown, no explanation."
+                if json_schema:
+                    schema_str = json.dumps(json_schema.get("schema", json_schema), indent=2)
+                    json_instruction += f"\n\nJSON Schema:\n{schema_str}"
+                prompt_parts.append(json_instruction)
+            
+            # 合并为单个提示
+            if all(isinstance(p, str) for p in prompt_parts):
+                prompt = "\n".join(prompt_parts)
+                response = await asyncio.to_thread(
+                    gemini_model.generate_content, prompt
+                )
+            else:
+                response = await asyncio.to_thread(
+                    gemini_model.generate_content, prompt_parts
+                )
+            
+            end_time = time.time()
+            monitor.log_timing_event("lm/" + key, start_time, end_time)
+            
+            content = response.text if response.text else ""
+            
+            # Token 计数
+            try:
+                if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                    input_tokens = response.usage_metadata.prompt_token_count or 0
+                    output_tokens = response.usage_metadata.candidates_token_count or 0
+                    monitor.log_token_usage(key, "gemini:" + model, input_tokens, output_tokens)
+            except:
+                pass
+            
+            if json_mode or json_schema:
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    if "```json" in content:
+                        content = content.split("```json")[1].split("```")[0].strip()
+                    elif "```" in content:
+                        content = content.split("```")[1].split("```")[0].strip()
+                    return json.loads(content)
+            
+            return content
+            
+        except Exception as e:
+            if i < tries - 1:
+                await aioconsole.aprint(f"Gemini error: {e}. Retrying...")
+                await asyncio.sleep(backoff)
+                backoff = min(30, backoff * 2)
+            else:
+                await aioconsole.aprint("Reached maximum number of tries. Raising.")
+                raise
+
+
+def _sync_openai_call(
+    model: str,
+    messages: list,
+    response_format: dict,
+    tools: list,
+    args: dict,
+) -> ChatCompletion:
+    """在独立线程中使用同步客户端调用 OpenAI，避免 nest_asyncio + anyio 冲突"""
+    sync_client = openai.OpenAI()
+    return sync_client.chat.completions.create(
+        model=model,
+        messages=messages,
+        response_format=response_format,
+        **(
+            {
+                "tools": tools,
+                "tool_choice": "required",
+                "parallel_tool_calls": False,
+            }
+            if len(tools) > 0
+            else {}
+        ),
+        **args,
+    )
+
+
+async def completion_openai(
+    client: openai.AsyncAzureOpenAI | openai.AsyncOpenAI,
+    model: str,
+    messages: list[ChatCompletionMessageParam],
+    json_mode=False,
+    json_schema=None,
+    tools: list[Function] = [],
+    args: dict = NoArgs,  # type: ignore
+    key="general",
+) -> Any:
+    if args is NoArgs:
+        args = {}
+    else:
+        args = {**args}
+
+    tries = 5
+    backoff = 4
+    for i in range(tries):
+        try:
+            start_time = time.time()
+
+            if json_mode:
+                response_format = {"type": "json_object"}
+            elif json_schema:
+                response_format = {
+                    "type": "json_schema",
+                    "json_schema": json_schema,
+                }
+            else:
+                response_format = {"type": "text"}
+
+            # 使用同步客户端在线程中运行，避免 nest_asyncio + anyio 冲突
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    _sync_openai_call,
+                    model,
+                    messages,
+                    response_format,
+                    tools,
+                    args,
+                )
+                response: ChatCompletion = future.result(timeout=120)
+
+            end_time = time.time()
+            monitor.log_timing_event("lm/" + key, start_time, end_time)
+            assert response.usage
+            msg = response.choices[0].message
+            cmpl_tokens = response.usage.completion_tokens  # type: ignore
+            prompt_tokens = response.usage.prompt_tokens  # type: ignore
+
+            monitor.log_token_usage(key, "openai:" + model, prompt_tokens, cmpl_tokens)
+
+            if len(tools) > 0:
+                fn_names = [t["name"] for t in tools]
+                assert (
+                    msg.tool_calls is not None and len(msg.tool_calls) > 0
+                ), "Tool list provided, but no tool call was made."
+
+                assert (
+                    msg.tool_calls[0].function.name in fn_names
+                ), f"Unexpected tool name: {msg.tool_calls[0].function.name}"
+
+                try:
+                    arguments = json.loads(msg.tool_calls[0].function.arguments)
+                except json.JSONDecodeError:
+                    print("JSONDecodeError. Function call arguments:")
+                    print(msg.tool_calls[0].function.arguments)
+                    raise
+
+                return {
+                    "name": msg.tool_calls[0].function.name,
+                    "arguments": arguments,
+                }
+
+            if msg.content is None:
+                await aioconsole.aprint("msg.content was None. msg:", msg)
+
+            assert msg.content is not None
+
+            if json_mode or json_schema is not None:
+                return json.loads(msg.content)
+            else:
+                return msg.content
+        except Exception as e:
+            if "JSON" in str(type(e)).upper():
+                await aioconsole.aprint("JSON error:")
+                await aioconsole.aprint("Content:", msg.content)
+                await aioconsole.aprint(e)
+
+            if i < tries - 1:
+                await aioconsole.aprint(f"Error: {e}. Retrying...")
+                await asyncio.sleep(backoff)
+                backoff = min(30, backoff * 2)
+            else:
+                await aioconsole.aprint("Reached maximum number of tries. Raising.")
+                raise
+
+
+def create_tool_description(tool: ChatCompletionToolParam):
+    name = tool["function"]["name"]
+    args_str = ", ".join(
+        tool["function"]["parameters"].keys()
+        if "parameters" in tool["function"]
+        else []
+    )
+
+    string = f"Function: {name}({args_str})\n\n"
+
+    if "description" in tool["function"]:
+        string += "Description:\n" + tool["function"]["description"] + "\n\n"
+
+    if "parameters" in tool["function"]:
+        params: dict = tool["function"]["parameters"]["properties"]  # type: ignore
+
+        string += "Parameters:\n"
+        for parameter_name, parameter in params.items():
+            string += f"- {parameter_name}"
+
+            if "description" in parameter:
+                string += ": " + parameter["description"]
+
+            string += "\n"
+
+        string += "\n\n"
+
+    return string
+
+
+def _get_client(model_name: str):
+    """根据模型名称获取正确的客户端"""
+    # Claude 模型
+    if _is_claude_model(model_name):
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY not set for Claude model")
+        return anthropic.AsyncAnthropic(api_key=api_key)
+    
+    # Gemini 模型 - 返回 None，使用全局配置
+    if _is_gemini_model(model_name):
+        if not GEMINI_AVAILABLE:
+            raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
+        return None
+    
+    # OpenAI 模型（默认）
+    if os.getenv("AZURE_OPENAI", "0") == "1":
+        endpoint = os.getenv(f"AZURE_OPENAI_{model_name.replace('-', '_')}_ENDPOINT")
+        api_key = os.getenv(f"AZURE_OPENAI_{model_name.replace('-', '_')}_API_KEY")
+
+        assert (
+            endpoint is not None and api_key is not None
+        ), f"AZURE_OPENAI_*_ENDPOINT and AZURE_OPENAI_*_API_KEY are not set for the model '{model_name}'"
+
+        api_version = endpoint.split("=")[-1]
+
+        return openai.AsyncAzureOpenAI(
+            azure_endpoint=endpoint,
+            api_key=api_key,
+            api_version=api_version,
+        )
+    else:
+        return openai.AsyncOpenAI()
+
+
+class LM:
+    def __init__(
+        self,
+        model: str,
+        max_concurrency=10,
+        default_kwargs=None,
+    ):
+        self.model = model
+        self.max_concurrency = max_concurrency
+        self.semaphore = asyncio.Semaphore(max_concurrency)
+        self.client = _get_client(model)
+        self.default_kwargs = default_kwargs or {}
+        
+        # 确定模型类型
+        self._is_claude = _is_claude_model(model)
+        self._is_gemini = _is_gemini_model(model)
+
+    def is_openai(self) -> bool:
+        return isinstance(self.client, (openai.AsyncAzureOpenAI, openai.AsyncOpenAI))
+
+    def is_anthropic(self) -> bool:
+        return isinstance(self.client, anthropic.AsyncAnthropic)
+    
+    def is_gemini(self) -> bool:
+        return self._is_gemini
+
+    def image_url_content_piece(
+        self, image: PIL.Image.Image
+    ) -> ChatCompletionContentPartImageParam:
+        if self.is_anthropic():
+            return {
+                "type": "image",  # type: ignore
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": image_to_base64(image),
+                },
+            }
+        else:
+            # OpenAI 和 Gemini 使用相同的格式
+            return {
+                "type": "image_url",
+                "image_url": {"url": image_to_data_url(image), "detail": "high"},
+            }
+
+    async def __call__(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        json_mode=False,
+        json_schema=None,
+        tools: list[Function] = [],
+        key="general",
+        **kwargs,
+    ) -> Any:
+        async with self.semaphore:
+            if self.is_anthropic():
+                return await completion_anthropic(
+                    self.client,
+                    self.model,
+                    messages,
+                    json_mode,
+                    json_schema,
+                    tools,
+                    args={**self.default_kwargs, **kwargs},
+                    key=key,
+                )
+            elif self.is_gemini():
+                return await completion_gemini(
+                    self.model,
+                    messages,
+                    json_mode,
+                    json_schema,
+                    tools,
+                    args={**self.default_kwargs, **kwargs},
+                    key=key,
+                )
+            elif self.is_openai():
+                return await completion_openai(
+                    self.client,
+                    self.model,
+                    messages,
+                    json_mode,
+                    json_schema,
+                    tools,
+                    args={**self.default_kwargs, **kwargs},
+                    key=key,
+                )
+            else:
+                raise ValueError(f"Unknown model type for: {self.model}")
+
+    async def json(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        response_model: type[ResponseFormatT],
+        **kwargs,
+    ) -> ResponseFormatT:
+        if self.is_openai():
+            result = await self.client.beta.chat.completions.parse(
+                messages=messages,
+                model=self.model,
+                response_format=response_model,
+            )
+            parsed = result.choices[0].message.parsed
+            assert parsed is not None
+            return parsed
+        else:
+            # 对于非 OpenAI 模型，使用常规 JSON 模式
+            result = await self(messages, json_mode=True, **kwargs)
+            return result
