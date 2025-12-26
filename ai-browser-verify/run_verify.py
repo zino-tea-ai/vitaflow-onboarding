@@ -233,12 +233,18 @@ class TechVerifier:
         
         print(f"  执行命令: {' '.join(cmd[:6])}...")
         
+        # Windows UTF-8 环境
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUTF8'] = '1'
+        
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(Path(__file__).parent / "SkillWeaver")
+                cwd=str(Path(__file__).parent / "SkillWeaver"),
+                env=env
             )
             
             stdout, stderr = await asyncio.wait_for(
@@ -251,12 +257,12 @@ class TechVerifier:
                     "success": True,
                     "steps": 5,  # 需要从输出解析
                     "llm_calls": 5,
-                    "output": stdout.decode()
+                    "output": stdout.decode('utf-8', errors='replace')
                 }
             else:
                 return {
                     "success": False,
-                    "error": stderr.decode(),
+                    "error": stderr.decode('utf-8', errors='replace'),
                     "steps": 0,
                     "llm_calls": 0
                 }
@@ -269,9 +275,11 @@ class TechVerifier:
                 "llm_calls": 0
             }
         except Exception as e:
+            # 确保错误消息是 UTF-8 安全的
+            error_msg = str(e).encode('utf-8', errors='replace').decode('utf-8')
             return {
                 "success": False,
-                "error": str(e),
+                "error": error_msg,
                 "steps": 0,
                 "llm_calls": 0
             }

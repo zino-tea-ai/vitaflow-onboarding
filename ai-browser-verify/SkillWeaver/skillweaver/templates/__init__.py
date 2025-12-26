@@ -6,7 +6,7 @@ if TYPE_CHECKING:
 
 base = os.path.abspath(os.path.dirname(__file__))
 
-file = lambda x: open(base + "/" + x).read()
+file = lambda x: open(base + "/" + x, encoding="utf-8").read()
 kb_procedural_update_base = file("kb_procedural_update_base.md")
 kb_procedural_update_single = file("kb_procedural_update_single.md")
 kb_procedural_update_multiple = file("kb_procedural_update_multiple.md")

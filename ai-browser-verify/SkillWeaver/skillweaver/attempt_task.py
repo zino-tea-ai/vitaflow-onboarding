@@ -1,10 +1,16 @@
+# -*- coding: utf-8 -*-
 import ast
 import asyncio
 import json
 import os
 import re
+import sys
 from datetime import datetime
 from typing import Optional
+
+# Windows UTF-8 environmentvariable
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['PYTHONUTF8'] = '1'
 
 import nest_asyncio
 from aioconsole import aprint
@@ -128,7 +134,7 @@ async def attempt_task(
         )
     )
     await aprint(
-        "🔍 Retrieved Task-Relevant Functions: "
+        "[FOUND] Retrieved Task-Relevant Functions: "
         + ", ".join([function["name"] for function in visible_functions])
     )
 
@@ -162,10 +168,10 @@ async def attempt_task(
         )
 
         if action["python_code"]:
-            await aprint("⏳ Executing", step)
-            await aprint("💭 Step-by-step reasoning:")
+            await aprint("[EXEC] Executing", step)
+            await aprint("[REASON] Step-by-step reasoning:")
             await aprint(action["step_by_step_reasoning"])
-            await aprint("🛠️ Generated code:")
+            await aprint("[CODE] Generated code:")
             await aprint(action["python_code"])
 
             # #region agent log - Hypothesis B: Generated code content

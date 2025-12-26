@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import os
 import subprocess
@@ -243,7 +244,7 @@ def evaluate_benchmark(
                         running_total["error"] += 1
 
                 remaining = len(single_task_cmd_args) - running_total["finished"]
-                string = "⏳ Evaluating. ✅ {}/{}; ❓ {}; 💰 ${:.2f} 🕐 {:.2f} (n={}) (remaining={})".format(
+                string = "[EVAL] Evaluating.  {}/{};  {};  ${:.2f}  {:.2f} (n={}) (remaining={})".format(
                     running_total["success"],
                     running_total["fail"] + running_total["success"],
                     running_total["error"],

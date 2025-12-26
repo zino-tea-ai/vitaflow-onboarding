@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import os
 import re
@@ -5,12 +6,12 @@ import shutil
 import subprocess
 import tempfile
 
-# 检查 pyright 是否可用
+# check pyright 
 PYRIGHT_AVAILABLE = shutil.which("pyright") is not None
 
 def _typecheck_file(file: str):
     if not PYRIGHT_AVAILABLE:
-        # pyright 不可用时返回空结果
+        # pyright returnresult
         return {"generalDiagnostics": []}
     
     try:
@@ -23,10 +24,10 @@ def _typecheck_file(file: str):
         data = proc.stdout.decode("utf-8").strip()
         return json.loads(data)
     except FileNotFoundError:
-        # pyright 未安装
+        # pyright 
         return {"generalDiagnostics": []}
     except subprocess.TimeoutExpired:
-        # 超时
+        # timeout
         return {"generalDiagnostics": []}
     except Exception as e:
         with open(file) as f:

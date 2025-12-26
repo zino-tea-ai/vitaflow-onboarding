@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import json
 import os
@@ -20,16 +21,16 @@ from openai.types.chat import (
 from skillweaver.util.image_to_base64 import image_to_base64, image_to_data_url
 from skillweaver.util.perfmon import monitor
 
-# 修复 sniffio 与 nest_asyncio 的冲突
-# 在 nest_asyncio 环境中，sniffio 无法正确检测异步库，需要手动设置
+#  sniffio  nest_asyncio 
+#  nest_asyncio environmentsniffio asyncset
 try:
     import sniffio
-    # 设置 sniffio 的上下文变量，告诉它我们在 asyncio 环境中
+    # set sniffio variable asyncio environment
     sniffio.current_async_library_cvar.set("asyncio")
 except (ImportError, AttributeError):
     pass
 
-# 尝试导入 Google Generative AI (旧版本)
+# import Google Generative AI (version)
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
@@ -45,17 +46,17 @@ ResponseFormatT = TypeVar("ResponseFormatT")
 
 
 def _is_claude_model(model_name: str) -> bool:
-    """检查是否是 Claude 模型"""
+    """Check if this is a Claude model"""
     return "claude" in model_name.lower() or "opus" in model_name.lower()
 
 
 def _is_gemini_model(model_name: str) -> bool:
-    """检查是否是 Gemini 模型"""
+    """Check if this is a Gemini model"""
     return "gemini" in model_name.lower()
 
 
 def _sync_anthropic_call(api_key: str, model: str, request_params: dict):
-    """在独立线程中使用同步客户端调用 Anthropic，避免 nest_asyncio + anyio 冲突"""
+    """Use sync client in separate thread to call Anthropic, avoid nest_asyncio + anyio conflict"""
     sync_client = anthropic.Anthropic(api_key=api_key)
     return sync_client.messages.create(**request_params)
 
@@ -70,7 +71,7 @@ async def completion_anthropic(
     args: dict = None,
     key="general",
 ) -> Any:
-    """Anthropic Claude 完成函数 - 使用同步客户端避免 nest_asyncio 冲突"""
+    """Anthropic Claude completion function - uses sync client to avoid nest_asyncio conflict"""
     if args is None:
         args = {}
     
@@ -81,7 +82,7 @@ async def completion_anthropic(
         try:
             start_time = time.time()
             
-            # 转换消息格式为 Anthropic 格式
+            # convertmessageformat Anthropic format
             anthropic_messages = []
             system_message = ""
             
@@ -94,16 +95,16 @@ async def completion_anthropic(
                     continue
                 
                 if isinstance(content, list):
-                    # 处理多模态内容
+                    # handle
                     anthropic_content = []
                     for item in content:
                         if item.get("type") == "text":
                             anthropic_content.append({"type": "text", "text": item.get("text", "")})
                         elif item.get("type") == "image_url":
-                            # 转换图像格式
+                            # convertformat
                             url = item.get("image_url", {}).get("url", "")
                             if url.startswith("data:"):
-                                # 解析 data URL
+                                # parse data URL
                                 parts = url.split(";")
                                 media_type = parts[0].split(":")[1] if ":" in parts[0] else "image/png"
                                 data = url.split(",")[1] if "," in url else ""
@@ -126,7 +127,7 @@ async def completion_anthropic(
                     "content": content,
                 })
             
-            # 添加 JSON 指令到 system message
+            # add JSON  system message
             if json_mode or json_schema:
                 json_instruction = "\n\nIMPORTANT: You MUST respond with valid JSON only. No markdown, no explanation, just pure JSON."
                 if json_schema:
@@ -134,7 +135,7 @@ async def completion_anthropic(
                     json_instruction += f"\n\nYour response must conform to this JSON schema:\n{schema_str}"
                 system_message = (system_message or "") + json_instruction
             
-            # 构建请求参数
+            # requestparameter
             request_params = {
                 "model": model,
                 "max_tokens": 4096,
@@ -144,7 +145,7 @@ async def completion_anthropic(
             if system_message:
                 request_params["system"] = system_message
             
-            # 在线程池中运行同步客户端（避免 nest_asyncio + anyio 冲突）
+            # runsyncclient nest_asyncio + anyio 
             import concurrent.futures
             import traceback
             
@@ -179,7 +180,7 @@ async def completion_anthropic(
             end_time = time.time()
             monitor.log_timing_event("lm/" + key, start_time, end_time)
             
-            # 提取响应内容
+            # extractresponse
             content = ""
             if response.content:
                 for block in response.content:
@@ -191,11 +192,11 @@ async def completion_anthropic(
             monitor.log_token_usage(key, "anthropic:" + model, input_tokens, output_tokens)
             
             if json_mode or json_schema:
-                # 尝试提取 JSON
+                # extract JSON
                 try:
                     return json.loads(content)
                 except json.JSONDecodeError:
-                    # 尝试从代码块中提取
+                    # extract
                     if "```json" in content:
                         content = content.split("```json")[1].split("```")[0].strip()
                     elif "```" in content:
@@ -223,7 +224,7 @@ async def completion_gemini(
     args: dict = None,
     key="general",
 ) -> Any:
-    """Google Gemini 完成函数 - 基于最新文档"""
+    """Google Gemini completion function - based on latest docs"""
     if not GEMINI_AVAILABLE:
         raise ImportError("google-generativeai is not installed. Run: pip install google-generativeai")
     
@@ -237,16 +238,16 @@ async def completion_gemini(
         try:
             start_time = time.time()
             
-            # 配置 Gemini
+            # config Gemini
             api_key = os.getenv("GOOGLE_API_KEY")
             if not api_key:
                 raise ValueError("GOOGLE_API_KEY not set")
             genai.configure(api_key=api_key)
             
-            # 创建模型
+            # createmodel
             gemini_model = genai.GenerativeModel(model)
             
-            # 转换消息格式
+            # convertmessageformat
             prompt_parts = []
             for msg in messages:
                 role = msg.get("role", "user")
@@ -261,13 +262,13 @@ async def completion_gemini(
                             else:
                                 prompt_parts.append(text)
                         elif item.get("type") == "image_url":
-                            # Gemini 需要特殊处理图像
+                            # Gemini handle
                             url = item.get("image_url", {}).get("url", "")
                             if url.startswith("data:"):
                                 import base64
                                 data = url.split(",")[1] if "," in url else ""
                                 image_bytes = base64.b64decode(data)
-                                # Gemini 使用 Part 对象
+                                # Gemini  Part object
                                 prompt_parts.append({
                                     "mime_type": "image/png",
                                     "data": image_bytes
@@ -278,7 +279,7 @@ async def completion_gemini(
                     else:
                         prompt_parts.append(str(content))
             
-            # 添加 JSON 指令
+            # add JSON 
             if json_mode or json_schema:
                 json_instruction = "\n\nIMPORTANT: Respond with valid JSON only. No markdown, no explanation."
                 if json_schema:
@@ -286,7 +287,7 @@ async def completion_gemini(
                     json_instruction += f"\n\nJSON Schema:\n{schema_str}"
                 prompt_parts.append(json_instruction)
             
-            # 合并为单个提示
+            # merge
             if all(isinstance(p, str) for p in prompt_parts):
                 prompt = "\n".join(prompt_parts)
                 response = await asyncio.to_thread(
@@ -302,7 +303,7 @@ async def completion_gemini(
             
             content = response.text if response.text else ""
             
-            # Token 计数
+            # Token 
             try:
                 if hasattr(response, 'usage_metadata') and response.usage_metadata:
                     input_tokens = response.usage_metadata.prompt_token_count or 0
@@ -340,7 +341,7 @@ def _sync_openai_call(
     tools: list,
     args: dict,
 ) -> ChatCompletion:
-    """在独立线程中使用同步客户端调用 OpenAI，避免 nest_asyncio + anyio 冲突"""
+    """Use sync client in separate thread to call OpenAI, avoid nest_asyncio + anyio conflict"""
     sync_client = openai.OpenAI()
     return sync_client.chat.completions.create(
         model=model,
@@ -390,7 +391,7 @@ async def completion_openai(
             else:
                 response_format = {"type": "text"}
 
-            # 在线程池中运行同步客户端（避免 nest_asyncio + anyio 冲突）
+            # runsyncclient nest_asyncio + anyio 
             import concurrent.futures
             import traceback
             
@@ -524,26 +525,26 @@ def create_tool_description(tool: ChatCompletionToolParam):
 
 
 def _get_client(model_name: str):
-    """根据模型名称获取正确的客户端"""
-    # Claude 模型
+    """Get the correct client based on model name"""
+    # Claude model
     if _is_claude_model(model_name):
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not set for Claude model")
         return anthropic.AsyncAnthropic(api_key=api_key)
     
-    # Gemini 模型 - 返回 None，使用全局配置
+    # Gemini model - return Noneconfig
     if _is_gemini_model(model_name):
         if not GEMINI_AVAILABLE:
             raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
         return None
     
-    # OpenAI 模型（默认）- 使用 aiohttp 后端避免 httpx/anyio 与 nest_asyncio 冲突
+    # OpenAI modeldefault-  aiohttp  httpx/anyio  nest_asyncio 
     try:
         from openai import DefaultAioHttpClient
         http_client = DefaultAioHttpClient()
     except ImportError:
-        # 如果 aiohttp 未安装，使用默认客户端
+        #  aiohttp defaultclient
         http_client = None
     
     if os.getenv("AZURE_OPENAI", "0") == "1":
@@ -579,7 +580,7 @@ class LM:
         self.client = _get_client(model)
         self.default_kwargs = default_kwargs or {}
         
-        # 确定模型类型
+        # modelclass
         self._is_claude = _is_claude_model(model)
         self._is_gemini = _is_gemini_model(model)
 
@@ -605,7 +606,7 @@ class LM:
                 },
             }
         else:
-            # OpenAI 和 Gemini 使用相同的格式
+            # OpenAI  Gemini format
             return {
                 "type": "image_url",
                 "image_url": {"url": image_to_data_url(image), "detail": "high"},
@@ -672,6 +673,6 @@ class LM:
             assert parsed is not None
             return parsed
         else:
-            # 对于非 OpenAI 模型，使用常规 JSON 模式
+            #  OpenAI model JSON mode
             result = await self(messages, json_mode=True, **kwargs)
             return result

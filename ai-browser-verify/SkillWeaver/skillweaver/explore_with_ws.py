@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
-SkillFlow 增强版探索学习
-带有 WebSocket 实时状态广播
+SkillFlow explorationlearning
+ WebSocket statusbroadcast
 """
 import asyncio
 import os
@@ -24,7 +25,7 @@ from skillweaver.explore import (
 from skillweaver.attempt_task import attempt_task
 from skillweaver.agent import codegen_trajectory_to_string
 
-# 导入 WebSocket 广播功能
+# import WebSocket broadcast
 from skillweaver.websocket_server import (
     start_server,
     broadcast_learn_start,
@@ -36,7 +37,7 @@ from skillweaver.websocket_server import (
 
 
 def _get_untested_functions(knowledge_base: KnowledgeBase):
-    """获取未测试的函数列表"""
+    """gettestfunction"""
     untested = []
     for func in knowledge_base.get_functions():
         if func.get("test_count", 0) == 0:
@@ -54,17 +55,17 @@ async def explore_with_ws(
     allow_recovery: bool = True,
     headless: bool = False,
 ):
-    """探索学习并通过 WebSocket 广播状态"""
+    """explorationlearning WebSocket broadcaststatus"""
     start_time = time.time()
     total_skills_learned = 0
     
-    # 广播学习开始
+    # broadcastlearningstart
     broadcast_learn_start(start_urls[0] if start_urls else "unknown", iterations)
     
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
-    # 保存初始知识库
+    # saveknowledge base
     knowledge_base.save(output_dir)
     
     async with async_playwright() as p:
@@ -87,18 +88,18 @@ async def explore_with_ws(
             await aprint(f"Iteration {iteration + 1}/{iterations}")
             await aprint(f"{'='*50}")
             
-            # 广播学习进度
+            # broadcastlearning
             broadcast_learn_progress(
                 iteration + 1, 
                 iterations,
-                f"开始第 {iteration + 1} 轮探索..."
+                f"start {iteration + 1} exploration..."
             )
             
             try:
-                # 获取当前状态
+                # getstatus
                 state = await browser.observe()
                 
-                # 决定是测试还是探索
+                # testexploration
                 untested = _get_untested_functions(knowledge_base)
                 
                 import random
@@ -108,19 +109,19 @@ async def explore_with_ws(
                 )
                 
                 if should_test:
-                    await aprint(f"📝 Testing existing skill...")
+                    await aprint(f" Testing existing skill...")
                     broadcast_learn_progress(
                         iteration + 1,
                         iterations,
-                        f"测试已有技能: {untested[0]['name'] if untested else 'unknown'}"
+                        f"testskill: {untested[0]['name'] if untested else 'unknown'}"
                     )
                     meta, task = await _choose_test_task(lm, state, knowledge_base, untested)
                 else:
-                    await aprint(f"🔍 Exploring for new skills...")
+                    await aprint(f" Exploring for new skills...")
                     broadcast_learn_progress(
                         iteration + 1,
                         iterations,
-                        "探索新技能..."
+                        "explorationskill..."
                     )
                     
                     is_live = not any(
@@ -130,7 +131,7 @@ async def explore_with_ws(
                     )
                     meta, task = await _choose_explore_task(lm, state, knowledge_base, is_live)
                 
-                # 执行任务
+                # executetask
                 states, actions = await attempt_task(
                     browser,
                     lm,
@@ -141,11 +142,11 @@ async def explore_with_ws(
                     allow_recovery=allow_recovery,
                 )
                 
-                # 处理结果
+                # handleresult
                 if len(actions) > 0:
                     last_action = actions[-1]
                     
-                    # 检查是否成功
+                    # checksuccess
                     if task["type"] == "test":
                         if _successfully_executes_function_without_errors(task, last_action):
                             knowledge_base.record_test(
@@ -153,35 +154,35 @@ async def explore_with_ws(
                                 task["function_args"],
                                 True
                             )
-                            await aprint(f"✅ Test passed for {task['function_name']}")
+                            await aprint(f" Test passed for {task['function_name']}")
                             broadcast_learn_progress(
                                 iteration + 1,
                                 iterations,
-                                f"✅ 技能测试通过: {task['function_name']}"
+                                f" skilltest: {task['function_name']}"
                             )
                     elif task["type"] == "explore":
-                        # 从探索中提取新技能
+                        # explorationextractskill
                         if "formatted_code" in last_action and last_action.get("result", {}).get("exception") is None:
                             skill_name = f"skill_iter_{iteration}"
-                            await aprint(f"🆕 Discovered potential skill from exploration")
+                            await aprint(f" Discovered potential skill from exploration")
                             broadcast_skill_discovered(
                                 skill_name,
                                 task.get("task", "Discovered skill")[:100]
                             )
                             total_skills_learned += 1
                 
-                # 保存知识库
+                # saveknowledge base
                 knowledge_base.save(output_dir)
                 
             except Exception as e:
-                await aprint(f"❌ Error in iteration {iteration}: {e}")
+                await aprint(f" Error in iteration {iteration}: {e}")
                 broadcast_learn_progress(
                     iteration + 1,
                     iterations,
-                    f"❌ 迭代出错: {str(e)[:50]}"
+                    f" : {str(e)[:50]}"
                 )
             
-            # 重置浏览器到起始页
+            # browser
             try:
                 await browser.active_page.goto(start_urls[0])
                 await browser.active_page.wait_for_load_state("networkidle", timeout=10000)
@@ -189,13 +190,13 @@ async def explore_with_ws(
                 pass
             
             iter_duration = time.time() - iter_start
-            await aprint(f"⏱️ Iteration {iteration + 1} completed in {iter_duration:.1f}s")
+            await aprint(f"[TIME] Iteration {iteration + 1} completed in {iter_duration:.1f}s")
         
-        # 关闭浏览器
+        # closebrowser
         for b in browsers:
             await b.close()
     
-    # 广播学习完成
+    # broadcastlearningcompleted
     total_duration = time.time() - start_time
     broadcast_learn_complete(
         start_urls[0] if start_urls else "unknown",
@@ -203,9 +204,9 @@ async def explore_with_ws(
         total_duration
     )
     
-    await aprint(f"\n🎉 Exploration complete!")
-    await aprint(f"📊 Total skills learned: {total_skills_learned}")
-    await aprint(f"⏱️ Total time: {total_duration:.1f}s")
+    await aprint(f"\n Exploration complete!")
+    await aprint(f" Total skills learned: {total_skills_learned}")
+    await aprint(f"[TIME] Total time: {total_duration:.1f}s")
     
     return knowledge_base
 
@@ -218,10 +219,10 @@ def cli(
     headless: bool = False,
     knowledge_base_path: Optional[str] = None,
 ):
-    """命令行入口"""
+    """"""
     apply_patches()
     
-    # 启动 WebSocket 服务器
+    #  WebSocket server
     print("[SkillFlow] Starting WebSocket server...")
     start_server()
     

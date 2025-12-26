@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
-SkillFlow 增强版任务执行
-带有 WebSocket 实时状态广播
+SkillFlow taskexecute
+ WebSocket statusbroadcast
 """
 import ast
 import asyncio
@@ -25,7 +26,7 @@ from skillweaver.environment.browser import make_browser_cdp
 from skillweaver.knowledge_base.knowledge_base import KnowledgeBase, load_knowledge_base
 from skillweaver.lm import LM
 
-# 导入 WebSocket 广播功能
+# import WebSocket broadcast
 from skillweaver.websocket_server import (
     start_server,
     broadcast_task_start,
@@ -46,7 +47,7 @@ nest_asyncio.apply()
 
 
 def _is_function_called_in_act_function(code: str, function_name: str):
-    """检查代码中是否调用了指定函数"""
+    """checkfunction"""
     tree = ast.parse(code)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -56,7 +57,7 @@ def _is_function_called_in_act_function(code: str, function_name: str):
 
 
 def _extract_skill_call_info(code: str, visible_functions: list) -> dict:
-    """从代码中提取技能调用信息"""
+    """extractskill"""
     skill_info = {
         "skill_used": False,
         "skill_name": None,
@@ -82,7 +83,7 @@ def _extract_skill_call_info(code: str, visible_functions: list) -> dict:
                     skill_info["skill_used"] = True
                     skill_info["skill_name"] = func_name
                     
-                    # 提取参数
+                    # extractparameter
                     for i, arg in enumerate(node.args):
                         if isinstance(arg, ast.Constant):
                             skill_info["skill_params"][f"arg{i}"] = arg.value
@@ -98,7 +99,7 @@ def _extract_skill_call_info(code: str, visible_functions: list) -> dict:
 
 
 def fix_code_formatting(generated_code: str) -> str:
-    """修复代码格式"""
+    """format"""
     code = generated_code.replace("\\n", "\n")
 
     lines = code.splitlines()
@@ -156,14 +157,14 @@ async def attempt_task_with_ws(
     as_reference_only=False,
     enable_retrieval_module_for_exploration=True,
 ):
-    """执行任务并通过 WebSocket 广播状态"""
+    """executetask WebSocket broadcaststatus"""
     global UNIQUE_FILENAME_COUNTER
     
     task_start_time = time.time()
     task_string = get_task_string(task)
     url = browser.active_page.url if browser.active_page else "unknown"
     
-    # 广播任务开始
+    # broadcasttaskstart
     has_kb = len(knowledge_base.metadata.get("functions", {})) > 0
     broadcast_task_start(task_string, url, has_kb)
 
@@ -191,11 +192,11 @@ async def attempt_task_with_ws(
     )
     
     await aprint(
-        "🔍 Retrieved Task-Relevant Functions: "
+        " Retrieved Task-Relevant Functions: "
         + ", ".join([function["name"] for function in visible_functions])
     )
     
-    # 广播技能匹配信息
+    # broadcastskill
     if visible_functions:
         for func in visible_functions[:3]:
             broadcast_skill_matched(
@@ -226,7 +227,7 @@ async def attempt_task_with_ws(
 
             await aprint(f"{datetime.now().isoformat()} Step {step}")
             
-            # 广播步骤开始
+            # broadcaststepstart
             broadcast_step_start(step, max_steps)
 
             action = await codegen_generate(
@@ -242,23 +243,23 @@ async def attempt_task_with_ws(
             )
 
             if action["python_code"]:
-                await aprint("⏳ Executing", step)
-                await aprint("💭 Step-by-step reasoning:")
+                await aprint("[EXEC] Executing", step)
+                await aprint(" Step-by-step reasoning:")
                 await aprint(action["step_by_step_reasoning"])
                 
-                # 广播思考过程
+                # broadcast
                 broadcast_step_thinking(step, action["step_by_step_reasoning"])
                 
-                await aprint("🛠️ Generated code:")
+                await aprint(" Generated code:")
                 await aprint(action["python_code"])
                 
-                # 检查是否使用了技能
+                # checkskill
                 skill_info = _extract_skill_call_info(action["python_code"], visible_functions)
                 
                 if skill_info["skill_used"]:
                     broadcast_skill_executing(skill_info["skill_name"], skill_info["skill_params"])
                 
-                # 广播执行动作
+                # broadcastexecute
                 action_type = "skill_call" if skill_info["skill_used"] else "code_execution"
                 action_detail = skill_info["skill_name"] if skill_info["skill_used"] else "Playwright automation"
                 broadcast_step_action(step, action_type, action_detail, action["python_code"][:200])
@@ -283,7 +284,7 @@ async def attempt_task_with_ws(
                 )
                 exec_duration = time.time() - exec_start
                 
-                # 广播步骤结果
+                # broadcaststepresult
                 step_success = action["result"]["exception"] is None
                 broadcast_step_result(
                     step, 
@@ -329,7 +330,7 @@ async def attempt_task_with_ws(
             states.append(await browser.observe())
             states[-1].save(store_dir, f"{step+1:03d}_state")
             
-            # 广播步骤完成
+            # broadcaststepcompleted
             step_duration = time.time() - step_start_time
             broadcast_step_complete(step, step_duration)
 
@@ -350,7 +351,7 @@ async def attempt_task_with_ws(
             )
             f.write(string)
 
-        # 广播任务完成
+        # broadcasttaskcompleted
         task_duration = time.time() - task_start_time
         broadcast_task_complete(task_string, task_success, task_duration, total_steps_executed)
         
@@ -370,15 +371,15 @@ def cli(
     headless: bool = True,
 ):
     """
-    命令行入口
+    
     
     Args:
-        start_url: 起始 URL
-        task: 要执行的任务
-        agent_lm_name: 使用的 LLM 模型名
-        knowledge_base_path_prefix: 知识库路径前缀
-        max_steps: 最大步数
-        headless: 是否无头模式（默认 True，通过 WebSocket 同步状态到 NogicOS）
+        start_url:  URL
+        task: executetask
+        agent_lm_name:  LLM model
+        knowledge_base_path_prefix: knowledge basepath
+        max_steps: 
+        headless: modedefault True WebSocket syncstatus NogicOS
     """
     from contextlib import nullcontext
 
@@ -387,7 +388,7 @@ def cli(
     from skillweaver.evaluation.webarena_config import SITES
     from skillweaver.evaluation.webarena_login import login_subprocess
 
-    # 启动 WebSocket 服务器
+    #  WebSocket server
     print("[SkillFlow] Starting WebSocket server...")
     start_server()
     
@@ -448,9 +449,9 @@ def cli(
             async with async_playwright() as p:
                 os.makedirs(log_dir, exist_ok=True)
                 
-                # 2025 最佳实践：使用 headless 浏览器 + WebSocket 同步
-                # Playwright 无法直接控制已运行 Electron 的 webview
-                # 所以我们用 headless 模式执行，通过 WebSocket 广播操作到 NogicOS
+                # 2025  headless browser + WebSocket sync
+                # Playwright run Electron  webview
+                #  headless modeexecute WebSocket broadcast NogicOS
                 print(f"[NogicOS] Starting headless browser for task execution...")
                 print(f"[NogicOS] Target URL: {start_url}")
                 print(f"[NogicOS] Operations will be synced to NogicOS via WebSocket")
@@ -458,7 +459,7 @@ def cli(
                 browser = await make_browser(
                     p,
                     start_url,
-                    headless=True,  # headless 模式，快速执行
+                    headless=True,  # headless modeexecute
                     storage_state=storage_state_file,
                 )
                 

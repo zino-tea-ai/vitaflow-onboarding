@@ -73,13 +73,13 @@ class Browser:
         await page.screenshot(full_page=True, path=screenshot_path_full, timeout=15000)
         await page.screenshot(full_page=False, path=screenshot_path, timeout=15000)
         
-        # 读取图像并复制到内存，然后关闭文件句柄
+        # Read image and copy to memory, then close file handle
         with PIL.Image.open(screenshot_path) as img:
             screenshot = img.copy()
         with PIL.Image.open(screenshot_path_full) as img_full:
             screenshot_full = img_full.copy()
 
-        # 在 Windows 上需要等待文件句柄释放
+        # On Windows, need to wait for file handle release
         import sys
         if sys.platform == 'win32':
             import gc
@@ -87,7 +87,7 @@ class Browser:
             try:
                 os.remove(screenshot_path_full)
             except PermissionError:
-                pass  # 忽略 Windows 文件锁问题
+                pass  # Ignore Windows file lock issues
             try:
                 os.remove(screenshot_path)
             except PermissionError:
@@ -193,18 +193,18 @@ async def make_browser_cdp(
     navigation_timeout=16000,
 ):
     """
-    连接到已有浏览器实例（通过 CDP）
-    用于连接 NogicOS 的内嵌 webview
+    Connect to existing browser instance (via CDP)
+    Used to connect to NogicOS embedded webview
     
     Args:
-        playwright: Playwright 实例
-        cdp_url: CDP 端点 URL，默认 http://localhost:9222
-        target_url_filter: 目标页面 URL 过滤器（用于定位 webview）
-        width: 视口宽度
-        height: 视口高度
+        playwright: Playwright instance
+        cdp_url: CDP endpoint URL, default http://localhost:9222
+        target_url_filter: Target page URL filter (to locate webview)
+        width: Viewport width
+        height: Viewport height
     
     Returns:
-        Browser 实例
+        Browser instance
     """
     import urllib.request
     import json
@@ -212,11 +212,11 @@ async def make_browser_cdp(
     await aprint(f"[CDP] Connecting to {cdp_url}...")
     
     try:
-        # 步骤1: 获取 CDP targets 列表，找到 webview 的 WebSocket URL
+        # Step 1: Get CDP targets list, find webview WebSocket URL
         webview_ws_url = None
         try:
             with urllib.request.urlopen(f"{cdp_url}/json", timeout=5) as response:
-                targets = json.loads(response.read().decode())
+                targets = json.loads(response.read().decode('utf-8', errors='replace'))
                 await aprint(f"[CDP] Found {len(targets)} targets")
                 
                 for target in targets:
@@ -226,7 +226,7 @@ async def make_browser_cdp(
                     
                     await aprint(f"[CDP] Target: type={target_type}, url={target_url[:60] if target_url else 'N/A'}...")
                     
-                    # 找 webview 类型或非 file:// 的页面
+                    # Find webview type or non- file://  pages
                     if target_type == 'webview':
                         webview_ws_url = ws_url
                         await aprint(f"[CDP] Found webview target: {target_url}")
@@ -241,7 +241,7 @@ async def make_browser_cdp(
         
         if not webview_ws_url:
             await aprint("[CDP] No webview target found, falling back to browser connection")
-            # 回退到原来的方式
+            # Fallback to original method
             browser = await playwright.chromium.connect_over_cdp(cdp_url)
             contexts = browser.contexts
             if contexts and contexts[0].pages:
@@ -249,32 +249,32 @@ async def make_browser_cdp(
                 return Browser(browser, contexts[0], page, screen_size=(height, width))
             raise RuntimeError("No suitable webview page found")
         
-        # 步骤2: 连接到浏览器，然后通过 CDP session 获取 webview 页面
+        # Step 2: Connect to browser, then get webview page via CDP session
         await aprint(f"[CDP] Connecting to browser and targeting webview...")
         
-        # 连接到浏览器级别
+        # Connect at browser level
         browser = await playwright.chromium.connect_over_cdp(cdp_url)
         await aprint("[CDP] Connected to browser")
         
-        # 使用 CDP 直接连接到 webview target
-        # 从 webview_ws_url 提取 target ID
-        # 格式: ws://localhost:9222/devtools/page/TARGET_ID
+        # Use CDP to directly connect to webview target
+        # Extract target ID from webview_ws_url
+        # Format: ws://localhost:9222/devtools/page/TARGET_ID
         target_id = webview_ws_url.split('/')[-1]
         await aprint(f"[CDP] Target ID: {target_id}")
         
-        # 创建新的 context 连接到 webview
+        # Create new context to connect to webview
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         context.set_default_timeout(timeout)
         context.set_default_navigation_timeout(navigation_timeout)
         
-        # 尝试通过 CDP session 附加到 webview target
+        # Try to attach to webview target via CDP session
         try:
             cdp_session = await context.new_cdp_session(context.pages[0] if context.pages else None)
-            # 获取所有 targets
+            # Get all targets
             targets_result = await cdp_session.send("Target.getTargets")
             await aprint(f"[CDP] Targets: {len(targets_result.get('targetInfos', []))}")
             
-            # 找到 webview target 并附加
+            # Find webview target and attach
             for target_info in targets_result.get('targetInfos', []):
                 if target_info.get('type') == 'page' and target_info.get('targetId') == target_id:
                     await aprint(f"[CDP] Found target, attaching...")
@@ -287,7 +287,7 @@ async def make_browser_cdp(
         except Exception as cdp_err:
             await aprint(f"[CDP] CDP session error (non-fatal): {cdp_err}")
         
-        # 遍历所有页面找到 webview
+        # Iterate all pages to find webview
         page = None
         for ctx in browser.contexts:
             for p in ctx.pages:
@@ -300,7 +300,7 @@ async def make_browser_cdp(
                 break
         
         if not page:
-            # 如果仍然找不到，使用第一个可用页面
+            # If still not found, use the first available page
             if browser.contexts and browser.contexts[0].pages:
                 page = browser.contexts[0].pages[0]
                 context = browser.contexts[0]

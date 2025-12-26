@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
-SkillFlow WebSocket 客户端 (同步版本)
-使用 websocket-client 库，避免 asyncio/nest_asyncio 冲突
+SkillFlow WebSocket client (syncversion)
+ websocket-client  asyncio/nest_asyncio 
 """
 import json
 import threading
@@ -8,41 +9,41 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
-import websocket  # websocket-client 库（同步）
+import websocket  # websocket-client sync
 
-# 消息类型
+# messageclass
 class MessageType(str, Enum):
-    # 连接
+    # connect
     CONNECTED = "connected"
     
-    # 任务
+    # task
     TASK_START = "task_start"
     TASK_COMPLETE = "task_complete"
     TASK_ERROR = "task_error"
     
-    # 步骤
+    # step
     STEP_START = "step_start"
     STEP_THINKING = "step_thinking"
     STEP_ACTION = "step_action"
     STEP_RESULT = "step_result"
     STEP_COMPLETE = "step_complete"
     
-    # 技能
+    # skill
     SKILL_MATCHED = "skill_matched"
     SKILL_EXECUTING = "skill_executing"
     SKILL_RESULT = "skill_result"
     
-    # 学习
+    # learning
     LEARN_START = "learn_start"
     LEARN_PROGRESS = "learn_progress"
     SKILL_DISCOVERED = "skill_discovered"
     LEARN_COMPLETE = "learn_complete"
     
-    # 知识库
+    # knowledge base
     KB_LOADED = "kb_loaded"
     SKILL_LIST = "skill_list"
     
-    # AI 可视化动画（NogicOS Atlas 体验）
+    # AI NogicOS Atlas 
     CURSOR_MOVE = "cursor_move"
     CURSOR_CLICK = "cursor_click"
     CURSOR_TYPE = "cursor_type"
@@ -56,7 +57,7 @@ class MessageType(str, Enum):
 
 @dataclass
 class ExecutionMessage:
-    """执行消息"""
+    """executemessage"""
     type: MessageType
     data: dict
     timestamp: float = None
@@ -74,7 +75,7 @@ class ExecutionMessage:
 
 
 class SkillFlowWebSocketClient:
-    """同步 WebSocket 客户端 - 连接到 NogicOS 服务器"""
+    """sync WebSocket client - connect NogicOS server"""
     
     def __init__(self, host: str = "127.0.0.1", port: int = 8765):
         self.host = host
@@ -85,7 +86,7 @@ class SkillFlowWebSocketClient:
         self._lock = threading.Lock()
     
     def connect(self):
-        """连接到服务器（同步）"""
+        """connectserversync"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -105,9 +106,9 @@ class SkillFlowWebSocketClient:
         return False
     
     def send(self, message: ExecutionMessage):
-        """发送消息（同步，线程安全）"""
+        """sendmessagesync"""
         if not self._connected or not self.ws:
-            # 尝试重连
+            # 
             if not self.connect():
                 print(f"[SkillFlow WS] Cannot send, not connected")
                 return False
@@ -124,16 +125,16 @@ class SkillFlowWebSocketClient:
                 return False
     
     def send_sync(self, message: ExecutionMessage):
-        """同步发送（别名，保持 API 兼容性）"""
+        """syncsend API """
         return self.send(message)
     
     def start(self):
-        """启动客户端（连接）"""
+        """clientconnect"""
         self.connect()
         return self
     
     def stop(self):
-        """停止客户端"""
+        """stopclient"""
         self._connected = False
         if self.ws:
             try:
@@ -142,12 +143,12 @@ class SkillFlowWebSocketClient:
                 pass
 
 
-# 全局客户端实例
+# clientinstance
 _client: Optional[SkillFlowWebSocketClient] = None
 
 
 def get_client() -> SkillFlowWebSocketClient:
-    """获取客户端实例"""
+    """getclientinstance"""
     global _client
     if _client is None:
         _client = SkillFlowWebSocketClient()
@@ -155,7 +156,7 @@ def get_client() -> SkillFlowWebSocketClient:
 
 
 def start_server():
-    """启动客户端（保持 API 兼容性）"""
+    """client API """
     print("[SkillFlow] Starting WebSocket client...")
     client = get_client()
     client.start()
@@ -163,12 +164,12 @@ def start_server():
 
 
 def broadcast_sync(msg_type: MessageType, data: dict):
-    """同步发送消息"""
+    """syncsendmessage"""
     client = get_client()
     client.send_sync(ExecutionMessage(type=msg_type, data=data))
 
 
-# 便捷广播函数
+# broadcastfunction
 def broadcast_task_start(task: str, url: str, has_kb: bool = False):
     broadcast_sync(MessageType.TASK_START, {
         "task": task,
@@ -296,7 +297,7 @@ def broadcast_skill_list(skills: list):
     })
 
 
-# AI 可视化动画函数
+# AI function
 def broadcast_cursor_move(x: int, y: int, duration: float = 0.5):
     broadcast_sync(MessageType.CURSOR_MOVE, {
         "x": x,
