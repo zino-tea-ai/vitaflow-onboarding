@@ -54,6 +54,12 @@ def _is_gemini_model(model_name: str) -> bool:
     return "gemini" in model_name.lower()
 
 
+def _sync_anthropic_call(api_key: str, model: str, request_params: dict):
+    """在独立线程中使用同步客户端调用 Anthropic，避免 nest_asyncio + anyio 冲突"""
+    sync_client = anthropic.Anthropic(api_key=api_key)
+    return sync_client.messages.create(**request_params)
+
+
 async def completion_anthropic(
     client: anthropic.AsyncAnthropic,
     model: str,
@@ -64,7 +70,7 @@ async def completion_anthropic(
     args: dict = None,
     key="general",
 ) -> Any:
-    """Anthropic Claude 完成函数 - 基于最新文档"""
+    """Anthropic Claude 完成函数 - 使用同步客户端避免 nest_asyncio 冲突"""
     if args is None:
         args = {}
     
@@ -138,8 +144,37 @@ async def completion_anthropic(
             if system_message:
                 request_params["system"] = system_message
             
-            # 调用 API
-            response = await client.messages.create(**request_params)
+            # 在线程池中运行同步客户端（避免 nest_asyncio + anyio 冲突）
+            import concurrent.futures
+            import traceback
+            
+            # #region agent log - DEBUG Anthropic call
+            debug_log_path = r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log"
+            def log_debug_anthropic(msg, data=None):
+                try:
+                    import json
+                    entry = {"location": "lm.py:anthropic_call", "message": msg, "data": data or {}, "timestamp": time.time(), "sessionId": "debug-session", "hypothesisId": "F-anthropic"}
+                    with open(debug_log_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                except: pass
+            # #endregion
+            
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            
+            def sync_anthropic_call_wrapper():
+                try:
+                    log_debug_anthropic("Creating Anthropic client", {"model": model})
+                    return _sync_anthropic_call(api_key, model, request_params)
+                except FileNotFoundError as e:
+                    log_debug_anthropic("FileNotFoundError in anthropic call", {"error": str(e), "traceback": traceback.format_exc()})
+                    raise
+                except Exception as e:
+                    log_debug_anthropic("Exception in anthropic call", {"error": str(e), "type": type(e).__name__, "traceback": traceback.format_exc()})
+                    raise
+            
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(sync_anthropic_call_wrapper)
+                response = future.result(timeout=300)
             
             end_time = time.time()
             monitor.log_timing_event("lm/" + key, start_time, end_time)
@@ -355,18 +390,53 @@ async def completion_openai(
             else:
                 response_format = {"type": "text"}
 
-            # 使用同步客户端在线程中运行，避免 nest_asyncio + anyio 冲突
+            # 在线程池中运行同步客户端（避免 nest_asyncio + anyio 冲突）
             import concurrent.futures
+            import traceback
+            
+            # #region agent log - DEBUG OpenAI call
+            debug_log_path = r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log"
+            def log_debug(msg, data=None):
+                try:
+                    import json
+                    entry = {"location": "lm.py:sync_openai_call", "message": msg, "data": data or {}, "timestamp": time.time(), "sessionId": "debug-session", "hypothesisId": "F-openai"}
+                    with open(debug_log_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                except: pass
+            # #endregion
+            
+            def sync_openai_call():
+                try:
+                    log_debug("Creating OpenAI client")
+                    sync_client = openai.OpenAI()
+                    log_debug("Client created, calling API", {"model": model})
+                    result = sync_client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        response_format=response_format,
+                        **(
+                            {
+                                "tools": tools,
+                                "tool_choice": "required",
+                                "parallel_tool_calls": False,
+                            }
+                            if len(tools) > 0
+                            else {}
+                        ),
+                        **args,
+                    )
+                    log_debug("API call succeeded")
+                    return result
+                except FileNotFoundError as e:
+                    log_debug("FileNotFoundError in sync_openai_call", {"error": str(e), "traceback": traceback.format_exc()})
+                    raise
+                except Exception as e:
+                    log_debug("Exception in sync_openai_call", {"error": str(e), "type": type(e).__name__, "traceback": traceback.format_exc()})
+                    raise
+            
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    _sync_openai_call,
-                    model,
-                    messages,
-                    response_format,
-                    tools,
-                    args,
-                )
-                response: ChatCompletion = future.result(timeout=120)
+                future = executor.submit(sync_openai_call)
+                response: ChatCompletion = future.result(timeout=300)
 
             end_time = time.time()
             monitor.log_timing_event("lm/" + key, start_time, end_time)
@@ -468,7 +538,14 @@ def _get_client(model_name: str):
             raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
         return None
     
-    # OpenAI 模型（默认）
+    # OpenAI 模型（默认）- 使用 aiohttp 后端避免 httpx/anyio 与 nest_asyncio 冲突
+    try:
+        from openai import DefaultAioHttpClient
+        http_client = DefaultAioHttpClient()
+    except ImportError:
+        # 如果 aiohttp 未安装，使用默认客户端
+        http_client = None
+    
     if os.getenv("AZURE_OPENAI", "0") == "1":
         endpoint = os.getenv(f"AZURE_OPENAI_{model_name.replace('-', '_')}_ENDPOINT")
         api_key = os.getenv(f"AZURE_OPENAI_{model_name.replace('-', '_')}_API_KEY")
@@ -483,9 +560,10 @@ def _get_client(model_name: str):
             azure_endpoint=endpoint,
             api_key=api_key,
             api_version=api_version,
+            http_client=http_client,
         )
     else:
-        return openai.AsyncOpenAI()
+        return openai.AsyncOpenAI(http_client=http_client)
 
 
 class LM:

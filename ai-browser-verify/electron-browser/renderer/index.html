@@ -1,488 +1,204 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:;">
-  <title>AI Browser</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    :root {
-      --bg-primary: #0a0a0a;
-      --bg-secondary: #141414;
-      --bg-tertiary: #1a1a1a;
-      --text-primary: #ffffff;
-      --text-secondary: #a0a0a0;
-      --accent: #6366f1;
-      --accent-hover: #818cf8;
-      --success: #22c55e;
-      --warning: #f59e0b;
-      --error: #ef4444;
-    }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      height: 100vh;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-    }
-
-    /* 标题栏 - macOS 风格 */
-    .titlebar {
-      height: 38px;
-      background: var(--bg-secondary);
-      display: flex;
-      align-items: center;
-      -webkit-app-region: drag;
-      padding: 0 80px;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-    }
-
-    .titlebar-title {
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-secondary);
-    }
-
-    /* 工具栏 */
-    .toolbar {
-      height: 52px;
-      background: var(--bg-secondary);
-      display: flex;
-      align-items: center;
-      padding: 0 16px;
-      gap: 8px;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-    }
-
-    .nav-btn {
-      width: 32px;
-      height: 32px;
-      border: none;
-      background: transparent;
-      color: var(--text-secondary);
-      border-radius: 6px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.15s;
-    }
-
-    .nav-btn:hover {
-      background: var(--bg-tertiary);
-      color: var(--text-primary);
-    }
-
-    .nav-btn:disabled {
-      opacity: 0.3;
-      cursor: not-allowed;
-    }
-
-    .url-bar {
-      flex: 1;
-      height: 36px;
-      background: var(--bg-primary);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      padding: 0 12px;
-      gap: 8px;
-    }
-
-    .url-bar input {
-      flex: 1;
-      background: transparent;
-      border: none;
-      color: var(--text-primary);
-      font-size: 14px;
-      outline: none;
-    }
-
-    .url-bar input::placeholder {
-      color: var(--text-secondary);
-    }
-
-    /* AI 按钮 */
-    .ai-btn {
-      height: 36px;
-      padding: 0 16px;
-      background: linear-gradient(135deg, var(--accent), #8b5cf6);
-      border: none;
-      border-radius: 8px;
-      color: white;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      transition: all 0.2s;
-    }
-
-    .ai-btn:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
-    }
-
-    .ai-btn:active {
-      transform: translateY(0);
-    }
-
-    /* 主内容区 */
-    .main-content {
-      flex: 1;
-      display: flex;
-      position: relative;
-    }
-
-    /* Webview 容器 */
-    .webview-container {
-      flex: 1;
-      position: relative;
-    }
-
-    webview {
-      width: 100%;
-      height: 100%;
-      border: none;
-    }
-
-    /* AI 面板 */
-    .ai-panel {
-      width: 360px;
-      background: var(--bg-secondary);
-      border-left: 1px solid rgba(255,255,255,0.05);
-      display: none;
-      flex-direction: column;
-    }
-
-    .ai-panel.visible {
-      display: flex;
-    }
-
-    .ai-panel-header {
-      padding: 16px;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .ai-panel-header h3 {
-      font-size: 14px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .ai-panel-content {
-      flex: 1;
-      padding: 16px;
-      overflow-y: auto;
-    }
-
-    .ai-input-area {
-      padding: 16px;
-      border-top: 1px solid rgba(255,255,255,0.05);
-    }
-
-    .ai-input {
-      width: 100%;
-      padding: 12px;
-      background: var(--bg-primary);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 8px;
-      color: var(--text-primary);
-      font-size: 14px;
-      resize: none;
-      outline: none;
-      margin-bottom: 12px;
-    }
-
-    .ai-input:focus {
-      border-color: var(--accent);
-    }
-
-    .ai-actions {
-      display: flex;
-      gap: 8px;
-    }
-
-    .ai-action-btn {
-      flex: 1;
-      padding: 10px;
-      border: none;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-
-    .ai-action-btn.primary {
-      background: var(--accent);
-      color: white;
-    }
-
-    .ai-action-btn.primary:hover {
-      background: var(--accent-hover);
-    }
-
-    .ai-action-btn.secondary {
-      background: var(--bg-tertiary);
-      color: var(--text-primary);
-    }
-
-    .ai-action-btn.secondary:hover {
-      background: rgba(255,255,255,0.1);
-    }
-
-    /* 状态栏 */
-    .status-bar {
-      height: 24px;
-      background: var(--bg-secondary);
-      display: flex;
-      align-items: center;
-      padding: 0 12px;
-      font-size: 11px;
-      color: var(--text-secondary);
-      border-top: 1px solid rgba(255,255,255,0.05);
-    }
-
-    .status-indicator {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      margin-right: 6px;
-    }
-
-    .status-indicator.ready {
-      background: var(--success);
-    }
-
-    .status-indicator.busy {
-      background: var(--warning);
-      animation: pulse 1s infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-
-    /* AI 消息 */
-    .ai-message {
-      padding: 12px;
-      border-radius: 8px;
-      margin-bottom: 12px;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-
-    .ai-message.info {
-      background: rgba(99, 102, 241, 0.1);
-      border: 1px solid rgba(99, 102, 241, 0.2);
-    }
-
-    .ai-message.success {
-      background: rgba(34, 197, 94, 0.1);
-      border: 1px solid rgba(34, 197, 94, 0.2);
-    }
-
-    .ai-message.error {
-      background: rgba(239, 68, 68, 0.1);
-      border: 1px solid rgba(239, 68, 68, 0.2);
-    }
-
-    /* 欢迎页 */
-    .welcome {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      padding: 40px;
-    }
-
-    .welcome h1 {
-      font-size: 48px;
-      font-weight: 700;
-      margin-bottom: 16px;
-      background: linear-gradient(135deg, #fff, #a0a0a0);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .welcome p {
-      font-size: 18px;
-      color: var(--text-secondary);
-      margin-bottom: 32px;
-    }
-
-    .welcome-features {
-      display: flex;
-      gap: 24px;
-      margin-top: 32px;
-    }
-
-    .feature-card {
-      background: var(--bg-secondary);
-      padding: 24px;
-      border-radius: 12px;
-      width: 200px;
-      text-align: left;
-    }
-
-    .feature-card h3 {
-      font-size: 14px;
-      margin-bottom: 8px;
-    }
-
-    .feature-card p {
-      font-size: 13px;
-      color: var(--text-secondary);
-      margin: 0;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NogicOS - AI 原生浏览器</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="ai-effects.css">
 </head>
 <body>
-  <!-- 标题栏 -->
-  <div class="titlebar">
-    <span class="titlebar-title">AI Browser</span>
-  </div>
-
-  <!-- 工具栏 -->
-  <div class="toolbar">
-    <button class="nav-btn" id="btn-back" disabled title="后退">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M15 18l-6-6 6-6"/>
-      </svg>
-    </button>
-    <button class="nav-btn" id="btn-forward" disabled title="前进">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M9 18l6-6-6-6"/>
-      </svg>
-    </button>
-    <button class="nav-btn" id="btn-refresh" title="刷新">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M23 4v6h-6M1 20v-6h6"/>
-        <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
-      </svg>
-    </button>
-    
-    <div class="url-bar">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.5">
-        <circle cx="11" cy="11" r="8"/>
-        <path d="M21 21l-4.35-4.35"/>
-      </svg>
-      <input type="text" id="url-input" placeholder="输入网址或搜索..." />
-    </div>
-
-    <button class="ai-btn" id="btn-ai">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-        <path d="M2 17l10 5 10-5"/>
-        <path d="M2 12l10 5 10-5"/>
-      </svg>
-      AI
-    </button>
-  </div>
-
-  <!-- 主内容区 -->
-  <div class="main-content">
-    <!-- Webview 容器 -->
-    <div class="webview-container" id="webview-container">
-      <!-- 欢迎页 -->
-      <div class="welcome" id="welcome">
-        <h1>🧠 AI Browser</h1>
-        <p>能学习网站操作的智能浏览器</p>
-        
-        <div class="url-bar" style="width: 500px; margin-top: 20px;">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.5">
-            <circle cx="11" cy="11" r="8"/>
-            <path d="M21 21l-4.35-4.35"/>
-          </svg>
-          <input type="text" id="welcome-url" placeholder="输入网址开始浏览..." />
+    <!-- 顶部工具栏 -->
+    <div class="toolbar">
+        <!-- 窗口控制 -->
+        <div class="window-controls">
+            <div class="window-btn close"></div>
+            <div class="window-btn minimize"></div>
+            <div class="window-btn maximize"></div>
         </div>
 
-        <div class="welcome-features">
-          <div class="feature-card">
-            <h3>🎯 自动学习</h3>
-            <p>AI 自动探索网站，学习操作方式</p>
-          </div>
-          <div class="feature-card">
-            <h3>⚡ 极速执行</h3>
-            <p>学过的操作，执行速度提升 10x+</p>
-          </div>
-          <div class="feature-card">
-            <h3>🔒 安全可靠</h3>
-            <p>本地运行，数据不离开设备</p>
-          </div>
+        <!-- 导航按钮 -->
+        <div class="nav-buttons">
+            <button class="nav-btn" id="btn-back" title="后退">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M15 18l-6-6 6-6"/>
+                </svg>
+            </button>
+            <button class="nav-btn" id="btn-forward" title="前进">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M9 18l6-6-6-6"/>
+                </svg>
+            </button>
+            <button class="nav-btn" id="btn-refresh" title="刷新">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6M1 20v-6h6"/>
+                    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                </svg>
+            </button>
         </div>
-      </div>
-    </div>
 
-    <!-- AI 面板 -->
-    <div class="ai-panel" id="ai-panel">
-      <div class="ai-panel-header">
-        <h3>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-            <path d="M2 17l10 5 10-5"/>
-            <path d="M2 12l10 5 10-5"/>
-          </svg>
-          AI 助手
-        </h3>
-        <button class="nav-btn" id="btn-close-panel">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M18 6L6 18M6 6l12 12"/>
-          </svg>
+        <!-- URL 栏 -->
+        <div class="url-bar">
+            <div class="url-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
+                </svg>
+            </div>
+            <input type="text" id="url-input" placeholder="输入网址或搜索...">
+            <div class="loading-indicator" id="loading-indicator"></div>
+        </div>
+
+        <!-- 连接状态 -->
+        <div class="connection-status" id="connection-status">
+            <div class="status-dot disconnected"></div>
+            <span>未连接</span>
+        </div>
+
+        <!-- AI 按钮 -->
+        <button class="ai-toggle-btn" id="ai-toggle-btn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2a2 2 0 012 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 017 7h1a2 2 0 110 4h-1a7 7 0 01-7 7h-1v1.27c.6.34 1 .99 1 1.73a2 2 0 11-4 0c0-.74.4-1.39 1-1.73V18h-1a7 7 0 01-7-7H2a2 2 0 110-4h1a7 7 0 017-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 012-2z"/>
+            </svg>
+            <span>AI</span>
         </button>
-      </div>
-      
-      <div class="ai-panel-content" id="ai-messages">
-        <div class="ai-message info">
-          👋 你好！我可以帮你自动执行网页操作。
-          <br><br>
-          试试输入任务，比如：<br>
-          • "搜索 AI 浏览器"<br>
-          • "找到第一条帖子"<br>
-          • "点击登录按钮"
-        </div>
-      </div>
-
-      <div class="ai-input-area">
-        <textarea class="ai-input" id="ai-task-input" placeholder="描述你想执行的任务..." rows="3"></textarea>
-        <div class="ai-actions">
-          <button class="ai-action-btn secondary" id="btn-learn">
-            📚 学习此页
-          </button>
-          <button class="ai-action-btn primary" id="btn-execute">
-            ▶️ 执行
-          </button>
-        </div>
-      </div>
     </div>
-  </div>
 
-  <!-- 状态栏 -->
-  <div class="status-bar">
-    <div class="status-indicator ready" id="status-indicator"></div>
-    <span id="status-text">AI 就绪</span>
-  </div>
+    <!-- 网页内容区域 (使用 webview 替代 BrowserView) -->
+    <webview id="browser-view" src="https://news.ycombinator.com" style="width:100%; height: calc(100vh - 80px);"></webview>
 
-  <script src="app.js"></script>
+    <!-- AI 执行面板 -->
+    <div class="ai-panel" id="ai-panel">
+        <div class="ai-panel-header">
+            <div class="panel-tabs">
+                <button class="tab-btn active" data-tab="execution">执行</button>
+                <button class="tab-btn" data-tab="learn">学习</button>
+                <button class="tab-btn" data-tab="skills">技能库</button>
+            </div>
+            <button class="panel-close-btn" id="panel-close-btn">×</button>
+        </div>
+
+        <!-- 执行视图 -->
+        <div class="tab-content active" id="tab-execution">
+            <!-- 模型选择器 -->
+            <div class="model-selector">
+                <label for="model-select">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                    </svg>
+                    模型
+                </label>
+                <select id="model-select">
+                    <option value="gpt-5.2">GPT-5.2 Thinking</option>
+                    <option value="gpt-5.2-pro">GPT-5.2 Pro</option>
+                    <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
+                    <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash</option>
+                </select>
+            </div>
+            
+            <div class="task-input-area">
+                <textarea id="task-input" placeholder="描述你想让 AI 做什么...&#10;例如：获取第一条新闻标题、点击某个链接"></textarea>
+                <div class="task-actions">
+                    <button class="execute-btn" id="execute-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M8 5v14l11-7z"/>
+                        </svg>
+                        执行
+                    </button>
+                    <button class="stop-btn" id="stop-btn" disabled>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="6" width="12" height="12"/>
+                        </svg>
+                        停止
+                    </button>
+                </div>
+            </div>
+
+            <!-- 执行状态 -->
+            <div class="execution-status" id="execution-status">
+                <div class="status-header">
+                    <span class="status-title">等待任务...</span>
+                    <span class="status-time" id="status-time"></span>
+                </div>
+            </div>
+
+            <!-- 步骤列表 -->
+            <div class="steps-container" id="steps-container">
+                <!-- 动态生成的步骤卡片 -->
+            </div>
+        </div>
+
+        <!-- 学习视图 -->
+        <div class="tab-content" id="tab-learn">
+            <div class="learn-input-area">
+                <p class="learn-description">让 AI 自动探索并学习当前网站的操作技能</p>
+                <button class="learn-btn" id="learn-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2zM22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>
+                    </svg>
+                    开始学习
+                </button>
+            </div>
+
+            <!-- 学习进度 -->
+            <div class="learn-progress" id="learn-progress">
+                <div class="progress-info">
+                    <span class="progress-text">准备就绪</span>
+                    <span class="progress-count">0 / 0</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+            </div>
+
+            <!-- 发现的技能 -->
+            <div class="discovered-skills" id="discovered-skills">
+                <h4>发现的技能</h4>
+                <div class="skills-list" id="discovered-skills-list">
+                    <!-- 动态生成 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- 技能库视图 -->
+        <div class="tab-content" id="tab-skills">
+            <div class="skills-search">
+                <input type="text" id="skills-search" placeholder="搜索技能...">
+            </div>
+            <div class="skills-library" id="skills-library">
+                <div class="empty-state">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                        <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/>
+                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>
+                    </svg>
+                    <p>暂无技能</p>
+                    <span>学习网站后，技能将显示在这里</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 技能详情弹窗 -->
+    <div class="skill-modal" id="skill-modal">
+        <div class="skill-modal-content">
+            <div class="skill-modal-header">
+                <h3 id="skill-modal-title">技能名称</h3>
+                <button class="modal-close-btn" id="modal-close-btn">×</button>
+            </div>
+            <div class="skill-modal-body" id="skill-modal-body">
+                <!-- 动态内容 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- #region agent log -->
+    <script>
+    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:inline',message:'HTML loaded, DOM ready check',data:{toolbarExists:!!document.querySelector('.toolbar'),bodyChildren:document.body.children.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
+    </script>
+    <!-- #endregion -->
+    <script src="ai-overlay.js"></script>
+    <script src="app.js"></script>
 </body>
 </html>

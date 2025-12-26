@@ -183,6 +183,140 @@ async def make_browser(
     return Browser(browser, context, page, screen_size=(height, width))
 
 
+async def make_browser_cdp(
+    playwright: Playwright,
+    cdp_url: str = "http://localhost:9222",
+    target_url_filter: str = None,
+    width=1280,
+    height=720,
+    timeout=5000,
+    navigation_timeout=16000,
+):
+    """
+    连接到已有浏览器实例（通过 CDP）
+    用于连接 NogicOS 的内嵌 webview
+    
+    Args:
+        playwright: Playwright 实例
+        cdp_url: CDP 端点 URL，默认 http://localhost:9222
+        target_url_filter: 目标页面 URL 过滤器（用于定位 webview）
+        width: 视口宽度
+        height: 视口高度
+    
+    Returns:
+        Browser 实例
+    """
+    import urllib.request
+    import json
+    
+    await aprint(f"[CDP] Connecting to {cdp_url}...")
+    
+    try:
+        # 步骤1: 获取 CDP targets 列表，找到 webview 的 WebSocket URL
+        webview_ws_url = None
+        try:
+            with urllib.request.urlopen(f"{cdp_url}/json", timeout=5) as response:
+                targets = json.loads(response.read().decode())
+                await aprint(f"[CDP] Found {len(targets)} targets")
+                
+                for target in targets:
+                    target_type = target.get('type', '')
+                    target_url = target.get('url', '')
+                    ws_url = target.get('webSocketDebuggerUrl', '')
+                    
+                    await aprint(f"[CDP] Target: type={target_type}, url={target_url[:60] if target_url else 'N/A'}...")
+                    
+                    # 找 webview 类型或非 file:// 的页面
+                    if target_type == 'webview':
+                        webview_ws_url = ws_url
+                        await aprint(f"[CDP] Found webview target: {target_url}")
+                        break
+                    elif target_type == 'page' and not target_url.startswith('file://'):
+                        if target_url_filter is None or target_url_filter in target_url:
+                            webview_ws_url = ws_url
+                            await aprint(f"[CDP] Found matching page target: {target_url}")
+                            break
+        except Exception as e:
+            await aprint(f"[CDP] Failed to get targets: {e}")
+        
+        if not webview_ws_url:
+            await aprint("[CDP] No webview target found, falling back to browser connection")
+            # 回退到原来的方式
+            browser = await playwright.chromium.connect_over_cdp(cdp_url)
+            contexts = browser.contexts
+            if contexts and contexts[0].pages:
+                page = contexts[0].pages[0]
+                return Browser(browser, contexts[0], page, screen_size=(height, width))
+            raise RuntimeError("No suitable webview page found")
+        
+        # 步骤2: 连接到浏览器，然后通过 CDP session 获取 webview 页面
+        await aprint(f"[CDP] Connecting to browser and targeting webview...")
+        
+        # 连接到浏览器级别
+        browser = await playwright.chromium.connect_over_cdp(cdp_url)
+        await aprint("[CDP] Connected to browser")
+        
+        # 使用 CDP 直接连接到 webview target
+        # 从 webview_ws_url 提取 target ID
+        # 格式: ws://localhost:9222/devtools/page/TARGET_ID
+        target_id = webview_ws_url.split('/')[-1]
+        await aprint(f"[CDP] Target ID: {target_id}")
+        
+        # 创建新的 context 连接到 webview
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        context.set_default_timeout(timeout)
+        context.set_default_navigation_timeout(navigation_timeout)
+        
+        # 尝试通过 CDP session 附加到 webview target
+        try:
+            cdp_session = await context.new_cdp_session(context.pages[0] if context.pages else None)
+            # 获取所有 targets
+            targets_result = await cdp_session.send("Target.getTargets")
+            await aprint(f"[CDP] Targets: {len(targets_result.get('targetInfos', []))}")
+            
+            # 找到 webview target 并附加
+            for target_info in targets_result.get('targetInfos', []):
+                if target_info.get('type') == 'page' and target_info.get('targetId') == target_id:
+                    await aprint(f"[CDP] Found target, attaching...")
+                    attach_result = await cdp_session.send("Target.attachToTarget", {
+                        "targetId": target_id,
+                        "flatten": True
+                    })
+                    await aprint(f"[CDP] Attached: {attach_result}")
+                    break
+        except Exception as cdp_err:
+            await aprint(f"[CDP] CDP session error (non-fatal): {cdp_err}")
+        
+        # 遍历所有页面找到 webview
+        page = None
+        for ctx in browser.contexts:
+            for p in ctx.pages:
+                if not p.url.startswith('file://') and p.url != 'about:blank':
+                    page = p
+                    context = ctx
+                    await aprint(f"[CDP] Found webview page: {p.url}")
+                    break
+            if page:
+                break
+        
+        if not page:
+            # 如果仍然找不到，使用第一个可用页面
+            if browser.contexts and browser.contexts[0].pages:
+                page = browser.contexts[0].pages[0]
+                context = browser.contexts[0]
+                await aprint(f"[CDP] Using fallback page: {page.url}")
+            else:
+                raise RuntimeError("No pages found")
+        
+        await aprint(f"[CDP] Final page URL: {page.url}")
+        
+        return Browser(browser, context, page, screen_size=(height, width))
+        
+    except Exception as e:
+        await aprint(f"[CDP] Connection failed: {e}")
+        raise
+
+
 async def make_browsers(
     playwright: Playwright,
     start_urls: list[str],

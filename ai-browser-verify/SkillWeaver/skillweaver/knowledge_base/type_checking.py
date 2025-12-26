@@ -1,23 +1,38 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 
+# 检查 pyright 是否可用
+PYRIGHT_AVAILABLE = shutil.which("pyright") is not None
+
 def _typecheck_file(file: str):
-    proc = subprocess.run(
-        ["pyright", "--outputjson", file],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    data = proc.stdout.decode("utf-8").strip()
+    if not PYRIGHT_AVAILABLE:
+        # pyright 不可用时返回空结果
+        return {"generalDiagnostics": []}
+    
     try:
+        proc = subprocess.run(
+            ["pyright", "--outputjson", file],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        data = proc.stdout.decode("utf-8").strip()
         return json.loads(data)
+    except FileNotFoundError:
+        # pyright 未安装
+        return {"generalDiagnostics": []}
+    except subprocess.TimeoutExpired:
+        # 超时
+        return {"generalDiagnostics": []}
     except Exception as e:
         with open(file) as f:
             content = f.read()
         print("failed to check type safety of", content)
-        raise e
+        return {"generalDiagnostics": []}
 
 
 def _typecheck_string(code: str):

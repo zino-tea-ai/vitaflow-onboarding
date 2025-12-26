@@ -24,6 +24,52 @@ from skillweaver.sanity_check_code import sanity_check_codegen_code
 from skillweaver.templates import codegen_templ
 from skillweaver.util import J
 from skillweaver.util.deep_await import deep_await
+import re as _re
+
+
+def sanitize_generated_code(code: str) -> str:
+    """
+    Clean up LLM-generated code to avoid common errors.
+    
+    Fixes:
+    1. Non-ASCII characters (cause UTF-8 errors)
+    2. Missing .first on selectors (cause strict mode violations)
+    3. Missing timeout parameters (cause TimeoutError)
+    """
+    # 1. Remove non-ASCII characters (keep only ASCII)
+    code = code.encode('ascii', 'ignore').decode('ascii')
+    
+    # 2. Auto-add .first to get_by_role().click/fill/press patterns
+    # Pattern: .get_by_role(...).click() without .first
+    pattern = r'(\.get_by_role\([^)]+\))(\.(click|fill|press|wait_for)\()'
+    
+    def add_first(match):
+        selector = match.group(1)
+        action = match.group(2)
+        # Only add .first if it's not already there
+        if '.first' not in selector and '.nth(' not in selector:
+            return selector + '.first' + action
+        return match.group(0)
+    
+    code = _re.sub(pattern, add_first, code)
+    
+    # 3. Add timeout to click/fill/press if not present
+    for action in ['click', 'fill', 'press']:
+        # Match action() without timeout parameter
+        pattern = rf'\.{action}\(\s*\)'
+        replacement = f'.{action}(timeout=15000)'
+        code = _re.sub(pattern, replacement, code)
+        
+        # Match action("...") without timeout
+        pattern = rf'\.{action}\(([^)]+)\)'
+        def add_timeout(m):
+            args = m.group(1)
+            if 'timeout' not in args:
+                return f'.{action}({args}, timeout=15000)'
+            return m.group(0)
+        code = _re.sub(pattern, add_timeout, code)
+    
+    return code
 
 
 def annotate_source_with_recoveries(
@@ -185,7 +231,7 @@ def codegen_trajectory_from_folder(folder: str, weak=False):
     states: list[State] = []
     actions: list[dict] = []
     i = 0
-    while os.path.exists(f"{folder}/{i:03d}_action.json"):
+    while os.path.exists(os.path.join(folder, f"{i:03d}_action.json")):
         states.append(State.load(folder, f"{i:03d}_state", weak=weak))
         with open(f"{folder}/{i:03d}_action.json") as f:
             actions.append(json.load(f))
@@ -354,13 +400,17 @@ async def codegen_do(
     def print_wrapper(*args, **kwargs):
         print(*args, **kwargs, file=stdout_capture)
 
-    with open(filename, "w") as f:
+    # MODIFIED: Sanitize generated code to fix common LLM errors
+    code = sanitize_generated_code(code)
+    
+    with open(filename, "w", encoding="utf-8") as f:
         key = os.path.abspath(filename)
         vars[key] = [
             print_wrapper,
         ]
         kb_code = knowledge_base.code if not as_reference_only else ""
         module_code = f"""
+# -*- coding: utf-8 -*-
 import asyncio, re
 from skillweaver.agent import vars
 

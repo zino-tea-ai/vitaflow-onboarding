@@ -1,263 +1,464 @@
 /**
- * AI Browser - 主进程
- * 能学习网站操作的智能浏览器
+ * NogicOS - AI 原生浏览器
+ * 主进程
  */
-const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+
+// 加载环境变量
+require('dotenv').config();
+
+const { app, BrowserWindow, BrowserView, ipcMain, Menu } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
+const { NogicOSWebSocketClient } = require('./websocket-client');
 
-// 开发模式
-const isDev = process.argv.includes('--dev');
+// ========================================
+// NogicOS 配置
+// ========================================
+console.log(`[NogicOS] 启动中...`);
 
-// 主窗口
-let mainWindow = null;
+let mainWindow;
+let browserView;  // 使用 BrowserView 替代 webview 以支持 CDP
+let wsClient;
+let pythonProcess;
+let currentModel = process.env.DEFAULT_MODEL || 'gpt-5.2';
+let webviewDebuggerPort = null;  // webview 的独立调试端口
 
-// AI 引擎状态
-let aiEngineStatus = {
-  ready: false,
-  lastTask: null,
-  knowledgeBase: {}
+// 模型配置 - 2025年12月最新模型
+const MODEL_CONFIG = {
+    'gpt-5.2': { name: 'GPT-5.2 Thinking', provider: 'openai' },
+    'gpt-5.2-pro': { name: 'GPT-5.2 Pro', provider: 'openai' },
+    'gpt-5.2-chat-latest': { name: 'GPT-5.2 Instant', provider: 'openai' },
+    'claude-opus-4-5-20251101': { name: 'Claude Opus 4.5', provider: 'anthropic' },
+    'gemini-2.0-flash-exp': { name: 'Gemini 2.0 Flash', provider: 'google' }
 };
 
-/**
- * 创建主窗口
- */
+// 创建主窗口
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 800,
-    minHeight: 600,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js'),
-      webviewTag: true  // 启用 webview
-    },
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 15, y: 15 },
-    backgroundColor: '#0a0a0a'
-  });
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:createWindow',message:'Creating main window',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    
+    mainWindow = new BrowserWindow({
+        width: 1400,
+        height: 900,
+        minWidth: 1000,
+        minHeight: 700,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            webviewTag: true,  // 启用 webview 标签
+        },
+        titleBarStyle: 'hidden',
+        frame: false,
+        backgroundColor: '#0a0a0f',
+    });
 
-  // 加载主页面
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    // 加载 UI
+    const htmlPath = path.join(__dirname, 'renderer', 'index.html');
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:loadFile',message:'Loading HTML file',data:{htmlPath},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    mainWindow.loadFile(htmlPath);
 
-  // 开发模式打开 DevTools
-  if (isDev) {
-    mainWindow.webContents.openDevTools();
-  }
+    // 监听主窗口加载完成
+    mainWindow.webContents.on('did-finish-load', () => {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:didFinishLoad',message:'Main window HTML finished loading',data:{url:mainWindow.webContents.getURL()},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+        
+        // 延迟获取 webview 的 webContents（等待 webview 初始化）
+        setTimeout(() => {
+            setupWebviewMonitor();
+        }, 2000);
+    });
+    
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:didFailLoad',message:'Main window failed to load',data:{errorCode,errorDescription},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E'})}).catch(()=>{});
+        // #endregion
+    });
 
-  // 设置菜单
-  createMenu();
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+    // 初始化 WebSocket 客户端
+    initWebSocket();
+    
+    // 创建菜单
+    createMenu();
 }
 
-/**
- * 创建菜单
- */
+// ========================================
+// Webview 监控（用于状态同步）
+// ========================================
+function setupWebviewMonitor() {
+    const { webContents } = require('electron');
+    const allContents = webContents.getAllWebContents();
+    
+    console.log(`[NogicOS] Searching for webview among ${allContents.length} webContents...`);
+    
+    const webviewContents = allContents.find(wc => wc.getType() === 'webview');
+    
+    if (webviewContents) {
+        const webviewUrl = webviewContents.getURL();
+        console.log('[NogicOS] Found webview:');
+        console.log(`  - URL: ${webviewUrl}`);
+        
+        // 监听 webview URL 变化
+        webviewContents.on('did-navigate', (event, url) => {
+            console.log(`[NogicOS] Webview navigated to: ${url}`);
+        });
+    } else {
+        console.log('[NogicOS] Webview not found, retrying...');
+        setTimeout(setupWebviewMonitor, 1000);
+    }
+}
+
+// 初始化 WebSocket 连接
+function initWebSocket() {
+    wsClient = new NogicOSWebSocketClient('ws://127.0.0.1:8765');
+    
+    wsClient.on('connected', () => {
+        mainWindow.webContents.send('ws:connectionStatus', { connected: true });
+    });
+    
+    wsClient.on('disconnected', () => {
+        mainWindow.webContents.send('ws:connectionStatus', { connected: false });
+    });
+    
+    wsClient.on('serverConnected', (data) => {
+        console.log('[WebSocket] connected:', data);
+    });
+    
+    // 任务事件
+    wsClient.on('taskStart', (data) => {
+        mainWindow.webContents.send('ai:taskStart', data);
+    });
+    
+    wsClient.on('taskComplete', (data) => {
+        mainWindow.webContents.send('ai:taskComplete', data);
+    });
+    
+    wsClient.on('taskError', (data) => {
+        mainWindow.webContents.send('ai:taskError', data);
+    });
+    
+    // 步骤事件
+    wsClient.on('stepStart', (data) => {
+        mainWindow.webContents.send('ai:stepStart', data);
+    });
+    
+    wsClient.on('stepThinking', (data) => {
+        mainWindow.webContents.send('ai:stepThinking', data);
+    });
+    
+    wsClient.on('stepAction', (data) => {
+        mainWindow.webContents.send('ai:stepAction', data);
+    });
+    
+    wsClient.on('stepResult', (data) => {
+        mainWindow.webContents.send('ai:stepResult', data);
+    });
+    
+    wsClient.on('stepComplete', (data) => {
+        mainWindow.webContents.send('ai:stepComplete', data);
+    });
+    
+    // 技能事件
+    wsClient.on('skillMatched', (data) => {
+        mainWindow.webContents.send('ai:skillMatched', data);
+    });
+    
+    wsClient.on('skillExecuting', (data) => {
+        mainWindow.webContents.send('ai:skillExecuting', data);
+    });
+    
+    wsClient.on('skillResult', (data) => {
+        mainWindow.webContents.send('ai:skillResult', data);
+    });
+    
+    // 学习事件
+    wsClient.on('learnStart', (data) => {
+        mainWindow.webContents.send('ai:learnStart', data);
+    });
+    
+    wsClient.on('learnProgress', (data) => {
+        mainWindow.webContents.send('ai:learnProgress', data);
+    });
+    
+    wsClient.on('skillDiscovered', (data) => {
+        mainWindow.webContents.send('ai:skillDiscovered', data);
+    });
+    
+    wsClient.on('learnComplete', (data) => {
+        mainWindow.webContents.send('ai:learnComplete', data);
+    });
+    
+    // 知识库事件
+    wsClient.on('kbLoaded', (data) => {
+        mainWindow.webContents.send('ai:kbLoaded', data);
+    });
+    
+    wsClient.on('skillList', (data) => {
+        mainWindow.webContents.send('ai:skillList', data);
+    });
+    
+    // AI 可视化动画事件（NogicOS Atlas 体验）
+    wsClient.on('cursorMove', (data) => {
+        mainWindow.webContents.send('ai:cursorMove', data);
+    });
+    
+    wsClient.on('cursorClick', (data) => {
+        mainWindow.webContents.send('ai:cursorClick', data);
+    });
+    
+    wsClient.on('cursorType', (data) => {
+        mainWindow.webContents.send('ai:cursorType', data);
+    });
+    
+    wsClient.on('cursorStopType', (data) => {
+        mainWindow.webContents.send('ai:cursorStopType', data);
+    });
+    
+    wsClient.on('highlight', (data) => {
+        mainWindow.webContents.send('ai:highlight', data);
+    });
+    
+    wsClient.on('highlightHide', (data) => {
+        mainWindow.webContents.send('ai:highlightHide', data);
+    });
+    
+    wsClient.on('screenGlow', (data) => {
+        mainWindow.webContents.send('ai:screenGlow', data);
+    });
+    
+    wsClient.on('screenGlowStop', (data) => {
+        mainWindow.webContents.send('ai:screenGlowStop', data);
+    });
+    
+    wsClient.on('screenPulse', (data) => {
+        mainWindow.webContents.send('ai:screenPulse', data);
+    });
+    
+    wsClient.connect();
+}
+
+// 创建菜单
 function createMenu() {
-  const template = [
-    {
-      label: 'AI Browser',
-      submenu: [
-        { role: 'about' },
-        { type: 'separator' },
-        { role: 'quit' }
-      ]
-    },
-    {
-      label: '视图',
-      submenu: [
-        { role: 'reload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' }
-      ]
-    },
-    {
-      label: 'AI',
-      submenu: [
+    const template = [
         {
-          label: '学习当前页面',
-          accelerator: 'CmdOrCtrl+L',
-          click: () => mainWindow?.webContents.send('ai:learn')
+            label: 'SkillFlow',
+            submenu: [
+                { role: 'about' },
+                { type: 'separator' },
+                { role: 'quit' }
+            ]
         },
         {
-          label: '执行任务',
-          accelerator: 'CmdOrCtrl+E',
-          click: () => mainWindow?.webContents.send('ai:execute')
-        },
-        { type: 'separator' },
-        {
-          label: '查看知识库',
-          click: () => mainWindow?.webContents.send('ai:showKnowledgeBase')
+            label: '视图',
+            submenu: [
+                { role: 'reload' },
+                { role: 'toggleDevTools' },
+                { type: 'separator' },
+                { role: 'resetZoom' },
+                { role: 'zoomIn' },
+                { role: 'zoomOut' },
+            ]
         }
-      ]
-    }
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
+    ];
+    
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-/**
- * 执行 AI 任务
- */
-async function executeAITask(task, url, useKnowledgeBase = true) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '-m', 'skillweaver.attempt_task',
-      url,
-      task,
-      '--agent-lm-name', 'gemini-3-flash',
-      '--max-steps', '10'
-    ];
-
-    if (useKnowledgeBase) {
-      const kbPath = path.join(__dirname, '..', 'knowledge_base', 'general_kb');
-      args.push('--knowledge-base-path-prefix', kbPath);
+// IPC 处理器 - 设置模型
+ipcMain.handle('set-model', async (_, model) => {
+    if (MODEL_CONFIG[model]) {
+        currentModel = model;
+        console.log('[AI] 模型切换为:', MODEL_CONFIG[model].name);
+        return { success: true, model: currentModel };
     }
+    return { success: false, error: '未知模型' };
+});
 
+ipcMain.handle('get-models', async () => {
+    return {
+        current: currentModel,
+        available: MODEL_CONFIG
+    };
+});
+
+// IPC 处理器 - AI 任务
+ipcMain.handle('execute-task', async (_, task, url, model) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:execute-task:entry',message:'IPC handler called',data:{task,url,model},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+    // #endregion
+    
+    const useModel = model || currentModel;
     console.log('[AI] 执行任务:', task);
-    console.log('[AI] 命令:', 'python', args.join(' '));
-
-    const startTime = Date.now();
-
-    const process = spawn('python', args, {
-      cwd: path.join(__dirname, '..', 'SkillWeaver'),
-      env: { ...process.env }
-    });
-
-    let output = '';
-    let error = '';
-
-    process.stdout.on('data', (data) => {
-      output += data.toString();
-      console.log('[AI stdout]', data.toString());
-    });
-
-    process.stderr.on('data', (data) => {
-      error += data.toString();
-      console.error('[AI stderr]', data.toString());
-    });
-
-    process.on('close', (code) => {
-      const elapsed = (Date.now() - startTime) / 1000;
-      
-      if (code === 0) {
-        resolve({
-          success: true,
-          output,
-          time: elapsed,
-          task
-        });
-      } else {
-        reject({
-          success: false,
-          error: error || `Process exited with code ${code}`,
-          time: elapsed,
-          task
-        });
-      }
-    });
-
-    process.on('error', (err) => {
-      reject({
-        success: false,
-        error: err.message,
-        task
-      });
-    });
-  });
-}
-
-/**
- * 学习网站操作
- */
-async function learnWebsite(url, iterations = 10) {
-  return new Promise((resolve, reject) => {
-    const siteName = new URL(url).hostname.replace(/\./g, '_');
-    const outputDir = path.join(__dirname, '..', 'knowledge_base', siteName);
-
+    console.log('[AI] URL:', url);
+    console.log('[AI] 模型:', MODEL_CONFIG[useModel]?.name || useModel);
+    
+    const cwd = path.join(__dirname, '..', 'SkillWeaver');
+    const env = { 
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',  // 修复 Windows 终端 emoji 编码问题
+        PYTHONUTF8: '1'
+    };
+    
+    // 简化的命令参数 - 使用 headless 模式 + WebSocket 同步
     const args = [
-      '-m', 'skillweaver.explore',
-      url,
-      outputDir,
-      '--agent-lm-name', 'claude-opus-4-5-20251124',
-      '--iterations', iterations.toString()
+        '-m', 'skillweaver.attempt_task_with_ws',
+        url,
+        task,
+        '--agent-lm-name', useModel,
+        '--max-steps', '15'
     ];
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'main.js:execute-task:spawn',message:'About to spawn Python',data:{cwd,args},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'E'})}).catch(()=>{});
+    // #endregion
+    
+    // 启动 AI 任务（headless 模式，通过 WebSocket 同步状态到 NogicOS）
+    pythonProcess = spawn('python', args, { 
+        cwd,
+        env,
+        windowsHide: true
+    });
+    
+    pythonProcess.stdout.on('data', (data) => {
+        console.log('[AI stdout]', data.toString());
+    });
+    
+    pythonProcess.stderr.on('data', (data) => {
+        console.log('[AI stderr]', data.toString());
+    });
+    
+    pythonProcess.on('close', (code) => {
+        console.log('[AI] 进程结束，退出码:', code);
+        pythonProcess = null;
+        if (mainWindow) {
+            mainWindow.webContents.send('ai:processExit', { code });
+        }
+    });
+    
+    return { started: true, model: useModel };
+});
 
+ipcMain.handle('learn-website', async (_, url, model) => {
+    const useModel = model || currentModel;
     console.log('[AI] 学习网站:', url);
-
-    const process = spawn('python', args, {
-      cwd: path.join(__dirname, '..', 'SkillWeaver'),
-      env: { ...process.env }
+    console.log('[AI] 模型:', MODEL_CONFIG[useModel]?.name || useModel);
+    
+    const cwd = path.join(__dirname, '..', 'SkillWeaver');
+    const env = { 
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1'
+    };
+    
+    pythonProcess = spawn('python', [
+        '-m', 'skillweaver.explore_with_ws',
+        url || 'https://news.ycombinator.com',
+        './learn_output',
+        '--iterations', '5',
+        '--agent-lm-name', useModel
+    ], { 
+        cwd,
+        env,
+        windowsHide: true
     });
-
-    let output = '';
-
-    process.stdout.on('data', (data) => {
-      output += data.toString();
-      // 发送进度到渲染进程
-      mainWindow?.webContents.send('ai:learnProgress', data.toString());
+    
+    pythonProcess.stdout.on('data', (data) => {
+        console.log('[Learn stdout]', data.toString());
     });
-
-    process.on('close', (code) => {
-      if (code === 0) {
-        resolve({
-          success: true,
-          knowledgeBasePath: outputDir,
-          output
-        });
-      } else {
-        reject({
-          success: false,
-          error: `Learning failed with code ${code}`
-        });
-      }
+    
+    pythonProcess.stderr.on('data', (data) => {
+        console.log('[Learn stderr]', data.toString());
     });
-  });
+    
+    pythonProcess.on('close', (code) => {
+        console.log('[Learn] 进程结束，退出码:', code);
+        pythonProcess = null;
+        if (mainWindow) {
+            mainWindow.webContents.send('ai:processExit', { code });
+        }
+    });
+    
+    return { started: true, model: useModel };
+});
+
+ipcMain.handle('stop-task', () => {
+    if (pythonProcess) {
+        pythonProcess.kill();
+        pythonProcess = null;
+        return { stopped: true };
+    }
+    return { stopped: false };
+});
+
+// IPC 处理器 - 技能库
+ipcMain.handle('get-skill-library', async () => {
+    // 从知识库读取技能列表
+    return [];
+});
+
+ipcMain.handle('get-skill-detail', async (_, skillName) => {
+    return null;
+});
+
+// IPC 处理器 - WebSocket
+ipcMain.handle('ws:getStatus', () => {
+    return wsClient ? wsClient.getConnectionStatus() : false;
+});
+
+ipcMain.handle('ws:reconnect', () => {
+    if (wsClient) {
+        wsClient.disconnect();
+        wsClient.connect();
+    }
+});
+
+// 启动 Python WebSocket 服务器
+function startPythonWebSocketServer() {
+    const cwd = path.join(__dirname, '..', 'SkillWeaver');
+    
+    const serverProcess = spawn('python', [
+        '-m', 'skillweaver.websocket_server'
+    ], { cwd, windowsHide: true });
+    
+    serverProcess.stdout.on('data', (data) => {
+        console.log('[WS Server]', data.toString());
+    });
+    
+    serverProcess.stderr.on('data', (data) => {
+        console.log('[WS Server Error]', data.toString());
+    });
+    
+    return serverProcess;
 }
 
-// IPC 处理
-ipcMain.handle('ai:executeTask', async (event, { task, url, useKnowledgeBase }) => {
-  try {
-    const result = await executeAITask(task, url, useKnowledgeBase);
-    return result;
-  } catch (error) {
-    return error;
-  }
+// 应用启动
+app.whenReady().then(() => {
+    console.log('[NogicOS] 启动中...');
+    
+    // 启动 WebSocket 服务器
+    // startPythonWebSocketServer();
+    
+    createWindow();
+    
+    app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+            createWindow();
+        }
+    });
 });
-
-ipcMain.handle('ai:learnWebsite', async (event, { url, iterations }) => {
-  try {
-    const result = await learnWebsite(url, iterations);
-    return result;
-  } catch (error) {
-    return error;
-  }
-});
-
-ipcMain.handle('ai:getStatus', () => {
-  return aiEngineStatus;
-});
-
-// 应用生命周期
-app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+    if (wsClient) {
+        wsClient.disconnect();
+    }
+    if (pythonProcess) {
+        pythonProcess.kill();
+    }
+    if (process.platform !== 'darwin') {
+        app.quit();
+    }
 });
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
-});
-
-console.log('[AI Browser] 启动中...');
