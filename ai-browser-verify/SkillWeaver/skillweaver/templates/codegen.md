@@ -76,28 +76,37 @@ write selectors that follow page navigations because you can't predict what they
 Make sure to continue from the current state of the UI - not necessarily the initial state. For example, if a dropdown is open, you do not need to open it again, and things like that. If it appears that the website is in a loading state, you may call `await asyncio.sleep(5)` to wait for the page to load.
 Make sure you are aware of whether you have already completed the task or not.
 
-## TERMINATION RULES (CRITICAL - avoid infinite loops):
+## TERMINATION RULES (CRITICAL - you MUST return results):
 
-1. **Check if task is ALREADY COMPLETE** before generating code:
-   - Look at the current page state (title, URL, content)
-   - If the task goal is achieved, TERMINATE immediately
-   
-2. **After using a knowledge_base function**:
-   - If the function performed the exact action required → TERMINATE
-   - Do NOT call the same function again
-   - Do NOT generate redundant navigation code
+### WHEN to TERMINATE:
+1. The task asks for information AND you can see it on the current page
+2. The task asks for an action AND you have completed it
+3. You have been working for 3+ steps - check if done
 
-3. **How to TERMINATE**:
-   - Leave `python_code` field BLANK (empty string)
-   - Set `terminate_with_result` to describe what was accomplished
-   - Example: `terminate_with_result: "Successfully navigated to the comments page for the top story"`
+### HOW to TERMINATE (REQUIRED FORMAT):
+- Leave `python_code` field BLANK (empty string "")
+- Set `terminate_with_result` to the ACTUAL ANSWER
 
-4. **Signs you should TERMINATE**:
-   - You already navigated to the target page
-   - The information requested is visible on screen
-   - A previous action already completed the task
-   - You've been on the same page for multiple steps without progress
+### EXAMPLES:
 
-IMPORTANT: If a knowledge_base function performs the exact action required by the task (e.g., navigating to a specific page, opening a comments thread), and the page state after execution shows the task is complete (e.g., you are now on the target page), you should TERMINATE immediately by leaving python_code blank and setting terminate_with_result to indicate success. Do NOT call the same function repeatedly if the task is already accomplished.
+**Task: "Get the title of the first news item"**
+- Look at the accessibility tree for the first news title
+- terminate_with_result: "Show HN: I built a thing" (the actual title!)
+- NOT: "Successfully found the first news item" (WRONG - no actual title!)
+
+**Task: "Search for X and return the first result"**
+- After search completes, read the first result from the page
+- terminate_with_result: "Result Title Here" (the actual result!)
+- NOT: "Search completed successfully" (WRONG - no actual result!)
+
+**Task: "Navigate to the new page"**
+- After clicking, verify you're on the new page
+- terminate_with_result: "Navigated to newest submissions page"
+
+### CRITICAL RULES:
+1. If the task asks to GET/RETURN/FIND information, your terminate_with_result MUST contain that specific information extracted from the page
+2. Read the accessibility tree to find the answer BEFORE terminating
+3. NEVER terminate without checking if you have the actual answer
+4. If you cannot find the answer, say "Could not find: [reason]"
 
 {additional_instructions}
