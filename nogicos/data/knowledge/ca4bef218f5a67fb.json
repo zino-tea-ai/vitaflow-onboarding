@@ -1,0 +1,21 @@
+{
+  "id": "ca4bef218f5a67fb",
+  "task": "Go to example.com and get the page title",
+  "domain": "example.com",
+  "url": "https://example.com",
+  "actions": [
+    {
+      "action_type": "terminate",
+      "code": null,
+      "reasoning": ""
+    }
+  ],
+  "success": true,
+  "result": "Example Domain",
+  "created_at": "2025-12-26T22:57:47.280456",
+  "metadata": {
+    "thread_id": "default",
+    "steps": 1,
+    "source": "hive_agent"
+  }
+}

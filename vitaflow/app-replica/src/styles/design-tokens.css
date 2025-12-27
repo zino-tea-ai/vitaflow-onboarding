@@ -130,4 +130,33 @@
   --avatar-sm: 36px;
   --avatar-md: 48px;
   --avatar-lg: 64px;
+
+  /* ========== Calendar Strip (from Framelink) ========== */
+  
+  /* 文字颜色 */
+  --calendar-text-default: #475569;
+  --calendar-text-selected: #0F172A;
+  --calendar-text-future: #94A3B8;
+  
+  /* 选中态 */
+  --calendar-selected-bg: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  --calendar-selected-shadow: 0px 2px 4px 0px rgba(15, 23, 42, 0.02), 0px 1px 2px 0px rgba(15, 23, 42, 0.03);
+  --calendar-selected-radius: 12px;
+  
+  /* 进度环 */
+  --calendar-ring-progress: rgba(251, 108, 131, 0.25);
+  --calendar-ring-today: rgba(97, 224, 189, 0.25);
+  --calendar-ring-selected: #61E0BD;
+  --calendar-ring-default: #E2E8F0;
+  --calendar-ring-future: rgba(226, 232, 240, 0.5);
+  --calendar-ring-width: 3.6px;
+  
+  /* 选中态发光 */
+  --calendar-selected-glow: 0px 0px 12px 0px rgba(7, 209, 236, 0.1);
+  
+  /* 布局 */
+  --calendar-item-width: 48px;
+  --calendar-item-gap: 8px;
+  --calendar-item-padding: 4px;
+  --calendar-circle-size: 36px;
 }

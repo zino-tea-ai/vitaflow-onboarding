@@ -1,0 +1,33 @@
+# API Keys (never commit!)
+api_keys.py
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# Logs
+logs/
+*.log
+
+# Data (optional - keep trajectories but ignore large files)
+# data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+

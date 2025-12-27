@@ -1,0 +1,22 @@
+{
+  "id": "d1871442f3684fd0",
+  "name": "search_hn",
+  "description": "Search for content on Hacker News",
+  "parameters": [
+    {
+      "name": "query",
+      "param_type": "str",
+      "description": "Search query",
+      "required": true,
+      "default": null
+    }
+  ],
+  "code": "\nasync def search_hn(page, query: str):\n    \"\"\"Search for content on Hacker News\"\"\"\n    await page.fill(\"input[type=text]\", query)\n    await page.click(\"button[type=submit]\")\n    return True\n",
+  "domain": "news.ycombinator.com",
+  "confidence": 1,
+  "success_count": 0,
+  "fail_count": 1,
+  "created_at": "2025-12-26T22:22:36.660957",
+  "updated_at": "2025-12-26T22:57:06.449874",
+  "source_trajectory_id": null
+}

@@ -1,64 +1,67 @@
-interface DayProps {
-  dayName: string
-  date: number
-  isSelected?: boolean
-  isToday?: boolean
-  hasProgress?: boolean
-}
+import React from 'react';
+import { FigmaColors } from '../styles/figma-tokens';
+import ringBase from '../assets/figma/ring-base.svg';
+import ringActive from '../assets/figma/ring-active.svg';
 
-function DayItem({ dayName, date, isSelected, isToday, hasProgress }: DayProps) {
+const days = [
+  { day: 'Thu', date: '27', active: false },
+  { day: 'Fri', date: '28', active: false },
+  { day: 'Sat', date: '29', active: false },
+  { day: 'Sun', date: '30', active: false },
+  { day: 'Mon', date: '31', active: true },
+  { day: 'Tue', date: '1', active: false },
+  { day: 'Wed', date: '2', active: false },
+];
+
+export const CalendarStrip: React.FC = () => {
   return (
-    <div className="flex flex-col items-center gap-1.5 w-12" data-testid="calendar-day">
-      <span className={`text-sm ${isSelected ? 'text-text-primary font-medium' : 'text-text-tertiary'}`}>
-        {dayName}
-      </span>
-      <div className="relative">
-        {/* 进度环 - 粉色 */}
-        {hasProgress && (
-          <div 
-            className="absolute inset-0 rounded-full border-2 border-accent-pink"
-            style={{ width: '36px', height: '36px' }}
-          />
-        )}
-        {/* 日期圆圈 */}
+    <div className="flex justify-between items-center px-[20px] w-full mt-[20px]">
+      {days.map((item, index) => (
         <div 
-          className={`
-            w-9 h-9 rounded-full flex items-center justify-center text-base font-medium
-            ${isSelected 
-              ? 'bg-text-primary text-white' 
-              : isToday 
-                ? 'bg-primary text-white'
-                : 'text-text-primary'
-            }
-          `}
+          key={index}
+          className={`flex flex-col items-center gap-[8px] w-[48px] p-[4px] rounded-[12px] ${item.active ? 'bg-gradient-to-b from-white to-slate-50 shadow-sm' : ''}`}
+          style={item.active ? {
+            boxShadow: '0px 2px 4px 0px rgba(15, 23, 42, 0.02), 0px 1px 2px 0px rgba(15, 23, 42, 0.03)'
+          } : {}}
         >
-          {date}
+          <span 
+            className="text-[12px] font-medium"
+            style={{ 
+              color: item.active ? FigmaColors.primary : FigmaColors.secondary,
+              fontFamily: 'Outfit',
+              letterSpacing: '-0.4px'
+            }}
+          >
+            {item.day}
+          </span>
+          
+          <div className="relative w-[36px] h-[36px] flex items-center justify-center">
+            {/* Base Ring */}
+            <img src={ringBase} className="absolute inset-0 w-full h-full" alt="" />
+            
+            {/* Active Ring Glow - only if active */}
+            {item.active && (
+              <img 
+                src={ringActive} 
+                className="absolute w-[54px] max-w-none h-[60px] top-[-12px] left-[-9px]" 
+                alt="" 
+                style={{ pointerEvents: 'none' }}
+              />
+            )}
+            
+            <span 
+              className="relative z-10 text-[12px] font-medium"
+              style={{ 
+                color: item.active ? FigmaColors.primary : FigmaColors.secondary,
+                fontFamily: 'Outfit',
+                letterSpacing: '-0.2px'
+              }}
+            >
+              {item.date}
+            </span>
+          </div>
         </div>
-      </div>
-    </div>
-  )
-}
-
-export function CalendarStrip() {
-  const days = [
-    { dayName: 'Thu', date: 27, hasProgress: true },
-    { dayName: 'Fri', date: 28 },
-    { dayName: 'Sat', date: 29 },
-    { dayName: 'Sun', date: 30, isToday: true },
-    { dayName: 'Mon', date: 31, isSelected: true },
-    { dayName: 'Tue', date: 1 },
-    { dayName: 'Wed', date: 2 },
-  ]
-
-  return (
-    <div 
-      className="flex items-center justify-between mt-4"
-      style={{ height: '64px' }}
-      data-testid="calendar-strip"
-    >
-      {days.map((day, index) => (
-        <DayItem key={index} {...day} />
       ))}
     </div>
-  )
-}
+  );
+};

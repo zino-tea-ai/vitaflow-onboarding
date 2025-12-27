@@ -1,0 +1,118 @@
+{
+  "version": "2.0",
+  "trajectories": [
+    {
+      "id": "5a69d25fa9ddb94e",
+      "task": "What is the title of the first news item?",
+      "domain": "news.ycombinator.com",
+      "url": "https://news.ycombinator.com",
+      "action_count": 1,
+      "success": true,
+      "created_at": "2025-12-26T20:53:11.562734"
+    },
+    {
+      "id": "684189984938af69",
+      "task": "Get the first news headline",
+      "domain": "news.ycombinator.com",
+      "url": "https://news.ycombinator.com",
+      "action_count": 1,
+      "success": true,
+      "created_at": "2025-12-26T20:53:34.825253"
+    },
+    {
+      "id": "b40b82348395f2e3",
+      "task": "Search for AI",
+      "domain": "news.ycombinator.com",
+      "url": "https://news.ycombinator.com",
+      "action_count": 2,
+      "success": true,
+      "created_at": "2025-12-26T20:54:00.339846"
+    },
+    {
+      "id": "97b233f7dc702d3e",
+      "task": "Login to Hacker News",
+      "domain": "news.ycombinator.com",
+      "url": "https://news.ycombinator.com",
+      "action_count": 4,
+      "success": true,
+      "created_at": "2025-12-26T22:12:52.016252"
+    },
+    {
+      "id": "164354a69b0968b4",
+      "task": "Search for AI news on Hacker News",
+      "domain": "news.ycombinator.com",
+      "url": "https://news.ycombinator.com",
+      "action_count": 2,
+      "success": true,
+      "created_at": "2025-12-26T22:57:27.277079"
+    },
+    {
+      "id": "ca4bef218f5a67fb",
+      "task": "Go to example.com and get the page title",
+      "domain": "example.com",
+      "url": "https://example.com",
+      "action_count": 1,
+      "success": true,
+      "created_at": "2025-12-26T22:57:47.280893"
+    },
+    {
+      "id": "a0125b7ece1c2d10",
+      "task": "",
+      "domain": "example.com",
+      "url": "https://example.com",
+      "action_count": 1,
+      "success": true,
+      "created_at": "2025-12-26T22:58:40.086084"
+    },
+    {
+      "id": "8593e89c4ae02709",
+      "task": "Do something",
+      "domain": "news.ycombinator.com",
+      "url": "https://news.ycombinator.com",
+      "action_count": 2,
+      "success": true,
+      "created_at": "2025-12-26T22:59:06.973263"
+    },
+    {
+      "id": "c4b748420b0b4d3a",
+      "task": "Go to httpbin.org and tell me what you see",
+      "domain": "httpbin.org",
+      "url": "https://httpbin.org",
+      "action_count": 2,
+      "success": true,
+      "created_at": "2025-12-27T07:29:59.351312"
+    },
+    {
+      "id": "761ff9e7e1fa9795",
+      "task": "Search for Python news on Hacker News",
+      "domain": "news.ycombinator.com",
+      "url": "https://news.ycombinator.com",
+      "action_count": 2,
+      "success": true,
+      "created_at": "2025-12-27T07:37:52.852853"
+    },
+    {
+      "id": "4dc67e91c90b2d35",
+      "task": "Go to example.com and click the More information link",
+      "domain": "example.com",
+      "url": "https://example.com",
+      "action_count": 6,
+      "success": true,
+      "created_at": "2025-12-27T08:33:39.589311"
+    }
+  ],
+  "domains": {
+    "news.ycombinator.com": {
+      "count": 8,
+      "success_count": 8
+    },
+    "example.com": {
+      "count": 3,
+      "success_count": 3
+    },
+    "httpbin.org": {
+      "count": 1,
+      "success_count": 1
+    }
+  }
+}

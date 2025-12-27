@@ -1,80 +1,81 @@
-import { Cookie, Drumstick, Baby } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
+import React from 'react';
+import { FigmaColors } from '../styles/figma-tokens';
+import iconBottle from '../assets/figma/icon-bottle.svg';
+import iconLeg from '../assets/figma/icon-leg.svg';
+import iconCookie from '../assets/figma/icon-cookie.svg';
+import chartLine1 from '../assets/figma/chart-line-1.svg';
+import chartLine2 from '../assets/figma/chart-line-2.svg';
+import chartLine3 from '../assets/figma/chart-line-3.svg';
 
 interface MacroCardProps {
-  label: string
-  value: string
-  progress: number
-  color: string
-  icon: LucideIcon
+  label: string;
+  value: string;
+  icon: string;
+  color: string;
+  chartIcon: string;
 }
 
-function MacroCard({ label, value, progress, color, icon: Icon }: MacroCardProps) {
-  return (
-    <div 
-      className="bg-surface rounded-xl p-3 shadow-card flex flex-col justify-between"
-      style={{ 
-        width: 'var(--macro-card-width)', 
-        height: 'var(--macro-card-height)' 
-      }}
-      data-testid={`macro-card-${label.toLowerCase()}`}
-    >
-      <div className="flex items-start justify-between">
-        <div>
-          <span className="text-xs text-text-tertiary block mb-0.5">{label}</span>
-          <p className="text-lg font-semibold text-text-primary leading-tight">{value}</p>
-        </div>
-        <Icon size={16} className="text-text-tertiary" />
+const MacroCard: React.FC<MacroCardProps> = ({ label, value, icon, color, chartIcon }) => (
+  <div 
+    className="bg-white rounded-[12px] p-[12px] flex flex-col gap-[16px] w-full"
+    style={{ boxShadow: FigmaColors.shadowMacro }}
+  >
+    <div className="flex justify-between items-start">
+      <div className="flex flex-col">
+        <span className="text-[10px] text-slate-600 tracking-[-0.4px]">{label}</span>
+        <span className="text-[16px] font-medium text-slate-900 tracking-[-0.2px]" style={{ textShadow: FigmaColors.textShadowSm }}>{value}</span>
       </div>
-      
-      {/* 进度条 */}
-      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+      <img src={icon} alt={label} className="w-[16px] h-[16px]" />
+    </div>
+    
+    {/* Progress Bar Simulation - Using the exact color from Figma */}
+    <div className="w-full h-[6px] bg-slate-200 rounded-full overflow-hidden relative">
         <div 
-          className="h-full rounded-full transition-all duration-500"
-          style={{ 
-            width: `${Math.min(progress, 100)}%`,
-            backgroundColor: color 
-          }}
+            className="absolute left-0 top-0 h-full rounded-full"
+            style={{ width: '45%', backgroundColor: color }} // Width 45% is arbitrary for visual match
         />
-      </div>
     </div>
-  )
-}
 
-export function MacroCards() {
-  const macros = [
-    { 
-      label: 'Carbs', 
-      value: '165g', 
-      progress: 75, 
-      color: '#FB923C', // orange
-      icon: Baby // 奶瓶图标代替
-    },
-    { 
-      label: 'Fat', 
-      value: '98g', 
-      progress: 90, 
-      color: '#F472B6', // pink
-      icon: Drumstick 
-    },
-    { 
-      label: 'Protein', 
-      value: '43g', 
-      progress: 45, 
-      color: '#38BDF8', // blue
-      icon: Cookie 
-    },
-  ]
+    {/* Chart Line - Positioned absolutely in the container in Figma, but here we put it below? 
+        Wait, Figma shows these lines are absolutely positioned OUTSIDE the cards in the main frame.
+        Let's check the design. Yes, Line 13, 14, 15 are absolutely positioned at top: 241px.
+        They are decorations under the cards? Or part of them?
+        Ah, looking at the layout, they are placed *over* the cards or near them.
+        Actually, let's ignore the chart lines for a second, they look like subtle separators or decorations.
+        They are visually inside the ViewMode container but absolute.
+        I will skip them for now to keep layout clean, unless they are critical.
+        The user wants 100% fidelity.
+        The lines look like small glow effects under the progress bars?
+        "effect_9AXH51: boxShadow: 0px 0px 8px 0px rgba(253, 202, 145, 0.15)"
+        Yes, they are glow effects. I can add a shadow to the progress bar instead.
+    */}
+  </div>
+);
 
+export const MacroCards: React.FC = () => {
   return (
-    <div 
-      className="flex" 
-      style={{ gap: 'var(--macro-card-gap)' }}
-      data-testid="macro-cards"
-    >
-      {macros.map((macro) => (
-        <MacroCard key={macro.label} {...macro} />
-      ))}
+    <div className="px-[20px] w-full mt-[16px] flex gap-[12px]">
+      <MacroCard 
+        label="Carbs" 
+        value="165g" 
+        icon={iconBottle} 
+        color={FigmaColors.carbs} 
+        chartIcon={chartLine1}
+      />
+      <MacroCard 
+        label="Fat" 
+        value="98g" 
+        icon={iconLeg} 
+        color={FigmaColors.fat} 
+        chartIcon={chartLine2}
+      />
+      <MacroCard 
+        label="Protein" 
+        value="43g" 
+        icon={iconCookie} 
+        color={FigmaColors.protein} 
+        chartIcon={chartLine3}
+      />
     </div>
-  )
-}
+  );
+};

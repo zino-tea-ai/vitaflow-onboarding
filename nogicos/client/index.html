@@ -1,0 +1,1178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src http://localhost:* ws://localhost:* http://127.0.0.1:*; img-src 'self' data:;">
+  <title>NogicOS</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    :root {
+      --bg-primary: #0a0a0a;
+      --bg-secondary: #111;
+      --bg-tertiary: #1a1a1a;
+      --border-color: rgba(255,255,255,0.06);
+      --border-hover: rgba(255,255,255,0.15);
+      --text-primary: #fff;
+      --text-secondary: rgba(255,255,255,0.5);
+      --text-muted: rgba(255,255,255,0.3);
+      --accent-green: #22c55e;
+      --accent-blue: #3b82f6;
+      --accent-yellow: #eab308;
+      --accent-red: #ef4444;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    
+    /* ============================================================
+       Toolbar
+       ============================================================ */
+    .toolbar {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 12px;
+      -webkit-app-region: drag;
+      flex-shrink: 0;
+    }
+    
+    .toolbar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      -webkit-app-region: no-drag;
+      width: 100%;
+    }
+    
+    .toolbar-row + .toolbar-row {
+      margin-top: 8px;
+    }
+    
+    .toolbar input {
+      flex: 1;
+      min-width: 100px;
+      height: 36px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 0 12px;
+      color: var(--text-primary);
+      font-size: 13px;
+    }
+    
+    .toolbar input:focus {
+      outline: none;
+      border-color: var(--border-hover);
+    }
+    
+    .toolbar input::placeholder {
+      color: var(--text-muted);
+    }
+    
+    .toolbar button {
+      height: 36px;
+      padding: 0 16px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    
+    .toolbar button:hover {
+      background: rgba(255,255,255,0.05);
+      border-color: var(--border-hover);
+    }
+    
+    .toolbar button.primary {
+      background: #3b82f6;
+      border-color: #3b82f6;
+      color: #fff;
+      font-weight: 500;
+    }
+    
+    .toolbar button.primary:hover {
+      background: #2563eb;
+      border-color: #2563eb;
+    }
+    
+    .toolbar button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    /* AI Status */
+    .ai-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 12px;
+      height: 36px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    
+    .ai-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+    
+    .ai-dot.idle { background: var(--text-secondary); }
+    .ai-dot.thinking { background: var(--accent-yellow); animation: pulse 1s infinite; }
+    .ai-dot.acting { background: var(--accent-blue); animation: pulse 0.5s infinite; }
+    .ai-dot.done { background: var(--accent-green); }
+    .ai-dot.error { background: var(--accent-red); }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    /* ============================================================
+       Result Panel
+       ============================================================ */
+    .result-panel {
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 12px;
+      display: none;
+      flex-shrink: 0;
+    }
+    
+    .result-panel.visible {
+      display: block;
+    }
+    
+    .result-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    
+    .result-path {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    
+    .result-path.fast {
+      background: rgba(34, 197, 94, 0.2);
+      color: var(--accent-green);
+    }
+    
+    .result-path.skill {
+      background: rgba(168, 85, 247, 0.2);
+      color: #a855f7;
+    }
+    
+    .result-path.normal {
+      background: rgba(59, 130, 246, 0.2);
+      color: var(--accent-blue);
+    }
+    
+    .result-path.error {
+      background: rgba(239, 68, 68, 0.2);
+      color: var(--accent-red);
+    }
+    
+    .result-stats {
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    
+    .result-stats span {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    
+    .result-message {
+      font-size: 13px;
+      color: var(--text-primary);
+      margin-top: 8px;
+      padding: 8px;
+      background: var(--bg-secondary);
+      border-radius: 4px;
+    }
+    
+    /* ============================================================
+       Split Container (双 Webview 布局)
+       ============================================================ */
+    .split-container {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    /* 用户浏览区 */
+    .user-panel {
+      flex: 1;
+      min-width: 200px;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .user-panel .panel-header {
+      height: 28px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      gap: 6px;
+    }
+    
+    .user-panel .panel-header .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-blue);
+    }
+    
+    /* 分割线 */
+    .resizer {
+      width: 6px;
+      background: var(--bg-secondary);
+      cursor: col-resize;
+      position: relative;
+      flex-shrink: 0;
+      display: none;
+      z-index: 10;
+    }
+    
+    .resizer::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 2px;
+      height: 40px;
+      background: var(--border-hover);
+      border-radius: 1px;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    
+    .resizer:hover::after,
+    .resizer.dragging::after {
+      opacity: 1;
+    }
+    
+    .resizer:hover {
+      background: var(--bg-tertiary);
+    }
+    
+    /* AI 操作区 */
+    .ai-panel {
+      width: 0;
+      min-width: 0;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: width 0.3s ease-out, min-width 0.3s ease-out;
+    }
+    
+    .ai-panel.expanded {
+      width: 50%;
+      min-width: 300px;
+    }
+    
+    .ai-panel .panel-header {
+      height: 28px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      gap: 6px;
+    }
+    
+    .ai-panel .panel-header .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      animation: pulse 1s infinite;
+    }
+    
+    .ai-panel .panel-header .step-info {
+      margin-left: auto;
+      color: var(--text-muted);
+    }
+    
+    /* AI 操作状态覆盖层 */
+    .ai-overlay {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      right: 12px;
+      padding: 8px 12px;
+      background: rgba(0, 0, 0, 0.8);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      display: none;
+      z-index: 100;
+    }
+    
+    .ai-overlay.visible {
+      display: block;
+    }
+    
+    .ai-overlay .action-text {
+      color: var(--text-primary);
+    }
+    
+    /* Webview 容器 */
+    .webview-wrapper {
+      flex: 1;
+      position: relative;
+      background: var(--bg-primary);
+    }
+    
+    webview {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+    
+    /* Welcome screen */
+    .welcome {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-primary);
+    }
+    
+    .welcome h1 {
+      font-size: 56px;
+      font-weight: 200;
+      letter-spacing: -3px;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.6) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .welcome p {
+      color: var(--text-secondary);
+      font-size: 14px;
+      margin-bottom: 32px;
+    }
+    
+    .welcome .example {
+      max-width: 400px;
+      text-align: center;
+    }
+    
+    .welcome .example-title {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+    
+    .welcome .example-tasks {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .welcome .example-task {
+      padding: 10px 16px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 13px;
+      cursor: pointer;
+      text-align: left;
+    }
+    
+    .welcome .example-task:hover {
+      border-color: var(--border-hover);
+      color: var(--text-primary);
+    }
+    
+    .hidden {
+      display: none !important;
+    }
+    
+    /* AI Panel 待机状态 */
+    .ai-standby {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-primary);
+      color: var(--text-muted);
+    }
+    
+    .ai-standby svg {
+      width: 48px;
+      height: 48px;
+      opacity: 0.3;
+      margin-bottom: 12px;
+    }
+    
+    .ai-standby p {
+      font-size: 13px;
+    }
+    
+    /* AI 截图流显示 */
+    .ai-stream {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-primary);
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .ai-stream img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 4px;
+    }
+    
+    .ai-stream .no-signal {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      color: var(--text-muted);
+    }
+    
+    .ai-stream .no-signal svg {
+      width: 32px;
+      height: 32px;
+      opacity: 0.3;
+      margin-bottom: 8px;
+    }
+    
+    .ai-stream .no-signal p {
+      font-size: 12px;
+    }
+    
+    /* 截图流加载动画 */
+    .ai-stream.loading::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent-green), transparent);
+      animation: stream-loading 1.5s infinite;
+    }
+    
+    @keyframes stream-loading {
+      0% { left: -100%; }
+      100% { left: 100%; }
+    }
+    
+    /* ============================================================
+       Status Bar
+       ============================================================ */
+    .statusbar {
+      height: 28px;
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    
+    .status-section {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+    }
+    
+    .status-dot.offline {
+      background: var(--accent-red);
+    }
+    
+    .status-separator {
+      width: 1px;
+      height: 12px;
+      background: var(--border-color);
+    }
+    
+    .status-knowledge {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    
+    .status-knowledge svg {
+      width: 12px;
+      height: 12px;
+      opacity: 0.5;
+    }
+    
+    /* Toggle AI Panel Button */
+    .toggle-ai-btn {
+      margin-left: auto;
+      padding: 0 8px;
+      height: 24px;
+      background: transparent;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      color: var(--text-secondary);
+      font-size: 10px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    
+    .toggle-ai-btn:hover {
+      background: rgba(255,255,255,0.05);
+      border-color: var(--border-hover);
+      color: var(--text-primary);
+    }
+    
+    .toggle-ai-btn.active {
+      background: rgba(34, 197, 94, 0.1);
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+    }
+  </style>
+</head>
+<body>
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <!-- URL Row -->
+    <div class="toolbar-row">
+      <input type="text" id="urlInput" placeholder="Enter URL..." value="https://news.ycombinator.com">
+      <button id="goBtn">Go</button>
+      <div class="ai-status">
+        <span class="ai-dot idle" id="aiDot"></span>
+        <span id="aiState">Idle</span>
+      </div>
+    </div>
+    <!-- Task Row -->
+    <div class="toolbar-row">
+      <input type="text" id="taskInput" placeholder="What should I do? (e.g., Search for AI news)">
+      <button id="executeBtn" class="primary">Execute</button>
+    </div>
+  </div>
+  
+  <!-- Result Panel -->
+  <div class="result-panel" id="resultPanel">
+    <div class="result-header">
+      <span class="result-path" id="resultPath">-</span>
+      <div class="result-stats">
+        <span>Time: <strong id="resultTime">-</strong></span>
+        <span>Confidence: <strong id="resultConfidence">-</strong></span>
+        <span>Steps: <strong id="resultSteps">-</strong></span>
+      </div>
+    </div>
+    <div class="result-message" id="resultMessage">-</div>
+  </div>
+  
+  <!-- Split Container: 双 Webview 布局 -->
+  <div class="split-container">
+    <!-- 用户浏览区 -->
+    <div class="user-panel">
+      <div class="panel-header">
+        <span class="dot"></span>
+        <span>Your Browser</span>
+      </div>
+      <div class="webview-wrapper">
+        <div class="welcome" id="welcome">
+          <h1>NogicOS</h1>
+          <p>AI Browser - The more you use, the faster it gets</p>
+          <div class="example">
+            <div class="example-title">Try these examples:</div>
+            <div class="example-tasks">
+              <div class="example-task" onclick="setExample('Search for AI news', 'https://news.ycombinator.com')">
+                Search for AI news on Hacker News
+              </div>
+              <div class="example-task" onclick="setExample('Find the top story', 'https://news.ycombinator.com')">
+                Find the top story on Hacker News
+              </div>
+              <div class="example-task" onclick="setExample('Search for Claude AI', 'https://google.com')">
+                Search for Claude AI on Google
+              </div>
+            </div>
+          </div>
+        </div>
+        <webview id="userWebview" class="hidden" src="about:blank"></webview>
+      </div>
+    </div>
+    
+    <!-- 分割线 -->
+    <div class="resizer" id="resizer"></div>
+    
+    <!-- AI 操作区 (方案 B: 截图流显示) -->
+    <div class="ai-panel" id="aiPanel">
+      <div class="panel-header">
+        <span class="dot"></span>
+        <span>AI Operating</span>
+        <span class="step-info" id="stepInfo">-</span>
+      </div>
+      <div class="webview-wrapper">
+        <!-- 待机状态 -->
+        <div class="ai-standby" id="aiStandby">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+          </svg>
+          <p>AI will operate here</p>
+        </div>
+        <!-- 截图流显示 (方案 B) -->
+        <div class="ai-stream hidden" id="aiStream">
+          <img id="aiStreamImg" alt="AI Browser View">
+          <div class="no-signal" id="noSignal">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/>
+            </svg>
+            <p>Waiting for stream...</p>
+          </div>
+        </div>
+      </div>
+      <div class="ai-overlay" id="aiOverlay">
+        <span class="action-text" id="actionText">Initializing...</span>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Status bar -->
+  <div class="statusbar">
+    <div class="status-section">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="connectionStatus">Starting...</span>
+    </div>
+    <div class="status-separator"></div>
+    <span id="pageUrl">Ready</span>
+    <button class="toggle-ai-btn" id="toggleModeBtn" title="Toggle CDP/Stream mode">
+      <span id="modeIndicator">CDP</span>
+    </button>
+    <button class="toggle-ai-btn" id="toggleAiBtn">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+      </svg>
+      AI Panel
+    </button>
+    <div class="status-separator"></div>
+    <div class="status-knowledge">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+      </svg>
+      <span id="knowledgeCount">0 trajectories</span>
+    </div>
+  </div>
+  
+  <script>
+    // Elements
+    const urlInput = document.getElementById('urlInput');
+    const taskInput = document.getElementById('taskInput');
+    const goBtn = document.getElementById('goBtn');
+    const executeBtn = document.getElementById('executeBtn');
+    const userWebview = document.getElementById('userWebview');
+    const aiStream = document.getElementById('aiStream');
+    const aiStreamImg = document.getElementById('aiStreamImg');
+    const noSignal = document.getElementById('noSignal');
+    const welcome = document.getElementById('welcome');
+    const statusDot = document.getElementById('statusDot');
+    const connectionStatus = document.getElementById('connectionStatus');
+    const pageUrl = document.getElementById('pageUrl');
+    const aiDot = document.getElementById('aiDot');
+    const aiState = document.getElementById('aiState');
+    const knowledgeCount = document.getElementById('knowledgeCount');
+    const resultPanel = document.getElementById('resultPanel');
+    const resultPath = document.getElementById('resultPath');
+    const resultTime = document.getElementById('resultTime');
+    const resultConfidence = document.getElementById('resultConfidence');
+    const resultSteps = document.getElementById('resultSteps');
+    const resultMessage = document.getElementById('resultMessage');
+    const aiPanel = document.getElementById('aiPanel');
+    const aiStandby = document.getElementById('aiStandby');
+    const aiOverlay = document.getElementById('aiOverlay');
+    const actionText = document.getElementById('actionText');
+    const stepInfo = document.getElementById('stepInfo');
+    const resizer = document.getElementById('resizer');
+    const toggleAiBtn = document.getElementById('toggleAiBtn');
+    
+    let isExecuting = false;
+    let aiPanelExpanded = false;
+    
+    // Toggle AI Panel
+    function toggleAiPanel(expand) {
+      aiPanelExpanded = expand !== undefined ? expand : !aiPanelExpanded;
+      
+      if (aiPanelExpanded) {
+        aiPanel.classList.add('expanded');
+        resizer.style.display = 'block';
+        toggleAiBtn.classList.add('active');
+      } else {
+        aiPanel.classList.remove('expanded');
+        resizer.style.display = 'none';
+        toggleAiBtn.classList.remove('active');
+      }
+    }
+    
+    toggleAiBtn.addEventListener('click', () => toggleAiPanel());
+    
+    // Mode toggle button
+    const toggleModeBtn = document.getElementById('toggleModeBtn');
+    const modeIndicator = document.getElementById('modeIndicator');
+    
+    // 当前使用的模式（移到这里避免 TDZ 错误）
+    let useCdpMode = true;  // true = 方案 A (CDP 内部控制), false = 方案 B (截图流)
+    
+    function updateModeUI() {
+      modeIndicator.textContent = useCdpMode ? 'CDP' : 'Stream';
+      toggleModeBtn.title = useCdpMode ? 'Using CDP mode (click to switch to Stream)' : 'Using Stream mode (click to switch to CDP)';
+      if (useCdpMode) {
+        toggleModeBtn.classList.add('active');
+      } else {
+        toggleModeBtn.classList.remove('active');
+      }
+    }
+    
+    toggleModeBtn.addEventListener('click', () => {
+      useCdpMode = !useCdpMode;
+      updateModeUI();
+      console.log('[Mode] Switched to:', useCdpMode ? 'CDP' : 'Stream');
+    });
+    
+    // Initialize mode UI
+    updateModeUI();
+    
+    // Set example task
+    function setExample(task, url) {
+      taskInput.value = task;
+      urlInput.value = url;
+      taskInput.focus();
+    }
+    
+    // Navigation (User Webview)
+    function navigate(url) {
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        url = 'https://' + url;
+      }
+      userWebview.src = url;
+      userWebview.classList.remove('hidden');
+      welcome.classList.add('hidden');
+      urlInput.value = url;
+    }
+    
+    goBtn.addEventListener('click', () => navigate(urlInput.value));
+    
+    urlInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') navigate(urlInput.value);
+    });
+    
+    // Update AI Panel UI
+    function updateAiStatus(status, step, maxSteps, action) {
+      if (step && maxSteps) {
+        stepInfo.textContent = `Step ${step}/${maxSteps}`;
+      }
+      
+      if (action) {
+        actionText.textContent = action;
+        aiOverlay.classList.add('visible');
+      }
+    }
+    
+    // Execute task
+    async function executeTask() {
+      const task = taskInput.value.trim();
+      const url = urlInput.value.trim();
+      
+      if (!task) {
+        alert('Please enter a task');
+        return;
+      }
+      
+      if (isExecuting) return;
+      isExecuting = true;
+      
+      // Update UI
+      executeBtn.disabled = true;
+      executeBtn.textContent = 'Executing...';
+      aiDot.className = 'ai-dot thinking';
+      aiState.textContent = 'Thinking';
+      resultPanel.classList.add('visible');
+      resultPath.textContent = '...';
+      resultPath.className = 'result-path';
+      resultTime.textContent = '...';
+      resultConfidence.textContent = '...';
+      resultSteps.textContent = '...';
+      resultMessage.textContent = 'Executing task...';
+      
+      if (useCdpMode) {
+        // 方案 A: CDP 模式 - aiView 会直接在窗口右侧显示
+        // 不需要在 UI 中显示截图流
+        toggleAiPanel(true);
+        aiStandby.classList.remove('hidden');
+        aiStream.classList.add('hidden');
+        aiOverlay.classList.add('visible');
+        actionText.textContent = 'AI is operating in the side panel...';
+        stepInfo.textContent = 'CDP Mode';
+      } else {
+        // 方案 B: 截图流模式
+        toggleAiPanel(true);
+        aiStandby.classList.add('hidden');
+        aiStream.classList.remove('hidden');
+        aiStream.classList.add('loading');
+        noSignal.classList.remove('hidden');
+        aiStreamImg.style.display = 'none';
+        aiOverlay.classList.add('visible');
+        actionText.textContent = 'Initializing browser...';
+        stepInfo.textContent = 'Starting...';
+      }
+      
+      // Navigate user webview
+      navigate(url);
+      
+      try {
+        // Call API with mode flag
+        const response = await fetch('http://localhost:8080/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ task, url, use_cdp: useCdpMode }),
+        });
+        
+        const result = await response.json();
+        
+        // Update result panel
+        resultPath.textContent = result.path.toUpperCase();
+        resultPath.className = 'result-path ' + result.path;
+        resultTime.textContent = result.time_seconds.toFixed(1) + 's';
+        resultConfidence.textContent = (result.confidence * 100).toFixed(0) + '%';
+        resultSteps.textContent = result.steps || '-';
+        
+        if (result.success) {
+          resultMessage.textContent = result.result || 'Task completed successfully';
+          aiDot.className = 'ai-dot done';
+          aiState.textContent = 'Done';
+          actionText.textContent = 'Task completed!';
+        } else {
+          resultMessage.textContent = result.error || 'Task failed';
+          aiDot.className = 'ai-dot error';
+          aiState.textContent = 'Error';
+          actionText.textContent = 'Task failed';
+        }
+        
+        stepInfo.textContent = 'Completed';
+        
+        // Update knowledge count
+        fetchStats();
+        
+      } catch (e) {
+        resultPath.textContent = 'ERROR';
+        resultPath.className = 'result-path error';
+        resultMessage.textContent = 'Failed to connect to server: ' + e.message;
+        aiDot.className = 'ai-dot error';
+        aiState.textContent = 'Error';
+        actionText.textContent = 'Connection failed';
+      } finally {
+        isExecuting = false;
+        executeBtn.disabled = false;
+        executeBtn.textContent = 'Execute';
+        
+        // 方案 B: 停止截图流加载动画
+        aiStream.classList.remove('loading');
+        
+        // Hide overlay after 2 seconds
+        setTimeout(() => {
+          aiOverlay.classList.remove('visible');
+        }, 2000);
+        
+        // Reset status after 3 seconds
+        setTimeout(() => {
+          if (!isExecuting) {
+            aiDot.className = 'ai-dot idle';
+            aiState.textContent = 'Idle';
+          }
+        }, 3000);
+        
+        // 5 秒后隐藏截图流面板（保持最后一帧可见一段时间）
+        setTimeout(() => {
+          if (!isExecuting) {
+            // 可选：折叠 AI 面板
+            // toggleAiPanel(false);
+          }
+        }, 5000);
+      }
+    }
+    
+    executeBtn.addEventListener('click', executeTask);
+    
+    taskInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') executeTask();
+    });
+    
+    // Resizer drag logic
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+    
+    resizer.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = aiPanel.offsetWidth;
+      resizer.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      
+      const diff = startX - e.clientX;
+      const newWidth = Math.max(200, Math.min(window.innerWidth - 300, startWidth + diff));
+      aiPanel.style.width = newWidth + 'px';
+      aiPanel.style.minWidth = newWidth + 'px';
+    });
+    
+    document.addEventListener('mouseup', () => {
+      if (isResizing) {
+        isResizing = false;
+        resizer.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    });
+    
+    // Fetch stats
+    async function fetchStats() {
+      try {
+        const response = await fetch('http://localhost:8080/stats');
+        const stats = await response.json();
+        knowledgeCount.textContent = stats.total_trajectories + ' trajectories';
+      } catch (e) {
+        // Ignore errors
+      }
+    }
+    
+    // Check server status
+    async function checkServer() {
+      try {
+        const response = await fetch('http://localhost:8080/health');
+        if (response.ok) {
+          statusDot.classList.remove('offline');
+          connectionStatus.textContent = 'Connected';
+          fetchStats();
+          return true;
+        }
+      } catch (e) {
+        // Server not ready
+      }
+      statusDot.classList.add('offline');
+      connectionStatus.textContent = 'Connecting...';
+      return false;
+    }
+    
+    // User Webview events
+    userWebview.addEventListener('did-start-loading', () => {
+      pageUrl.textContent = 'Loading...';
+    });
+    
+    userWebview.addEventListener('did-finish-load', () => {
+      const url = userWebview.getURL();
+      pageUrl.textContent = url.length > 50 ? url.substring(0, 50) + '...' : url;
+      urlInput.value = url;
+    });
+    
+    userWebview.addEventListener('did-fail-load', (e) => {
+      pageUrl.textContent = 'Failed: ' + e.errorDescription;
+    });
+    
+    // WebSocket connection for real-time updates (方案 B: 截图流)
+    let ws = null;
+    let wsReconnectTimer = null;
+    
+    function connectWebSocket() {
+      if (ws && ws.readyState === WebSocket.OPEN) return;
+      
+      try {
+        ws = new WebSocket('ws://localhost:8765');
+        
+        ws.onopen = () => {
+          console.log('[WS] Connected');
+          statusDot.classList.remove('offline');
+          connectionStatus.textContent = 'Connected';
+        };
+        
+        ws.onclose = () => {
+          console.log('[WS] Disconnected');
+          statusDot.classList.add('offline');
+          connectionStatus.textContent = 'Disconnected';
+          // 重连
+          if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+          wsReconnectTimer = setTimeout(connectWebSocket, 3000);
+        };
+        
+        ws.onerror = (e) => {
+          console.error('[WS] Error:', e);
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            handleWebSocketMessage(msg);
+          } catch (e) {
+            console.error('[WS] Parse error:', e);
+          }
+        };
+      } catch (e) {
+        console.error('[WS] Connection error:', e);
+        if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = setTimeout(connectWebSocket, 3000);
+      }
+    }
+    
+    function handleWebSocketMessage(msg) {
+      const { type, data } = msg;
+      
+      if (type === 'status') {
+        // 状态更新
+        if (data.agent && isExecuting) {
+          const { state, step, max_steps, last_action } = data.agent;
+          aiDot.className = 'ai-dot ' + state;
+          aiState.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+          updateAiStatus(state, step, max_steps, last_action);
+        }
+        
+        if (data.knowledge) {
+          knowledgeCount.textContent = data.knowledge.trajectory_count + ' trajectories';
+        }
+      }
+      
+      else if (type === 'frame') {
+        // 方案 B: 接收截图流
+        const { image, action, step, total_steps } = data;
+        
+        // 显示截图
+        if (image) {
+          aiStreamImg.src = 'data:image/jpeg;base64,' + image;
+          aiStreamImg.style.display = 'block';
+          noSignal.classList.add('hidden');
+          aiStream.classList.remove('loading');
+          
+          // 确保 AI Panel 可见
+          if (!aiPanelExpanded) {
+            toggleAiPanel(true);
+            aiStandby.classList.add('hidden');
+            aiStream.classList.remove('hidden');
+          }
+        }
+        
+        // 更新操作信息
+        if (action) {
+          actionText.textContent = action;
+          aiOverlay.classList.add('visible');
+        }
+        
+        if (step && total_steps) {
+          stepInfo.textContent = `Step ${step}/${total_steps}`;
+        }
+      }
+      
+      else if (type === 'action') {
+        // 操作更新（无截图）
+        const { action, step, total_steps } = data;
+        if (action) {
+          actionText.textContent = action;
+          aiOverlay.classList.add('visible');
+        }
+        if (step && total_steps) {
+          stepInfo.textContent = `Step ${step}/${total_steps}`;
+        }
+      }
+    }
+    
+    // Status updates from Python (via preload) - 备用方案
+    if (window.nogicos) {
+      window.nogicos.onConnectionChange((connected) => {
+        statusDot.classList.toggle('offline', !connected);
+        connectionStatus.textContent = connected ? 'Connected' : 'Disconnected';
+      });
+      
+      window.nogicos.onStatusUpdate((data) => {
+        if (data.agent && isExecuting) {
+          const { status, step, max_steps, last_action } = data.agent;
+          aiDot.className = 'ai-dot ' + status;
+          aiState.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+          updateAiStatus(status, step, max_steps, last_action);
+        }
+        
+        if (data.knowledge) {
+          knowledgeCount.textContent = data.knowledge.total + ' trajectories';
+        }
+      });
+    }
+    
+    // Initial check and WebSocket connection
+    checkServer();
+    connectWebSocket();
+    setInterval(checkServer, 5000);
+    
+    // Expose setExample to global scope for onclick
+    window.setExample = setExample;
+    
+    console.log('[NogicOS] Renderer ready - Dual Webview Mode');
+  </script>
+</body>
+</html>

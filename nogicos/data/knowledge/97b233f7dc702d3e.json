@@ -1,0 +1,30 @@
+{
+  "id": "97b233f7dc702d3e",
+  "task": "Login to Hacker News",
+  "domain": "news.ycombinator.com",
+  "url": "https://news.ycombinator.com",
+  "actions": [
+    {
+      "action_type": "click",
+      "selector": "a.login"
+    },
+    {
+      "action_type": "input",
+      "selector": "#username",
+      "value": "testuser"
+    },
+    {
+      "action_type": "input",
+      "selector": "#password",
+      "value": "***"
+    },
+    {
+      "action_type": "click",
+      "selector": "button[type=submit]"
+    }
+  ],
+  "success": true,
+  "result": null,
+  "created_at": "2025-12-26T22:12:52.015737",
+  "metadata": {}
+}

@@ -1,0 +1,19 @@
+{
+  "name": "nogicos-client",
+  "version": "0.1.0",
+  "description": "NogicOS AI Browser Client",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron . --remote-debugging-port=9222",
+    "start:debug": "electron . --remote-debugging-port=9222 --enable-logging"
+  },
+  "author": "NogicOS Team",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.14.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0"
+  }
+}
+
