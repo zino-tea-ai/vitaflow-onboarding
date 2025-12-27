@@ -10,13 +10,21 @@ __pycache__/
 env/
 venv/
 .env
+*.egg-info/
 
 # Logs
 logs/
 *.log
 
-# Data (optional - keep trajectories but ignore large files)
-# data/
+# Internal docs (not for public)
+CHANGELOG.md
+PROGRESS.md
+WORKFLOW.md
+CLAUDE.md
+.cursorrules
+
+# Data
+data/
 
 # IDE
 .idea/
@@ -27,7 +35,16 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Node
 node_modules/
 
+# Tests
+tests/
+*.test.py
+test_*.py
+
+# Temp files
+*.tmp
+*.bak
