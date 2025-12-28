@@ -1,15 +1,15 @@
 /**
  * NogicOS Electron Client - Main Process
  * 
- * 架构 (修复后，Electron 28 兼容):
- * - BrowserWindow 作为主容器，加载 index.html
- * - BrowserView: AI 操作视图，CDP Bridge 控制此视图
+ * Architecture (fixed, Electron 28 compatible):
+ * - BrowserWindow as main container, loads index.html
+ * - BrowserView: AI operation view, controlled by CDP Bridge
  * 
- * 注意：BrowserView 在新版 Electron 中已废弃，但 Electron 28 仍支持
+ * Note: BrowserView is deprecated in newer Electron but still supported in Electron 28
  * 
  * Features:
  * - Auto-start Python hive_server.py
- * - CDP support for Python control (控制 aiView，不影响 UI)
+ * - CDP support for Python control (controls aiView without affecting UI)
  * - WebSocket client for status updates
  * - IPC bridge for renderer communication
  * 
@@ -21,22 +21,57 @@ const { spawn } = require('child_process');
 const path = require('path');
 const WebSocket = require('ws');
 const { CDPBridge } = require('./cdp-bridge');
+const { executeTool } = require('./tools');
 
-// 防止 EPIPE 错误导致应用崩溃（当 IDE 更新或重启时可能发生）
+// ============================================================
+// Performance Optimizations (inspired by Zen Browser's fastfox)
+// ============================================================
+
+// Enable GPU acceleration flags before app ready
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
+app.commandLine.appendSwitch('enable-hardware-overlays', 'single-fullscreen,single-on-top,underlay');
+app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,VaapiVideoEncoder,CanvasOopRasterization');
+
+// Smooth scrolling - same physics as Zen Browser
+app.commandLine.appendSwitch('smooth-scrolling');
+
+// Memory optimization
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096'); // Limit V8 heap
+
+// Prevent EPIPE errors from crashing the app (can happen when IDE updates or restarts)
 process.stdout.on('error', (err) => {
-  if (err.code === 'EPIPE') return; // 忽略管道断开错误
+  if (err.code === 'EPIPE') return; // Ignore broken pipe errors
   console.error('stdout error:', err);
 });
 process.stderr.on('error', (err) => {
   if (err.code === 'EPIPE') return;
 });
 
-// 安全的日志函数
+// ============================================================
+// Single Instance Lock - Prevent multiple instances
+// ============================================================
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  console.log('[App] Another instance is running. Exiting...');
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // Someone tried to run a second instance, focus our window
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
+// Safe logging functions
 function safeLog(...args) {
   try {
     console.log(...args);
   } catch (e) {
-    // 忽略 EPIPE 错误
+    // Ignore EPIPE errors
   }
 }
 
@@ -44,7 +79,7 @@ function safeError(...args) {
   try {
     console.error(...args);
   } catch (e) {
-    // 忽略 EPIPE 错误
+    // Ignore EPIPE errors
   }
 }
 
@@ -57,12 +92,12 @@ const WS_URL = `ws://localhost:${WS_PORT}`;
 const HTTP_URL = `http://localhost:${HTTP_PORT}`;
 
 let mainWindow = null;
-let aiView = null;      // AI 操作视图 (BrowserView, CDP 控制目标)
+let aiView = null;      // AI operation view (BrowserView, CDP control target)
 let pythonProcess = null;
 let wsClient = null;
 let wsReconnectTimer = null;
 let wsConnected = false;
-let cdpBridge = null;   // CDP Bridge 实例（控制 aiView）
+let cdpBridge = null;   // CDP Bridge instance (controls aiView)
 let aiViewVisible = false;
 
 // ============================================================
@@ -170,12 +205,19 @@ async function waitForServer(url, maxAttempts = 30) {
 // ============================================================
 
 function createWindow() {
-  // 主窗口加载 NogicOS UI (index.html)
+  // Main window loads NogicOS UI (index.html)
+  // Glassmorphism: Transparent window with system blur effect
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     title: 'NogicOS',
-    backgroundColor: '#0a0a0a',
+    // === Transparent Window Settings ===
+    transparent: true,              // Enable transparency
+    frame: false,                   // Remove system title bar (custom title bar in HTML)
+    backgroundColor: '#00000000',   // Fully transparent background
+    roundedCorners: true,           // Windows 11 native rounded corners
+    // Note: On Windows 11 22H2+, we'll apply Acrylic/Mica effect
+    // On macOS, we'll apply vibrancy
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -184,35 +226,70 @@ function createWindow() {
     },
   });
 
-  // 加载 UI
+  // === Apply System Blur Effects ===
+  // Windows 11 22H2+: Acrylic effect (frosted glass with desktop blur)
+  if (process.platform === 'win32') {
+    try {
+      mainWindow.setBackgroundMaterial('acrylic');
+      console.log('[Window] Applied Windows Acrylic effect');
+    } catch (e) {
+      console.log('[Window] Acrylic not available (requires Windows 11 22H2+)');
+    }
+  }
+  
+  // macOS: Vibrancy effect
+  if (process.platform === 'darwin') {
+    try {
+      mainWindow.setVibrancy('window');
+      console.log('[Window] Applied macOS vibrancy effect');
+    } catch (e) {
+      console.log('[Window] Vibrancy not available');
+    }
+  }
+
+  // Load UI
   mainWindow.loadFile('index.html');
   
-  // 开发模式：打开 DevTools（需要时取消注释）
+  // Development mode: Open DevTools (uncomment when needed)
   // mainWindow.webContents.openDevTools({ mode: 'detach' });
 
   // ============================================================
-  // 创建 AI 操作视图 (BrowserView, CDP 控制目标)
+  // Create AI operation view (BrowserView, CDP control target)
   // ============================================================
   aiView = new BrowserView({
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       webSecurity: true,
+      // === Performance Optimizations ===
+      backgroundThrottling: false,    // Don't throttle background tabs (AI needs to run)
+      enableBlinkFeatures: 'CSSScrollSnapV2',  // Smooth scroll snap
+      // V8 code caching for faster page loads
+      v8CacheOptions: 'bypassHeatCheck',
     },
   });
 
-  // 初始加载空白页（但不添加到窗口，避免覆盖主内容）
+  // Initial load blank page (but don't add to window to avoid covering main content)
   aiView.webContents.loadURL('about:blank');
   
-  // 注意：初始时不添加 aiView，等需要显示时再添加
-  // mainWindow.addBrowserView(aiView); // 不在这里添加！
+  // Note: Don't add aiView initially, wait until we need to show it
+  // mainWindow.addBrowserView(aiView); // Don't add here!
 
-  // 监听窗口大小变化
+  // Listen for window resize
   mainWindow.on('resize', () => {
     updateAiViewBounds();
   });
+  
+  // Listen for maximize/unmaximize to update title bar button
+  mainWindow.on('maximize', () => {
+    mainWindow.webContents.send('window-maximize-change', true);
+  });
+  
+  mainWindow.on('unmaximize', () => {
+    mainWindow.webContents.send('window-maximize-change', false);
+  });
 
-  // UI 加载完成后的初始化
+  // Initialization after UI is loaded
   mainWindow.webContents.on('did-finish-load', async () => {
     console.log('[NogicOS] Main window ready');
     console.log(`[NogicOS] CDP: http://localhost:${CDP_PORT}`);
@@ -223,12 +300,12 @@ function createWindow() {
     mainWindow.webContents.send('ws-connection', wsConnected);
     mainWindow.webContents.send('python-status', { running: !!pythonProcess });
     
-    // 注意：不在这里初始化 CDP Bridge，因为 aiView 还没有添加到窗口
-    // CDP Bridge 会在 setAiViewVisible(true) 时初始化
+    // Note: Don't initialize CDP Bridge here, aiView is not yet added to window
+    // CDP Bridge will be initialized in setAiViewVisible(true)
     console.log('[CDP] Bridge will be initialized when AI view is shown');
   });
 
-  // 窗口关闭时清理
+  // Cleanup when window is closed
   mainWindow.on('closed', () => {
     mainWindow = null;
     aiView = null;
@@ -236,10 +313,24 @@ function createWindow() {
 }
 
 /**
- * 更新 AI 视图的位置和大小（仅在显示时调用）
+ * Update AI view position and size (only called when visible)
+ * 
+ * New three-column layout:
+ * ┌──────────┬─────────────────────────┬───────────────────┐
+ * │          │                          │  Preview Panel    │
+ * │ Sidebar  │        Chat Area         │   (400px)        │
+ * │ (240px)  │                          │                   │
+ * │          │                          │  BrowserView      │
+ * │          │                          │  Render here      │
+ * │          │                          │                   │
+ * └──────────┴──────────────────────────┴───────────────────┘
  */
-// 工具栏 + 结果面板的大约高度
-const TOOLBAR_HEIGHT = 180;
+const TITLEBAR_HEIGHT = 32;
+const SIDEBAR_WIDTH = 240;
+const PREVIEW_WIDTH = 400;
+const STATUSBAR_HEIGHT = 28;
+const PREVIEW_HEADER_HEIGHT = 48;   // Tabs + close button
+const BROWSER_URLBAR_HEIGHT = 48;   // URL input bar
 
 function updateAiViewBounds() {
   if (!mainWindow || !aiView || !aiViewVisible) return;
@@ -249,86 +340,98 @@ function updateAiViewBounds() {
 
   const [width, height] = mainWindow.getContentSize();
   
-  // AI 视图显示在右侧 50%，从工具栏下方开始
-  const aiWidth = Math.floor(width * 0.5);
-  const aiHeight = height - TOOLBAR_HEIGHT;
+  // BrowserView shown inside preview panel (right side)
+  // Position: below preview header and URL bar
+  const aiX = width - PREVIEW_WIDTH;
+  const aiY = TITLEBAR_HEIGHT + PREVIEW_HEADER_HEIGHT + BROWSER_URLBAR_HEIGHT;
+  const aiWidth = PREVIEW_WIDTH;
+  const aiHeight = height - TITLEBAR_HEIGHT - STATUSBAR_HEIGHT - PREVIEW_HEADER_HEIGHT - BROWSER_URLBAR_HEIGHT;
+  
   aiView.setBounds({ 
-    x: width - aiWidth, 
-    y: TOOLBAR_HEIGHT, 
+    x: aiX, 
+    y: aiY, 
     width: aiWidth, 
     height: aiHeight > 0 ? aiHeight : 100
   });
-  console.log(`[Layout] AI View resized: ${aiWidth}x${aiHeight}px at y=${TOOLBAR_HEIGHT}`);
+  console.log(`[Layout] AI View bounds: x=${aiX}, y=${aiY}, ${aiWidth}x${aiHeight}px`);
 }
 
 /**
- * 显示/隐藏 AI 视图
- * 关键：通过添加/移除 BrowserView 来控制显示，而不是设置 bounds
- * @param {boolean} visible - 是否显示
- * @param {number} widthPercent - AI 视图宽度占比 (0-100)
+ * Show/hide AI view
+ * Key: Control visibility by adding/removing BrowserView, not by setting bounds
+ * 
+ * In the new layout, BrowserView is embedded inside the Preview Panel (right side)
+ * @param {boolean} visible - Whether to show
  */
-async function setAiViewVisible(visible, widthPercent = 50) {
+async function setAiViewVisible(visible) {
   if (!mainWindow || !aiView) return;
 
   aiViewVisible = visible;
   
   if (visible) {
-    // 添加 BrowserView 到窗口（如果还没添加）
+    // Add BrowserView to window (if not already added)
     const views = mainWindow.getBrowserViews();
     if (!views.includes(aiView)) {
       mainWindow.addBrowserView(aiView);
-      console.log('[Layout] AI View added to window');
+      console.log('[Layout] AI View added to window (inside preview panel)');
       
-      // 首次添加时初始化 CDP Bridge
+      // Initialize CDP Bridge on first add
       if (!cdpBridge) {
         await initCDPBridge();
       }
     }
     
+    // Calculate bounds for preview panel position
     const [width, height] = mainWindow.getContentSize();
-    const aiWidth = Math.floor(width * widthPercent / 100);
-    const aiHeight = height - TOOLBAR_HEIGHT;
+    const aiX = width - PREVIEW_WIDTH;
+    const aiY = TITLEBAR_HEIGHT + PREVIEW_HEADER_HEIGHT + BROWSER_URLBAR_HEIGHT;
+    const aiWidth = PREVIEW_WIDTH;
+    const aiHeight = height - TITLEBAR_HEIGHT - STATUSBAR_HEIGHT - PREVIEW_HEADER_HEIGHT - BROWSER_URLBAR_HEIGHT;
     
     aiView.setBounds({ 
-      x: width - aiWidth, 
-      y: TOOLBAR_HEIGHT, 
+      x: aiX, 
+      y: aiY, 
       width: aiWidth, 
       height: aiHeight > 0 ? aiHeight : 100
     });
     
-    // 通知 UI 调整布局
-    mainWindow.webContents.send('ai-view-visible', { visible: true, widthPercent });
-    console.log(`[Layout] AI View shown: ${aiWidth}x${aiHeight}px at y=${TOOLBAR_HEIGHT}`);
+    // Notify UI to expand preview panel and switch to browser tab
+    mainWindow.webContents.send('ai-view-visible', { visible: true });
+    console.log(`[Layout] AI View shown in preview panel: x=${aiX}, y=${aiY}, ${aiWidth}x${aiHeight}px`);
   } else {
-    // 从窗口中移除 BrowserView（完全隐藏，不覆盖主内容）
+    // Remove BrowserView from window (completely hidden)
     const views = mainWindow.getBrowserViews();
     if (views.includes(aiView)) {
       mainWindow.removeBrowserView(aiView);
       console.log('[Layout] AI View removed from window');
     }
     
-    // 通知 UI 调整布局
+    // Notify UI
     mainWindow.webContents.send('ai-view-visible', { visible: false });
     console.log('[Layout] AI View hidden');
   }
 }
 
 /**
- * 初始化 CDP Bridge
- * 关键修复：控制 aiView 而不是主窗口！
+ * Initialize CDP Bridge
+ * Key fix: Control aiView instead of main window!
  */
 async function initCDPBridge() {
   if (!aiView) return;
   
   try {
-    // ✅ 正确：CDP Bridge 控制 aiView 的 webContents
+    // ✅ Correct: CDP Bridge controls aiView's webContents
     cdpBridge = new CDPBridge(aiView.webContents);
     const attached = await cdpBridge.attach();
     
     if (attached) {
       console.log('[CDP] Bridge initialized - controlling aiView (BrowserView)');
       
-      // 通知 Python 服务器 CDP Bridge 已就绪
+      // Safety: Input is disabled by default, only enable when executing tasks
+      // cdpBridge.enableInput() will be called only during task execution
+      console.log('[CDP] Input disabled by default for safety');
+      
+      // Notify Python server that CDP Bridge is ready
       sendToServer({
         type: 'cdp_ready',
         data: { attached: true },
@@ -375,7 +478,10 @@ function connectWebSocket() {
 
     wsClient.on('message', (data) => {
       try {
-        const message = JSON.parse(data.toString());
+        const raw = data.toString();
+        console.log('[WS] Raw message:', raw.substring(0, 200));
+        const message = JSON.parse(raw);
+        console.log('[WS] Parsed message type:', message.type);
         handleWsMessage(message);
       } catch (e) {
         console.error('[WS] Parse error:', e);
@@ -426,13 +532,13 @@ function handleWsMessage(message) {
     
     // Update progress bar based on agent state
     if (data.agent) {
-      const { status, progress } = data.agent;
+      const { state, progress } = data.agent;  // Python uses 'state', not 'status'
       
-      if (status === 'thinking' || status === 'acting') {
+      if (state === 'thinking' || state === 'acting') {
         mainWindow.setProgressBar(progress || 0.5);
-      } else if (status === 'done' || status === 'idle') {
+      } else if (state === 'done' || state === 'idle') {
         mainWindow.setProgressBar(-1);
-      } else if (status === 'error') {
+      } else if (state === 'error') {
         mainWindow.setProgressBar(1, { mode: 'error' });
         setTimeout(() => mainWindow.setProgressBar(-1), 2000);
       }
@@ -448,21 +554,77 @@ function handleWsMessage(message) {
     // Heartbeat response
   }
   
-  // 方案 B: 转发截图帧到 renderer
+  // Option B: Forward screenshot frames to renderer
   else if (type === 'frame' && mainWindow) {
     mainWindow.webContents.send('ai-frame', data);
   }
   
   // ============================================================
-  // CDP 命令处理（控制 aiView）
+  // CDP Command Processing (controls aiView)
   // ============================================================
   else if (type === 'cdp_command') {
     handleCDPCommand(data);
   }
+  
+  // ============================================================
+  // Tool Call Processing (file system, terminal, etc.)
+  // ============================================================
+  else if (type === 'tool_call') {
+    console.log('[WS] Received tool_call message:', JSON.stringify(message));
+    // Message format: { type, call_id, tool_name, args } (from Python)
+    // Need to extract from top level, not data
+    handleToolCall({
+      call_id: message.call_id,
+      tool_name: message.tool_name,
+      args: message.args
+    });
+  }
+  
+  // Log unknown message types
+  else {
+    console.log('[WS] Unknown message type:', type, message);
+  }
 }
 
 /**
- * 处理来自 Python 的 CDP 命令
+ * Handle tool calls from Python
+ * @param {object} data - { call_id, tool_name, args }
+ */
+async function handleToolCall(data) {
+  const { call_id, tool_name, args } = data;
+  
+  console.log(`[Tool] Executing: ${tool_name}`, args);
+  
+  try {
+    const result = await executeTool(tool_name, args);
+    
+    // Send success response
+    const response = {
+      type: 'tool_response',
+      call_id,
+      result,
+      error: null,
+    };
+    console.log(`[Tool] Sending response for ${tool_name}:`, call_id);
+    const sent = sendToServer(response);
+    console.log(`[Tool] Response sent: ${sent}`);
+    
+    console.log(`[Tool] ${tool_name} completed successfully`);
+  } catch (err) {
+    // Send error response
+    sendToServer({
+      type: 'tool_response',
+      call_id,
+      result: null,
+      error: err.message,
+    });
+    
+    console.error(`[Tool] ${tool_name} failed:`, err.message);
+  }
+}
+
+/**
+ * Handle CDP commands from Python
  * @param {object} data - { requestId, method, params }
  */
 async function handleCDPCommand(data) {
@@ -471,10 +633,10 @@ async function handleCDPCommand(data) {
   try {
     let result = null;
     
-    // 特殊处理：这些命令会初始化 cdpBridge，所以要先处理
+    // Special handling: these commands initialize cdpBridge, so handle them first
     if (method === 'navigate' || method === 'showAiView') {
-      // 显示 AI 视图并初始化 CDP Bridge（如果需要）
-      await setAiViewVisible(true, params.widthPercent || 50);
+      // Show AI view and initialize CDP Bridge (if needed)
+      await setAiViewVisible(true);
       
       if (method === 'showAiView') {
         sendCDPResponse(requestId, { success: true }, null);
@@ -482,19 +644,28 @@ async function handleCDPCommand(data) {
       }
     }
     
-    // 检查 cdpBridge 是否已初始化
+    // Check if cdpBridge is initialized
     if (!cdpBridge) {
       sendCDPResponse(requestId, null, 'CDP Bridge not initialized');
       return;
     }
     
-    // 路由到对应的 CDP Bridge 方法
-    switch (method) {
-      case 'navigate':
-        // cdpBridge 已经在上面初始化了
-        await cdpBridge.navigate(params.url);
-        result = { success: true, url: params.url };
-        break;
+    // Enable input for commands that need keyboard/mouse interaction
+    const inputCommands = ['click', 'type', 'pressKey', 'clickSelector', 'typeInSelector'];
+    const needsInput = inputCommands.includes(method);
+    
+    if (needsInput && cdpBridge) {
+      cdpBridge.enableInput();
+    }
+    
+    try {
+      // Route to corresponding CDP Bridge method
+      switch (method) {
+        case 'navigate':
+          // cdpBridge is already initialized above
+          await cdpBridge.navigate(params.url);
+          result = { success: true, url: params.url };
+          break;
         
       case 'click':
         await cdpBridge.click(params.x, params.y, params.options);
@@ -551,7 +722,7 @@ async function handleCDPCommand(data) {
         result = { success: true, box };
         break;
         
-      // showAiView 在上面特殊处理了
+      // showAiView is handled specially above
         
       case 'hideAiView':
         await setAiViewVisible(false);
@@ -559,19 +730,29 @@ async function handleCDPCommand(data) {
         break;
         
       default:
-        // 直接转发到 CDP
+        // Forward directly to CDP
         result = await cdpBridge.sendCommand(method, params);
     }
     
     sendCDPResponse(requestId, result, null);
+    } finally {
+      // Always disable input after command completes (safety)
+      if (needsInput && cdpBridge) {
+        cdpBridge.disableInput();
+      }
+    }
   } catch (err) {
     console.error(`[CDP] Command ${method} failed:`, err.message);
     sendCDPResponse(requestId, null, err.message);
+    // Ensure input is disabled on error too
+    if (cdpBridge) {
+      cdpBridge.disableInput();
+    }
   }
 }
 
 /**
- * 发送 CDP 命令响应回 Python
+ * Send CDP command response back to Python
  */
 function sendCDPResponse(requestId, result, error) {
   sendToServer({
@@ -607,9 +788,9 @@ ipcMain.handle('get-status', () => {
 });
 
 ipcMain.handle('navigate', async (event, url) => {
-  // 导航 AI 视图
+  // Navigate AI view
   if (aiView) {
-    await setAiViewVisible(true, 50);
+    await setAiViewVisible(true);
     await aiView.webContents.loadURL(url);
     return { success: true, url };
   }
@@ -648,9 +829,9 @@ ipcMain.handle('get-stats', async () => {
   }
 });
 
-// AI 视图控制
-ipcMain.handle('show-ai-view', async (event, widthPercent = 50) => {
-  await setAiViewVisible(true, widthPercent);
+// AI View Control
+ipcMain.handle('show-ai-view', async () => {
+  await setAiViewVisible(true);
   return { success: true };
 });
 
@@ -664,6 +845,36 @@ ipcMain.handle('get-ai-view-url', () => {
     return { url: aiView.webContents.getURL() };
   }
   return { url: null };
+});
+
+// ============================================================
+// Window Control (for custom title bar)
+// ============================================================
+
+ipcMain.handle('window-minimize', () => {
+  if (mainWindow) {
+    mainWindow.minimize();
+  }
+});
+
+ipcMain.handle('window-maximize', () => {
+  if (mainWindow) {
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow.maximize();
+    }
+  }
+});
+
+ipcMain.handle('window-close', () => {
+  if (mainWindow) {
+    mainWindow.close();
+  }
+});
+
+ipcMain.handle('window-is-maximized', () => {
+  return mainWindow ? mainWindow.isMaximized() : false;
 });
 
 // ============================================================
@@ -701,6 +912,13 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  // Cleanup CDP Bridge first - prevent any accidental input
+  if (cdpBridge) {
+    console.log('[App] Cleaning up CDP Bridge...');
+    cdpBridge.destroy();
+    cdpBridge = null;
+  }
+  
   // Close WebSocket
   if (wsClient) {
     wsClient.close();
@@ -720,6 +938,11 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  // Cleanup CDP Bridge to prevent keyboard/mouse events
+  if (cdpBridge) {
+    cdpBridge.destroy();
+    cdpBridge = null;
+  }
   stopPythonServer();
 });
 

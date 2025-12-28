@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-CDP Client - Python 端 CDP 命令发送器
+CDP Client - Python-side CDP command sender
 
-通过 WebSocket 向 Electron 发送 CDP 命令，实现内部浏览器控制（方案 A）
-这是一个独立模块，不影响现有的 Playwright 方案
+Sends CDP commands to Electron via WebSocket for internal browser control (Option A).
+This is an independent module that doesn't affect the existing Playwright solution.
 
-用法：
+Usage:
     client = CDPClient(ws_send_func)
     await client.navigate("https://example.com")
     await client.click_selector("button.submit")
@@ -22,7 +22,7 @@ logger = logging.getLogger("nogicos.cdp")
 
 @dataclass
 class PendingRequest:
-    """等待响应的请求"""
+    """Request awaiting response"""
     request_id: str
     method: str
     future: asyncio.Future
@@ -31,35 +31,35 @@ class PendingRequest:
 
 class CDPClient:
     """
-    CDP 命令客户端
+    CDP command client
     
-    通过 WebSocket 向 Electron 发送 CDP 命令
+    Sends CDP commands to Electron via WebSocket
     """
     
     def __init__(self, ws_send: Callable[[dict], Awaitable[None]]):
         """
         Args:
-            ws_send: WebSocket 发送函数，接收 dict 参数
+            ws_send: WebSocket send function that accepts dict parameter
         """
         self._ws_send = ws_send
         self._pending: Dict[str, PendingRequest] = {}
         self._ready = False
-        self._timeout = 30.0  # 默认超时 30 秒
+        self._timeout = 30.0  # Default timeout 30 seconds
     
     @property
     def ready(self) -> bool:
-        """CDP Bridge 是否就绪"""
+        """Whether CDP Bridge is ready"""
         return self._ready
     
     def set_ready(self, ready: bool):
-        """设置就绪状态（由 WebSocket 消息处理器调用）"""
+        """Set ready state (called by WebSocket message handler)"""
         self._ready = ready
         if ready:
             logger.info("[CDPClient] Bridge is ready")
     
     def handle_response(self, data: dict):
         """
-        处理来自 Electron 的 CDP 响应
+        Handle CDP response from Electron
         
         Args:
             data: { requestId, result, error }
@@ -79,14 +79,14 @@ class CDPClient:
     
     async def _send_command(self, method: str, params: dict = None) -> Any:
         """
-        发送 CDP 命令并等待响应
+        Send CDP command and wait for response
         
         Args:
-            method: 命令方法名
-            params: 命令参数
+            method: Command method name
+            params: Command parameters
             
         Returns:
-            命令执行结果
+            Command execution result
         """
         if not self._ready:
             raise CDPError("CDP Bridge not ready")
@@ -100,7 +100,7 @@ class CDPClient:
             future=future,
         )
         
-        # 发送命令
+        # Send command
         await self._ws_send({
             "type": "cdp_command",
             "data": {
@@ -110,7 +110,7 @@ class CDPClient:
             }
         })
         
-        # 等待响应
+        # Wait for response
         try:
             result = await asyncio.wait_for(future, timeout=self._timeout)
             return result
@@ -119,33 +119,33 @@ class CDPClient:
             raise CDPError(f"Command timeout: {method}")
     
     # ============================================================
-    # 导航控制
+    # Navigation Control
     # ============================================================
     
     async def navigate(self, url: str) -> dict:
-        """导航到 URL"""
+        """Navigate to URL"""
         return await self._send_command("navigate", {"url": url})
     
     async def reload(self) -> dict:
-        """刷新页面"""
+        """Reload page"""
         return await self._send_command("Page.reload")
     
     async def get_url(self) -> str:
-        """获取当前 URL"""
+        """Get current URL"""
         result = await self._send_command("getURL")
         return result.get("url", "")
     
     async def get_title(self) -> str:
-        """获取页面标题"""
+        """Get page title"""
         result = await self._send_command("getTitle")
         return result.get("title", "")
     
     # ============================================================
-    # 鼠标控制
+    # Mouse Control
     # ============================================================
     
     async def click(self, x: int, y: int, options: dict = None) -> dict:
-        """点击指定坐标"""
+        """Click at specified coordinates"""
         return await self._send_command("click", {
             "x": x,
             "y": y,
@@ -153,11 +153,11 @@ class CDPClient:
         })
     
     async def click_selector(self, selector: str) -> dict:
-        """点击选择器匹配的元素"""
+        """Click element matching selector"""
         return await self._send_command("clickSelector", {"selector": selector})
     
     async def double_click(self, x: int, y: int) -> dict:
-        """双击"""
+        """Double click"""
         return await self._send_command("click", {
             "x": x,
             "y": y,
@@ -165,70 +165,70 @@ class CDPClient:
         })
     
     # ============================================================
-    # 键盘控制
+    # Keyboard Control
     # ============================================================
     
     async def type_text(self, text: str) -> dict:
-        """输入文本"""
+        """Type text"""
         return await self._send_command("type", {"text": text})
     
     async def type_in_selector(self, selector: str, text: str) -> dict:
-        """在元素中输入文本"""
+        """Type text into element"""
         return await self._send_command("typeInSelector", {
             "selector": selector,
             "text": text,
         })
     
     async def press_key(self, key: str) -> dict:
-        """按下按键"""
+        """Press a key"""
         return await self._send_command("pressKey", {"key": key})
     
     # ============================================================
-    # DOM 操作
+    # DOM Operations
     # ============================================================
     
     async def query_selector(self, selector: str) -> Optional[int]:
-        """查询元素，返回节点 ID"""
+        """Query element, returns node ID"""
         result = await self._send_command("querySelector", {"selector": selector})
         return result.get("nodeId")
     
     async def get_bounding_box(self, node_id: int) -> Optional[dict]:
-        """获取元素边界框"""
+        """Get element bounding box"""
         result = await self._send_command("getBoundingBox", {"nodeId": node_id})
         return result.get("box")
     
     # ============================================================
-    # 截图
+    # Screenshot
     # ============================================================
     
     async def screenshot(self, options: dict = None) -> str:
-        """截取页面截图，返回 base64"""
+        """Take page screenshot, returns base64"""
         result = await self._send_command("screenshot", {"options": options or {}})
         return result.get("data", "")
     
     # ============================================================
-    # JavaScript 执行
+    # JavaScript Execution
     # ============================================================
     
     async def evaluate(self, expression: str) -> Any:
-        """执行 JavaScript"""
+        """Execute JavaScript"""
         result = await self._send_command("evaluate", {"expression": expression})
         return result.get("value")
     
     # ============================================================
-    # 高级操作（组合命令）
+    # Advanced Operations (Combined Commands)
     # ============================================================
     
     async def fill_form(self, selector: str, value: str) -> dict:
         """
-        填写表单字段
-        1. 点击元素
-        2. 清空现有内容
-        3. 输入新内容
+        Fill form field
+        1. Click element
+        2. Clear existing content
+        3. Type new content
         """
         await self.click_selector(selector)
         await asyncio.sleep(0.1)
-        # 全选并删除
+        # Select all and delete
         await self._send_command("evaluate", {
             "expression": f"document.querySelector('{selector}').select()"
         })
@@ -243,15 +243,15 @@ class CDPClient:
         interval: float = 0.5,
     ) -> bool:
         """
-        等待元素出现
+        Wait for element to appear
         
         Args:
-            selector: CSS 选择器
-            timeout: 超时时间（秒）
-            interval: 检查间隔（秒）
+            selector: CSS selector
+            timeout: Timeout in seconds
+            interval: Check interval in seconds
             
         Returns:
-            元素是否出现
+            Whether element appeared
         """
         start = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() - start < timeout:
@@ -263,6 +263,6 @@ class CDPClient:
 
 
 class CDPError(Exception):
-    """CDP 命令执行错误"""
+    """CDP command execution error"""
     pass
 

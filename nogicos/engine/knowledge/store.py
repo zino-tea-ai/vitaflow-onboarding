@@ -37,7 +37,7 @@ class SearchResult:
     trajectory: Optional[List[dict]] = None
     source_task: Optional[str] = None
     replay_code: Optional[str] = None
-    cached_result: Optional[str] = None  # 缓存的最终答案
+    cached_result: Optional[str] = None  # Cached final answer
     
     def can_replay(self) -> bool:
         """Check if result has enough confidence for replay"""
@@ -436,7 +436,7 @@ class KnowledgeStore:
                     trajectory=trajectory.get("actions", []),
                     source_task=best_entry["task"],
                     replay_code=replay_code,
-                    cached_result=trajectory.get("result"),  # 返回缓存的结果
+                    cached_result=trajectory.get("result"),  # Return cached result
                 )
         
         return SearchResult(matched=False, confidence=scored[0][0] if scored else 0.0)
@@ -486,7 +486,7 @@ class KnowledgeStore:
         url: str,
         actions: List[dict],
         success: bool = True,
-        result: Optional[str] = None,  # 最终结果/答案
+        result: Optional[str] = None,  # Final result/answer
         metadata: dict = None,
     ) -> str:
         """
@@ -517,7 +517,7 @@ class KnowledgeStore:
             "url": url,
             "actions": actions,
             "success": success,
-            "result": result,  # 保存最终结果
+            "result": result,  # Save final result
             "created_at": datetime.now().isoformat(),
             "metadata": metadata or {},
         }

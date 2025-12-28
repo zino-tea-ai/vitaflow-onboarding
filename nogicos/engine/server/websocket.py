@@ -20,11 +20,23 @@ Usage:
 import asyncio
 import json
 import logging
-from typing import Set, Dict, Any, Optional
+from typing import Set, Dict, Any, Optional, AsyncGenerator
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
 logger = logging.getLogger("nogicos.server")
+
+# Import stream protocol
+try:
+    from engine.stream.protocol import (
+        StreamChunk, StreamBuilder, ChunkType, 
+        ToolCallStatus, PlanStepStatus, ArtifactType,
+        create_stream_builder
+    )
+    STREAM_PROTOCOL_AVAILABLE = True
+except ImportError:
+    STREAM_PROTOCOL_AVAILABLE = False
+    logger.warning("[Server] Stream protocol not available")
 
 # Try to import websockets, gracefully handle if not installed
 try:
@@ -112,8 +124,11 @@ class StatusServer:
         self._learning_status = LearningStatus()
         self._knowledge_stats = KnowledgeStats()
         
-        # CDP 响应回调（用于 Python → Electron → Python 的双向通信）
+        # CDP response callbacks (for Python → Electron → Python bidirectional communication)
         self._cdp_response_handlers: Dict[str, Any] = {}
+        
+        # Tool response callbacks (for Tool calls to Electron)
+        self._tool_response_handlers: Dict[str, Any] = {}
     
     @property
     def client_count(self) -> int:
@@ -208,18 +223,23 @@ class StatusServer:
                 cmd = data.get("command", "")
                 logger.info(f"[Server] Received command: {cmd}")
             
-            # CDP 命令转发（方案 A）
+            # CDP command forwarding (Option A)
             elif msg_type == "cdp_command":
-                # 转发 CDP 命令到所有其他客户端（主要是 Electron）
+                # Forward CDP command to all other clients (mainly Electron)
                 await self._forward_cdp_message(websocket, data)
             
             elif msg_type == "cdp_response":
-                # 转发 CDP 响应到所有其他客户端
+                # Forward CDP response to all other clients
                 await self._forward_cdp_message(websocket, data)
             
             elif msg_type == "cdp_ready":
-                # 转发 CDP 就绪状态
+                # Forward CDP ready status
                 await self._forward_cdp_message(websocket, data)
+            
+            # Tool response handling (from Electron)
+            elif msg_type == "tool_response":
+                logger.info(f"[Server] Received tool_response: {data.get('call_id', 'unknown')[:8]}...")
+                await self._handle_tool_response(data)
             
         except json.JSONDecodeError:
             logger.warning(f"[Server] Invalid JSON: {message}")
@@ -228,7 +248,7 @@ class StatusServer:
         """Forward CDP messages to all other clients"""
         msg_str = json.dumps(data)
         
-        # 发送给除发送者以外的所有客户端
+        # Send to all clients except sender
         for client in self._clients:
             if client != sender:
                 try:
@@ -236,7 +256,7 @@ class StatusServer:
                 except Exception as e:
                     logger.error(f"[Server] CDP forward error: {e}")
         
-        # 如果是 cdp_response，同时通知内部处理器
+        # If cdp_response, also notify internal handlers
         msg_type = data.get("type")
         if msg_type == "cdp_response":
             request_id = data.get("requestId")
@@ -247,22 +267,98 @@ class StatusServer:
                 except Exception as e:
                     logger.error(f"[Server] CDP response handler error: {e}")
     
-    async def send_cdp_command(self, method: str, params: dict = None, timeout: float = 30.0) -> dict:
+    async def _handle_tool_response(self, data: dict):
+        """Handle tool response from Electron"""
+        call_id = data.get("call_id")
+        result = data.get("result")
+        error = data.get("error")
+        
+        logger.info(f"[Server] Processing tool_response: call_id={call_id[:8] if call_id else 'None'}..., has_handler={call_id in self._tool_response_handlers if call_id else False}")
+        
+        if call_id and call_id in self._tool_response_handlers:
+            handler = self._tool_response_handlers[call_id]
+            try:
+                handler(result, error)
+                logger.info(f"[Server] Tool handler called for {call_id[:8]}...")
+            except Exception as e:
+                logger.error(f"[Server] Tool response handler error: {e}")
+        else:
+            logger.warning(f"[Server] No handler found for tool_response: {call_id}")
+    
+    async def send_tool_call(self, tool_name: str, args: dict, timeout: float = 30.0) -> Any:
         """
-        发送 CDP 命令并等待响应（用于 Python 内部调用）
+        Send tool call to Electron and wait for response
         
         Args:
-            method: CDP 命令方法名
-            params: 命令参数
-            timeout: 超时时间（秒）
+            tool_name: Name of the tool to execute
+            args: Tool arguments
+            timeout: Timeout in seconds
             
         Returns:
-            CDP 命令响应
+            Tool execution result
+        """
+        import uuid
+        call_id = str(uuid.uuid4())
+        
+        # Create Future to wait for response
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        
+        def on_response(result, error):
+            logger.info(f"[Server] on_response called: done={future.done()}, error={error}")
+            if not future.done():
+                if error:
+                    logger.info(f"[Server] Setting future exception: {error}")
+                    future.set_exception(Exception(error))
+                else:
+                    logger.info(f"[Server] Setting future result: {type(result)}")
+                    future.set_result(result)
+            else:
+                logger.warning(f"[Server] Future already done, ignoring response")
+        
+        # Register response handler
+        self._tool_response_handlers[call_id] = on_response
+        
+        try:
+            # Send tool call to all clients (Electron will execute)
+            tool_msg = {
+                "type": "tool_call",
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "args": args,
+            }
+            logger.info(f"[Server] Sending tool_call: {tool_name} (call_id: {call_id[:8]}...)")
+            await self.broadcast(tool_msg)
+            logger.info(f"[Server] Tool call broadcast complete: {tool_name}")
+            
+            # Wait for response
+            logger.info(f"[Server] Waiting for future (timeout={timeout}s)...")
+            result = await asyncio.wait_for(future, timeout=timeout)
+            logger.info(f"[Server] Future resolved! Result type: {type(result)}")
+            return result
+            
+        except asyncio.TimeoutError:
+            raise Exception(f"Tool call timeout: {tool_name}")
+        finally:
+            # Clean up handler
+            self._tool_response_handlers.pop(call_id, None)
+    
+    async def send_cdp_command(self, method: str, params: dict = None, timeout: float = 30.0) -> dict:
+        """
+        Send CDP command and wait for response (for Python internal calls)
+        
+        Args:
+            method: CDP command method name
+            params: Command parameters
+            timeout: Timeout in seconds
+            
+        Returns:
+            CDP command response
         """
         import uuid
         request_id = str(uuid.uuid4())
         
-        # 创建 Future 来等待响应
+        # Create Future to wait for response
         loop = asyncio.get_event_loop()
         future = loop.create_future()
         
@@ -274,11 +370,11 @@ class StatusServer:
                 else:
                     future.set_result(data.get("result"))
         
-        # 注册响应处理器
+        # Register response handler
         self._cdp_response_handlers[request_id] = on_response
         
         try:
-            # 发送命令到所有客户端（Electron 会处理 cdp_command）
+            # Send command to all clients (Electron will handle cdp_command)
             await self.broadcast({
                 "type": "cdp_command",
                 "data": {
@@ -288,14 +384,14 @@ class StatusServer:
                 }
             })
             
-            # 等待响应
+            # Wait for response
             result = await asyncio.wait_for(future, timeout=timeout)
             return result
             
         except asyncio.TimeoutError:
             raise Exception(f"CDP command timeout: {method}")
         finally:
-            # 清理处理器
+            # Clean up handler
             self._cdp_response_handlers.pop(request_id, None)
     
     async def _send_full_status(self, websocket):
@@ -310,13 +406,22 @@ class StatusServer:
     async def broadcast(self, message: dict):
         """Broadcast message to all connected clients"""
         if not self._clients:
+            logger.warning(f"[Server] No clients to broadcast: {message.get('type')}")
             return
         
         msg_str = json.dumps(message)
-        await asyncio.gather(
+        msg_type = message.get('type', 'unknown')
+        logger.debug(f"[Server] Broadcasting {msg_type} to {len(self._clients)} clients")
+        
+        results = await asyncio.gather(
             *[client.send(msg_str) for client in self._clients],
             return_exceptions=True
         )
+        
+        # Check for any send errors
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"[Server] Broadcast error to client {i}: {result}")
     
     async def broadcast_status(self):
         """Broadcast current status to all clients"""
@@ -432,6 +537,381 @@ class StatusServer:
             }
         }
         await self.broadcast(message)
+    
+    # ========================================================================
+    # Stream Protocol Methods (v2.0)
+    # ========================================================================
+    
+    async def broadcast_stream_chunk(self, chunk: "StreamChunk"):
+        """
+        Broadcast a stream chunk to all clients.
+        
+        This is the new streaming protocol for real-time AI interaction.
+        
+        Args:
+            chunk: StreamChunk object containing type and data
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            logger.warning("[Server] Stream protocol not available")
+            return
+        
+        if not self._clients:
+            return
+        
+        # Send JSON serialized chunk
+        msg_str = chunk.to_json()
+        await asyncio.gather(
+            *[client.send(msg_str) for client in self._clients],
+            return_exceptions=True
+        )
+    
+    async def stream_thinking(
+        self,
+        message_id: str,
+        text: str,
+        is_complete: bool = False,
+        duration_ms: Optional[int] = None,
+    ):
+        """
+        Send thinking/reasoning chunk (Chain of Thought).
+        
+        Args:
+            message_id: Message ID for this conversation turn
+            text: Thinking text content
+            is_complete: Whether thinking is complete
+            duration_ms: Total thinking duration (if complete)
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        from engine.stream.protocol import ThinkingContent
+        
+        chunk = StreamChunk(
+            type=ChunkType.THINKING,
+            message_id=message_id,
+            data=ThinkingContent(
+                text=text,
+                is_complete=is_complete,
+                duration_ms=duration_ms,
+            ),
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_content(self, message_id: str, text: str):
+        """
+        Send content chunk (streaming response text).
+        
+        Args:
+            message_id: Message ID
+            text: Content text (appended to existing content)
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        chunk = StreamChunk(
+            type=ChunkType.CONTENT,
+            message_id=message_id,
+            data={"text": text},
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_tool_start(
+        self,
+        message_id: str,
+        tool_id: str,
+        tool_name: str,
+    ):
+        """
+        Send tool call start notification.
+        
+        Args:
+            message_id: Message ID
+            tool_id: Unique tool call ID
+            tool_name: Name of the tool being called
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        chunk = StreamChunk(
+            type=ChunkType.TOOL_START,
+            message_id=message_id,
+            data={
+                "id": tool_id,
+                "name": tool_name,
+                "status": ToolCallStatus.GENERATING.value,
+            },
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_tool_args(
+        self,
+        message_id: str,
+        tool_id: str,
+        args_text: str,
+        is_complete: bool = False,
+    ):
+        """
+        Send tool arguments chunk (streaming).
+        
+        Args:
+            message_id: Message ID
+            tool_id: Tool call ID
+            args_text: Arguments text chunk (appended)
+            is_complete: Whether arguments are complete
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        chunk = StreamChunk(
+            type=ChunkType.TOOL_ARGS,
+            message_id=message_id,
+            data={
+                "toolId": tool_id,
+                "argsText": args_text,
+                "isComplete": is_complete,
+                "status": ToolCallStatus.GENERATED.value if is_complete else ToolCallStatus.GENERATING.value,
+            },
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_tool_result(
+        self,
+        message_id: str,
+        tool_id: str,
+        result: Any = None,
+        error: Optional[str] = None,
+        duration_ms: Optional[int] = None,
+    ):
+        """
+        Send tool execution result.
+        
+        Args:
+            message_id: Message ID
+            tool_id: Tool call ID
+            result: Execution result (if success)
+            error: Error message (if failed)
+            duration_ms: Execution duration
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        status = ToolCallStatus.ERRORED if error else ToolCallStatus.DONE
+        
+        chunk = StreamChunk(
+            type=ChunkType.TOOL_RESULT,
+            message_id=message_id,
+            data={
+                "toolId": tool_id,
+                "status": status.value,
+                "result": result,
+                "error": error,
+                "durationMs": duration_ms,
+            },
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_artifact(
+        self,
+        message_id: str,
+        artifact_id: str,
+        title: str,
+        content: str,
+        artifact_type: str = "file",
+        language: Optional[str] = None,
+        file_path: Optional[str] = None,
+    ):
+        """
+        Send artifact (generated file/output).
+        
+        Args:
+            message_id: Message ID
+            artifact_id: Unique artifact ID
+            title: Artifact title
+            content: Artifact content
+            artifact_type: Type (code, file, chart, table, markdown, json)
+            language: Programming language (for code)
+            file_path: File path (for file artifacts)
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        chunk = StreamChunk(
+            type=ChunkType.ARTIFACT,
+            message_id=message_id,
+            data={
+                "id": artifact_id,
+                "type": artifact_type,
+                "title": title,
+                "content": content,
+                "language": language,
+                "filePath": file_path,
+                "preview": True,
+            },
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_plan(
+        self,
+        message_id: str,
+        plan_id: str,
+        title: str,
+        steps: list,
+    ):
+        """
+        Send execution plan.
+        
+        Args:
+            message_id: Message ID
+            plan_id: Unique plan ID
+            title: Plan title
+            steps: List of step dicts with 'title' and 'description'
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        formatted_steps = [
+            {
+                "id": f"{plan_id}-{i}",
+                "index": i,
+                "title": step.get("title", f"Step {i+1}"),
+                "description": step.get("description", ""),
+                "status": "pending",
+                "progress": 0.0,
+            }
+            for i, step in enumerate(steps)
+        ]
+        
+        chunk = StreamChunk(
+            type=ChunkType.PLAN_UPDATE,
+            message_id=message_id,
+            data={
+                "id": plan_id,
+                "title": title,
+                "steps": formatted_steps,
+                "currentStep": 0,
+                "progress": 0.0,
+            },
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_plan_step_update(
+        self,
+        message_id: str,
+        plan_id: str,
+        step_index: int,
+        status: str,
+        progress: float = 0.0,
+        result: Optional[str] = None,
+    ):
+        """
+        Update plan step status.
+        
+        Args:
+            message_id: Message ID
+            plan_id: Plan ID
+            step_index: Step index (0-based)
+            status: Step status (pending, in_progress, completed, failed)
+            progress: Step progress (0-1)
+            result: Step result text
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        chunk = StreamChunk(
+            type=ChunkType.PLAN_UPDATE,
+            message_id=message_id,
+            data={
+                "id": plan_id,
+                "stepUpdate": {
+                    "index": step_index,
+                    "status": status,
+                    "progress": progress,
+                    "result": result,
+                },
+            },
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_confirm(
+        self,
+        message_id: str,
+        message: str,
+        options: list = None,
+        default: str = "continue",
+    ):
+        """
+        Request user confirmation.
+        
+        Args:
+            message_id: Message ID
+            message: Confirmation message
+            options: Available options (default: ["continue", "cancel"])
+            default: Default option
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        chunk = StreamChunk(
+            type=ChunkType.CONFIRM,
+            message_id=message_id,
+            data={
+                "message": message,
+                "options": options or ["continue", "cancel"],
+                "default": default,
+            },
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_error(
+        self,
+        message_id: str,
+        error_message: str,
+        details: Optional[str] = None,
+    ):
+        """
+        Send error notification.
+        
+        Args:
+            message_id: Message ID
+            error_message: Error message
+            details: Error details
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        chunk = StreamChunk(
+            type=ChunkType.ERROR,
+            message_id=message_id,
+            data={
+                "message": error_message,
+                "details": details,
+            },
+        )
+        await self.broadcast_stream_chunk(chunk)
+    
+    async def stream_complete(
+        self,
+        message_id: str,
+        summary: Optional[str] = None,
+    ):
+        """
+        Send completion notification.
+        
+        Args:
+            message_id: Message ID
+            summary: Completion summary
+        """
+        if not STREAM_PROTOCOL_AVAILABLE:
+            return
+        
+        chunk = StreamChunk(
+            type=ChunkType.COMPLETE,
+            message_id=message_id,
+            data={
+                "summary": summary,
+            },
+        )
+        await self.broadcast_stream_chunk(chunk)
 
 
 # Global server instance

@@ -71,19 +71,46 @@ from engine.skill.synthesizer import SkillSynthesizer
 from engine.stream.screenshot import EventDrivenStreamer, StreamConfig
 from engine.browser.cdp_session import CDPBrowserSession
 from engine.browser.cdp_client import CDPClient
+from engine.demo.yc_analyzer import YCAnalyzer, analyze_yc_companies
+from engine.tools import get_dispatcher, init_dispatcher_with_server
+
+# Try to import old executor (backwards compatibility)
+try:
+    from engine.executor import TaskExecutor, execute_task as executor_execute_task
+except ImportError:
+    TaskExecutor = None
+    executor_execute_task = None
+
+# Import new agent (v2 architecture)
+try:
+    from engine.agent import NogicOSAgent
+    from engine.tools import create_full_registry
+    from engine.middleware import FilesystemMiddleware, TodoMiddleware
+    AGENT_V2_AVAILABLE = True
+except ImportError:
+    AGENT_V2_AVAILABLE = False
+    NogicOSAgent = None
 
 
 # ============================================================================
 # Request/Response Models
 # ============================================================================
 
+class ContextConfig(BaseModel):
+    """Context configuration for task execution"""
+    file: bool = False  # Include file context
+    web: bool = False   # Include web page context
+
+
 class ExecuteRequest(BaseModel):
     """Task execution request"""
     task: str
-    url: str = "https://news.ycombinator.com"
+    url: Optional[str] = None  # No default URL
     max_steps: int = 10
     headless: bool = True  # Default headless for server mode
     use_cdp: bool = False  # Use CDP mode (Electron internal control) instead of Playwright
+    mode: str = "agent"   # ask, plan, agent
+    context: Optional[ContextConfig] = None  # Context configuration
 
 
 class ExecuteResponse(BaseModel):
@@ -341,16 +368,16 @@ class HiveEngine:
         """Execute using cached trajectory"""
         logger.info("Executing FAST PATH (replay)")
         
-        # 优先使用缓存的结果（如果有的话）
+        # Use cached result if available (fastest path)
         if route_result.cached_result:
             logger.info(f"Using cached result directly: {route_result.cached_result[:50]}...")
             return {
                 "success": True,
                 "result": route_result.cached_result,
-                "steps": 0,  # 直接返回缓存，不需要执行
+                "steps": 0,  # Direct return from cache, no execution needed
             }
         
-        # 否则尝试 replay
+        # Otherwise try replay
         if not route_result.replay_code:
             logger.warning("No replay code and no cached result, falling back to normal path")
             return await self._execute_normal_path(request)
@@ -377,18 +404,18 @@ class HiveEngine:
         """
         Execute using AI agent with retry and error recovery.
         
-        方案 B: Playwright 控制浏览器（headless），截图流同步到前端。
-        方案 A: CDP 控制 Electron 内部浏览器（use_cdp=True）。
+        Option B: Playwright controls browser (headless), screenshot stream syncs to frontend.
+        Option A: CDP controls Electron internal browser (use_cdp=True).
         
         Args:
             request: Task request
             max_retries: Max retry attempts (default 2, total 3 attempts)
         """
-        # 方案 A: CDP 模式 - 使用 Electron 内部控制
+        # Option A: CDP mode - Use Electron internal control
         if request.use_cdp:
             return await self._execute_cdp_mode(request, max_retries)
         
-        # 方案 B: Playwright 模式（默认）
+        # Option B: Playwright mode (default)
         logger.info("Executing NORMAL PATH (Playwright mode) with screenshot streaming")
         
         last_error = None
@@ -411,17 +438,17 @@ class HiveEngine:
             streamer = None
             
             try:
-                # 方案 B: 使用 headless 模式（Playwright 在 headless 也能截图）
-                # 不会打开可见的 Chrome 窗口，截图流同步到 Electron
+                # Option B: Use headless mode (Playwright can screenshot in headless too)
+                # No visible Chrome window, screenshot stream syncs to Electron
                 await browser.start(url=request.url, headless=True)
                 
-                # 初始化截图流
+                # Initialize screenshot streamer
                 streamer = EventDrivenStreamer(
                     page=browser.active_page,
                     config=StreamConfig(fps=10, quality=70),
                 )
                 
-                # 设置截图回调 - 广播到 WebSocket
+                # Set screenshot callback - broadcast to WebSocket
                 async def on_frame(frame):
                     await self.status_server.broadcast_frame(
                         image_base64=frame.image_base64,
@@ -433,7 +460,7 @@ class HiveEngine:
                 streamer.on_frame(on_frame)
                 await streamer.start()
                 
-                # 发送初始截图
+                # Send initial screenshot
                 await streamer.capture_action(
                     action="Loading page...",
                     step=0,
@@ -449,7 +476,7 @@ class HiveEngine:
                 
                 # Check if successful
                 if result.get("success"):
-                    # 发送完成截图
+                    # Send completion screenshot
                     await streamer.capture_action(
                         action="Task completed!",
                         step=result.get("steps", 1),
@@ -475,7 +502,7 @@ class HiveEngine:
                 logger.error(f"Error (attempt {attempt+1}): {e}")
                 
             finally:
-                # 停止截图流
+                # Stop screenshot stream
                 if streamer:
                     await streamer.stop()
                 
@@ -499,10 +526,10 @@ class HiveEngine:
     
     async def _execute_cdp_mode(self, request: ExecuteRequest, max_retries: int = 2) -> dict:
         """
-        Execute using AI agent with CDP internal browser control (方案 A).
+        Execute using AI agent with CDP internal browser control (Option A).
         
-        使用 Electron 内部的 CDP 控制，而非 Playwright。
-        AI 操作直接在 NogicOS 窗口内执行。
+        Uses Electron internal CDP control instead of Playwright.
+        AI operations execute directly within the NogicOS window.
         
         Args:
             request: Task request
@@ -523,36 +550,36 @@ class HiveEngine:
                 progress=0.3,
             )
             
-            # 创建 CDP 浏览器会话（使用 StatusServer 进行双向通信）
+            # Create CDP browser session (using StatusServer for bidirectional communication)
             browser = CDPBrowserSession(self.status_server)
             
             try:
-                # 导航到目标 URL
+                # Navigate to target URL
                 await browser.start(url=request.url)
                 
-                # 广播初始状态
+                # Broadcast initial state
                 await self.status_server.broadcast_frame(
-                    image_base64="",  # 初始无截图
+                    image_base64="",  # No screenshot initially
                     action="Navigating to page...",
                     step=0,
                     total_steps=request.max_steps,
                 )
                 
-                # 运行 AI Agent（使用 CDP 浏览器）
+                # Run AI Agent (using CDP browser)
                 result = await self._run_agent_cdp(
                     request=request,
                     browser=browser,
                 )
                 
-                # 成功则返回
+                # Return if successful
                 if result.get("success"):
-                    # 尝试合成技能
+                    # Try to synthesize skill
                     asyncio.create_task(
                         self._synthesize_skill_from_result(request, result)
                     )
                     return result
                 
-                # 失败但可恢复
+                # Failed but recoverable
                 last_error = result.get("result", "Task failed")
                 logger.warning(f"Task failed (attempt {attempt+1}): {last_error}")
                 
@@ -570,13 +597,13 @@ class HiveEngine:
                 except:
                     pass
             
-            # 重试前等待
+            # Wait before retry
             if attempt < max_retries:
                 wait_time = 2 ** attempt
                 logger.info(f"Waiting {wait_time}s before retry...")
                 await asyncio.sleep(wait_time)
         
-        # 重试耗尽
+        # All retries exhausted
         return {
             "success": False,
             "result": f"Failed after {max_retries + 1} attempts: {last_error}",
@@ -587,12 +614,12 @@ class HiveEngine:
         """
         Run AI agent with CDP browser session.
         
-        简化版 agent 运行，使用 CDP 控制。
+        Simplified agent run using CDP control.
         """
         step_count = 0
         
         try:
-            # 使用 agent 的 stream 方法
+            # Use agent's stream method
             async for event in self.agent.stream(
                 task=request.task,
                 browser_session=browser,
@@ -601,7 +628,7 @@ class HiveEngine:
                 for node_name, state_update in event.items():
                     if node_name == "observe":
                         step_count += 1
-                        # 截图并广播
+                        # Screenshot and broadcast
                         try:
                             screenshot = await browser.get_screenshot_base64("jpeg", 70)
                             await self.status_server.broadcast_frame(
@@ -627,7 +654,7 @@ class HiveEngine:
                         )
                         
                     elif node_name == "act":
-                        # 执行后截图
+                        # Screenshot after execution
                         try:
                             screenshot = await browser.get_screenshot_base64("jpeg", 70)
                             await self.status_server.broadcast_frame(
@@ -640,7 +667,7 @@ class HiveEngine:
                             logger.warning(f"Screenshot failed: {e}")
                         
                     elif node_name == "__end__":
-                        # Agent 完成
+                        # Agent completed
                         final_state = state_update
                         if isinstance(final_state, dict):
                             result_text = final_state.get("result", "Task completed")
@@ -649,7 +676,7 @@ class HiveEngine:
                             result_text = str(final_state)
                             success = True
                         
-                        # 最终截图
+                        # Final screenshot
                         try:
                             screenshot = await browser.get_screenshot_base64("jpeg", 70)
                             await self.status_server.broadcast_frame(
@@ -667,7 +694,7 @@ class HiveEngine:
                             "steps": step_count,
                         }
             
-            # Stream 结束但没有 __end__ 事件
+            # Stream ended without __end__ event
             return {
                 "success": True,
                 "result": "Agent completed",
@@ -708,7 +735,7 @@ class HiveEngine:
                 for node_name, state_update in event.items():
                     # Capture screenshot on significant events
                     if node_name == "observe":
-                        # 观察阶段：截图当前页面
+                        # Observe phase: screenshot current page
                         step_count += 1
                         await streamer.capture_action(
                             action="Observing page...",
@@ -717,7 +744,7 @@ class HiveEngine:
                         )
                         
                     elif node_name == "think":
-                        # 思考阶段：更新状态
+                        # Think phase: update status
                         action = state_update.get("next_action", {})
                         if isinstance(action, dict):
                             last_action = action.get("step_by_step_reasoning", "Thinking...")[:100]
@@ -728,18 +755,18 @@ class HiveEngine:
                         )
                         
                     elif node_name == "act":
-                        # 执行阶段：截图动作结果
+                        # Act phase: screenshot action result
                         await streamer.capture_action(
                             action="Executing action...",
                             step=step_count,
                             total_steps=request.max_steps,
-                            delay_after=0.5,  # 多等一会看到结果
+                            delay_after=0.5,  # Wait a bit to see result
                         )
                         
                     elif node_name == "terminate":
                         final_state = state_update
                         
-                    # 更新广播状态
+                    # Update broadcast status
                     self.status_server.update_agent(
                         state="acting" if node_name == "act" else "thinking",
                         step=step_count,
@@ -747,7 +774,7 @@ class HiveEngine:
                         last_action=last_action[:50] if last_action else None,
                     )
             
-            # 构建结果
+            # Build result
             if final_state:
                 return {
                     "success": final_state.get("status") == "completed",
@@ -919,29 +946,132 @@ async def get_stats():
     return engine.get_stats()
 
 
+def is_yc_demo_task(task: str) -> bool:
+    """Check if task is a YC analysis demo task"""
+    keywords = ["yc", "y combinator", "ycombinator", "application", "analyze"]
+    task_lower = task.lower()
+    # Check if at least 2 keywords match
+    matches = sum(1 for kw in keywords if kw in task_lower)
+    return matches >= 2
+
+
 @app.post("/execute", response_model=ExecuteResponse)
 async def execute_task(request: ExecuteRequest):
     """
-    Execute a task
+    Smart task execution with intelligent routing.
     
-    The server will automatically choose:
-    - FAST PATH: If similar task found in knowledge (2-3 seconds)
-    - NORMAL PATH: AI agent execution (10-15 seconds)
+    The server will:
+    1. Use Smart Router to decide: conversation or task?
+    2. For simple chats → respond directly (no planning)
+    3. For tasks → generate plan and execute with streaming
     
-    Successful executions are saved to knowledge for future fast path.
+    This provides a natural experience like talking to Claude/Cursor.
     """
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not ready")
     
-    # Global timeout: 2 minutes max for any task
-    GLOBAL_TIMEOUT = 120.0
+    # Global timeout: 3 minutes max for any task
+    GLOBAL_TIMEOUT = 180.0
+    start_time = time.time()
+    
+    # Import smart router
+    from engine.executor.router import SmartRouter, ResponseType
+    
+    # Check for YC Demo scenario (special handling with expanded demo)
+    if is_yc_demo_task(request.task):
+        logger.info(f"[Demo] Detected YC analysis task: {request.task[:50]}")
+        return await execute_yc_demo(request)
+    
+    # ========================================
+    # SMART ROUTING: Let LLM decide conversation vs task
+    # ========================================
+    logger.info(f"[Router] Analyzing input: {request.task[:50]}...")
+    
+    router = SmartRouter(status_server=engine.status_server)
     
     try:
+        # Route with streaming - if conversation, response is streamed directly
+        route_result = await asyncio.wait_for(
+            router.route_and_stream(
+                user_input=request.task,
+                context=request.url if request.url else None,
+            ),
+            timeout=30.0  # 30s timeout for routing
+        )
+        
+        # If it's just conversation, return directly
+        if route_result.response_type == ResponseType.CONVERSATION:
+            logger.info(f"[Router] Handled as conversation")
+            return ExecuteResponse(
+                success=True,
+                result=route_result.direct_response,
+                path="conversation",
+                time_seconds=time.time() - start_time,
+                confidence=route_result.confidence,
+                steps=0,  # No steps for conversation
+                error=None,
+            )
+        
+        # Otherwise, it's a task - proceed with execution
+        logger.info(f"[Router] Routing to task executor: {route_result.task_description[:50]}...")
+        
+    except asyncio.TimeoutError:
+        logger.warning(f"[Router] Timeout, defaulting to task execution")
+        route_result = None  # Will use original task
+    except Exception as e:
+        logger.warning(f"[Router] Error: {e}, defaulting to task execution")
+        route_result = None
+    
+    # Use the refined task description if available
+    task_to_execute = (
+        route_result.task_description 
+        if route_result and route_result.task_description 
+        else request.task
+    )
+    
+    # Use Universal Task Executor for tasks
+    logger.info(f"[Executor] Starting task execution: {task_to_execute[:50]}...")
+    
+    try:
+        # Initialize tool dispatcher
+        await init_dispatcher_with_server(engine.status_server)
+        
+        # Create executor
+        executor = TaskExecutor(
+            status_server=engine.status_server,
+            model="claude-opus-4-5-20251101",  # Opus 4.5
+        )
+        
+        # Build context from request
+        context = None
+        if request.context:
+            context_parts = []
+            if request.context.web and request.url:
+                context_parts.append(f"Current URL: {request.url}")
+            if context_parts:
+                context = "\n".join(context_parts)
+        
+        # Execute with timeout
         result = await asyncio.wait_for(
-            engine.execute(request),
+            executor.execute(
+                task=task_to_execute,  # Use refined task from router
+                context=context,
+            ),
             timeout=GLOBAL_TIMEOUT
         )
-        return result
+        
+        elapsed = time.time() - start_time
+        
+        return ExecuteResponse(
+            success=result.success,
+            result=result.summary,
+            path="universal",
+            time_seconds=elapsed,
+            confidence=0.9 if result.success else 0.0,
+            steps=result.steps_completed,
+            error=result.error,
+        )
+        
     except asyncio.TimeoutError:
         logger.error(f"Task timed out after {GLOBAL_TIMEOUT}s: {request.task[:50]}")
         return ExecuteResponse(
@@ -954,7 +1084,258 @@ async def execute_task(request: ExecuteRequest):
             error="Global timeout exceeded"
         )
     except Exception as e:
-        raise
+        logger.error(f"[Executor] Error: {e}")
+        return ExecuteResponse(
+            success=False,
+            result=None,
+            path="error",
+            time_seconds=time.time() - start_time,
+            confidence=0.0,
+            steps=0,
+            error=str(e)
+        )
+
+
+async def execute_yc_demo(request: ExecuteRequest) -> ExecuteResponse:
+    """
+    Execute YC Demo scenario with v2.0 streaming protocol.
+    
+    This is a specialized handler for the YC analysis demo:
+    - Crawl YC website
+    - Extract AI company data
+    - Analyze patterns
+    - Generate reports
+    
+    v2.0: Uses Cursor-style streaming feedback with thinking bubbles,
+    plan view, tool call cards, and artifact previews.
+    """
+    start_time = time.time()
+    
+    try:
+        # Initialize tool dispatcher with the correct status_server instance
+        await init_dispatcher_with_server(engine.status_server)
+        
+        # Create browser session based on mode
+        if request.use_cdp:
+            # CDP mode - use Electron's BrowserView
+            browser_session = CDPBrowserSession(engine.status_server)
+        else:
+            # For demo, we'll use a mock session that works with the analyzer
+            browser_session = MockBrowserSession()
+        
+        # Create unique message ID for this execution
+        import uuid
+        message_id = str(uuid.uuid4())[:8]
+        
+        # Run YC analysis with v2 streaming
+        analyzer = YCAnalyzer(output_dir="~/yc_research")
+        
+        # Try v2 streaming first, fall back to v1 if not available
+        try:
+            result = await analyzer.run_full_analysis_v2(
+                browser_session,
+                engine.status_server,
+                message_id
+            )
+        except AttributeError:
+            # Fall back to v1 if v2 not available
+            logger.info("[Demo] Falling back to v1 analysis (v2 not available)")
+            
+            # Status callback for real-time updates (v1)
+            async def status_callback(message: str, step: int, total_steps: int):
+                engine.status_server.update_agent(
+                    state="acting",
+                    step=step,
+                    max_steps=total_steps,
+                    last_action=message
+                )
+                await engine.status_server.broadcast_status()
+            
+            result = await analyzer.run_full_analysis(browser_session, status_callback)
+        
+        elapsed = time.time() - start_time
+        
+        if result["success"]:
+            # Format success message
+            files_str = ", ".join(os.path.basename(f) for f in result["files_created"])
+            insights_preview = result["insights"][:3] if result["insights"] else []
+            
+            return ExecuteResponse(
+                success=True,
+                result=f"Analysis complete! Created: {files_str}. Key insights: {'; '.join(insights_preview)}",
+                path="demo",
+                time_seconds=elapsed,
+                confidence=0.95,
+                steps=len(result["steps_completed"]),
+            )
+        else:
+            return ExecuteResponse(
+                success=False,
+                result=None,
+                path="demo",
+                time_seconds=elapsed,
+                confidence=0.0,
+                steps=len(result["steps_completed"]),
+                error=result["error"]
+            )
+            
+    except Exception as e:
+        logger.error(f"[Demo] YC analysis failed: {e}")
+        return ExecuteResponse(
+            success=False,
+            result=None,
+            path="demo",
+            time_seconds=time.time() - start_time,
+            confidence=0.0,
+            steps=0,
+            error=str(e)
+        )
+
+
+class MockBrowserSession:
+    """Mock browser session for demo without real browser"""
+    async def navigate(self, url: str):
+        logger.info(f"[Mock] Navigate to: {url}")
+        await asyncio.sleep(0.5)
+    
+    async def click(self, selector: str):
+        logger.info(f"[Mock] Click: {selector}")
+        await asyncio.sleep(0.2)
+    
+    async def type(self, text: str):
+        logger.info(f"[Mock] Type: {text[:20]}...")
+        await asyncio.sleep(0.2)
+
+
+@app.get("/read_file")
+async def read_file(path: str):
+    """
+    Read file content endpoint for preview panel
+    
+    Args:
+        path: File path (supports ~ for home directory)
+        
+    Returns:
+        {"content": "file content", "filename": "name.ext"}
+    """
+    import os
+    
+    # Expand ~ to home directory
+    if path.startswith("~"):
+        path = os.path.expanduser(path)
+    
+    # Security: only allow reading from yc_research directory
+    if "yc_research" not in path:
+        raise HTTPException(status_code=403, detail="Access denied: Can only read from yc_research directory")
+    
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"content": content, "filename": os.path.basename(path)}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# V2 API - New Agent Architecture
+# ============================================================================
+
+class ExecuteV2Request(BaseModel):
+    """V2 task execution request"""
+    message: str
+    session_id: str = "default"
+    max_steps: int = 20
+
+
+class ExecuteV2Response(BaseModel):
+    """V2 task execution response"""
+    success: bool
+    response: str
+    session_id: str
+    time_seconds: float
+    error: Optional[str] = None
+
+
+@app.post("/v2/execute", response_model=ExecuteV2Response)
+async def execute_v2(request: ExecuteV2Request):
+    """
+    V2 Execute endpoint using new LangGraph-based agent.
+    
+    Features:
+    - Unified tool registry (browser + local + plan)
+    - LangGraph agent loop
+    - Streaming via WebSocket
+    - State persistence
+    """
+    if not AGENT_V2_AVAILABLE:
+        raise HTTPException(
+            status_code=501, 
+            detail="V2 agent not available. Install: pip install langgraph langchain-core"
+        )
+    
+    if not engine:
+        raise HTTPException(status_code=503, detail="Engine not ready")
+    
+    start_time = time.time()
+    
+    try:
+        # Create tool registry with all tools
+        registry = create_full_registry()
+        
+        # Add middleware
+        fs_middleware = FilesystemMiddleware(registry=registry)
+        todo_middleware = TodoMiddleware(registry=registry)
+        
+        # Create agent
+        agent = NogicOSAgent(
+            registry=registry,
+            status_server=engine.status_server,
+        )
+        
+        # Execute
+        result = await agent.invoke(
+            message=request.message,
+            session_id=request.session_id,
+        )
+        
+        # Extract final response
+        response = agent.get_final_response(result)
+        
+        elapsed = time.time() - start_time
+        
+        return ExecuteV2Response(
+            success=True,
+            response=response,
+            session_id=request.session_id,
+            time_seconds=elapsed,
+        )
+        
+    except Exception as e:
+        logger.error(f"V2 execution error: {e}")
+        return ExecuteV2Response(
+            success=False,
+            response="",
+            session_id=request.session_id,
+            time_seconds=time.time() - start_time,
+            error=str(e),
+        )
+
+
+@app.get("/v2/tools")
+async def list_v2_tools():
+    """List all available tools in the V2 registry"""
+    if not AGENT_V2_AVAILABLE:
+        raise HTTPException(status_code=501, detail="V2 agent not available")
+    
+    registry = create_full_registry()
+    tools = registry.to_anthropic_format()
+    
+    return {
+        "count": len(tools),
+        "tools": tools,
+    }
 
 
 @app.get("/health")

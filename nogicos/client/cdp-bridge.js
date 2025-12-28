@@ -1,41 +1,98 @@
 /**
- * CDP Bridge - Electron 内部浏览器控制层
+ * CDP Bridge - Electron internal browser control layer
  * 
- * 使用 webContents.debugger API 通过 CDP 协议控制 WebContentsView
- * 这是方案 A-lite 的核心模块，不影响现有的截图流方案
+ * Uses webContents.debugger API to control WebContentsView via CDP protocol
+ * This is the core module for Option A-lite, doesn't affect existing screenshot stream solution
  * 
- * 功能：
- * - 点击元素 (dispatchMouseEvent)
- * - 输入文本 (insertText)
- * - 导航 (Page.navigate)
- * - 截图 (Page.captureScreenshot)
- * - 获取 DOM (DOM.getDocument, DOM.querySelector)
+ * Features:
+ * - Click elements (dispatchMouseEvent)
+ * - Input text (insertText)
+ * - Navigation (Page.navigate)
+ * - Screenshot (Page.captureScreenshot)
+ * - Get DOM (DOM.getDocument, DOM.querySelector)
  */
 
 class CDPBridge {
   /**
-   * @param {Electron.WebContents} webContents - 要控制的 WebContents 实例
+   * @param {Electron.WebContents} webContents - WebContents instance to control
    */
   constructor(webContents) {
     this.wc = webContents;
     this.attached = false;
     this.messageHandlers = new Map();
     this._requestId = 0;
+    this._inputEnabled = false; // Safety: keyboard/mouse input disabled by default
+    this._destroyed = false;
+  }
+  
+  /**
+   * Enable keyboard/mouse input (call only when window is focused and ready)
+   */
+  enableInput() {
+    this._inputEnabled = true;
+    console.log('[CDPBridge] Input enabled');
+  }
+  
+  /**
+   * Disable keyboard/mouse input (call before switching windows or on blur)
+   */
+  disableInput() {
+    this._inputEnabled = false;
+    console.log('[CDPBridge] Input disabled');
+  }
+  
+  /**
+   * Check if input operations are safe to perform
+   */
+  _checkInputSafety(operation) {
+    if (this._destroyed) {
+      console.warn(`[CDPBridge] Blocked ${operation}: Bridge destroyed`);
+      return false;
+    }
+    if (!this._inputEnabled) {
+      console.warn(`[CDPBridge] Blocked ${operation}: Input not enabled`);
+      return false;
+    }
+    if (!this.attached) {
+      console.warn(`[CDPBridge] Blocked ${operation}: Not attached`);
+      return false;
+    }
+    return true;
+  }
+  
+  /**
+   * Cleanup and destroy bridge - MUST call before app exit
+   */
+  destroy() {
+    console.log('[CDPBridge] Destroying bridge...');
+    this._destroyed = true;
+    this._inputEnabled = false;
+    this.messageHandlers.clear();
+    
+    if (this.attached) {
+      try {
+        this.wc.debugger.detach();
+      } catch (e) {
+        // Ignore detach errors during cleanup
+      }
+      this.attached = false;
+    }
+    console.log('[CDPBridge] Bridge destroyed');
   }
 
   /**
-   * 附加调试器
-   * @param {string} version - CDP 协议版本，默认 '1.3'
+   * Attach debugger
+   * @param {string} version - CDP protocol version, default '1.3'
    */
   async attach(version = '1.3') {
-    // 如果已经附加，直接返回成功
+    // If already attached, return success directly
     if (this.attached) {
       console.log('[CDPBridge] Already attached, skipping');
       return true;
     }
 
     try {
-      // 检查是否已经附加（通过 try-catch）
+      // Check if already attached (via try-catch)
       try {
         this.wc.debugger.attach(version);
       } catch (attachErr) {
@@ -50,7 +107,7 @@ class CDPBridge {
       this.attached = true;
       console.log('[CDPBridge] Debugger attached');
 
-      // 监听分离事件（只注册一次）
+      // Listen for detach event (register only once)
       if (!this._detachHandlerRegistered) {
         this.wc.debugger.on('detach', (event, reason) => {
           console.log('[CDPBridge] Debugger detached:', reason);
@@ -59,7 +116,7 @@ class CDPBridge {
         this._detachHandlerRegistered = true;
       }
 
-      // 监听 CDP 消息（只注册一次）
+      // Listen for CDP messages (register only once)
       if (!this._messageHandlerRegistered) {
         this.wc.debugger.on('message', (event, method, params) => {
           const handler = this.messageHandlers.get(method);
@@ -70,7 +127,7 @@ class CDPBridge {
         this._messageHandlerRegistered = true;
       }
 
-      // 启用必要的 CDP 域
+      // Enable necessary CDP domains
       await this.sendCommand('DOM.enable');
       await this.sendCommand('Page.enable');
       await this.sendCommand('Runtime.enable');
@@ -83,23 +140,23 @@ class CDPBridge {
   }
 
   /**
-   * 分离调试器
+   * Detach debugger
    */
   detach() {
     if (this.attached) {
       try {
         this.wc.debugger.detach();
       } catch (e) {
-        // 忽略分离错误
+        // Ignore detach errors
       }
       this.attached = false;
     }
   }
 
   /**
-   * 发送 CDP 命令
-   * @param {string} method - CDP 方法名
-   * @param {object} params - 参数
+   * Send CDP command
+   * @param {string} method - CDP method name
+   * @param {object} params - Parameters
    * @returns {Promise<any>}
    */
   async sendCommand(method, params = {}) {
@@ -110,32 +167,32 @@ class CDPBridge {
   }
 
   /**
-   * 注册 CDP 事件处理器
-   * @param {string} method - 事件方法名
-   * @param {function} handler - 处理函数
+   * Register CDP event handler
+   * @param {string} method - Event method name
+   * @param {function} handler - Handler function
    */
   on(method, handler) {
     this.messageHandlers.set(method, handler);
   }
 
   // ============================================================
-  // 导航控制
+  // Navigation Control
   // ============================================================
 
   /**
-   * 导航到 URL
-   * @param {string} url - 目标 URL
+   * Navigate to URL
+   * @param {string} url - Target URL
    */
   async navigate(url) {
     const result = await this.sendCommand('Page.navigate', { url });
-    // 等待页面加载完成
+    // Wait for page load to complete
     await this.waitForLoad();
     return result;
   }
 
   /**
-   * 等待页面加载完成
-   * @param {number} timeout - 超时时间（毫秒）
+   * Wait for page load to complete
+   * @param {number} timeout - Timeout in milliseconds
    */
   async waitForLoad(timeout = 30000) {
     return new Promise((resolve, reject) => {
@@ -154,7 +211,7 @@ class CDPBridge {
   }
 
   /**
-   * 刷新页面
+   * Reload page
    */
   async reload() {
     await this.sendCommand('Page.reload');
@@ -162,14 +219,14 @@ class CDPBridge {
   }
 
   // ============================================================
-  // 鼠标控制
+  // Mouse Control
   // ============================================================
 
   /**
-   * 点击指定坐标
-   * @param {number} x - X 坐标
-   * @param {number} y - Y 坐标
-   * @param {object} options - 选项
+   * Click at specified coordinates
+   * @param {number} x - X coordinate
+   * @param {number} y - Y coordinate
+   * @param {object} options - Options
    */
   async click(x, y, options = {}) {
     const { button = 'left', clickCount = 1, delay = 50 } = options;
@@ -183,7 +240,7 @@ class CDPBridge {
       clickCount,
     });
 
-    // 短暂延迟模拟真实点击
+    // Short delay to simulate real click
     await this._sleep(delay);
 
     // Mouse up
@@ -197,14 +254,14 @@ class CDPBridge {
   }
 
   /**
-   * 双击指定坐标
+   * Double click at specified coordinates
    */
   async doubleClick(x, y) {
     await this.click(x, y, { clickCount: 2 });
   }
 
   /**
-   * 移动鼠标到指定位置
+   * Move mouse to specified position
    */
   async moveMouse(x, y) {
     await this.sendCommand('Input.dispatchMouseEvent', {
@@ -215,23 +272,28 @@ class CDPBridge {
   }
 
   // ============================================================
-  // 键盘控制
+  // Keyboard Control
   // ============================================================
 
   /**
-   * 输入文本
-   * @param {string} text - 要输入的文本
+   * Type text
+   * @param {string} text - Text to input
    */
   async type(text) {
     await this.sendCommand('Input.insertText', { text });
   }
 
   /**
-   * 按下按键
-   * @param {string} key - 按键名称（如 'Enter', 'Tab', 'Escape'）
+   * Press key
+   * @param {string} key - Key name (e.g. 'Enter', 'Tab', 'Escape')
    */
   async pressKey(key) {
-    // 特殊按键映射
+    // Safety check - prevent accidental keyboard input
+    if (!this._checkInputSafety('pressKey')) {
+      return { error: 'Input blocked for safety' };
+    }
+    
+    // Special key mapping
     const keyMap = {
       'Enter': { keyCode: 13, key: 'Enter', code: 'Enter', text: '\r' },
       'Tab': { keyCode: 9, key: 'Tab', code: 'Tab' },
@@ -252,16 +314,16 @@ class CDPBridge {
       ...keyParams,
     });
 
-    // 对于 Enter 键，还需要发送 rawKeyDown 和触发表单提交
+    // For Enter key, also need to send rawKeyDown and trigger form submission
     if (key === 'Enter') {
-      // 尝试通过 JavaScript 触发表单提交
+      // Try to trigger form submission via JavaScript
       await this.evaluate(`
         (function() {
           const activeEl = document.activeElement;
           if (activeEl && activeEl.form) {
             activeEl.form.submit();
           } else if (activeEl) {
-            // 触发 keydown 和 keypress 事件
+            // Trigger keydown and keypress events
             const keydownEvent = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true });
             const keypressEvent = new KeyboardEvent('keypress', { key: 'Enter', keyCode: 13, bubbles: true });
             activeEl.dispatchEvent(keydownEvent);
@@ -279,11 +341,11 @@ class CDPBridge {
   }
 
   // ============================================================
-  // DOM 操作
+  // DOM Operations
   // ============================================================
 
   /**
-   * 获取文档根节点
+   * Get document root node
    */
   async getDocument() {
     const result = await this.sendCommand('DOM.getDocument');
@@ -291,9 +353,9 @@ class CDPBridge {
   }
 
   /**
-   * 使用 CSS 选择器查找元素
-   * @param {string} selector - CSS 选择器
-   * @returns {Promise<number|null>} - 节点 ID
+   * Find element using CSS selector
+   * @param {string} selector - CSS selector
+   * @returns {Promise<number|null>} - Node ID
    */
   async querySelector(selector) {
     const doc = await this.getDocument();
@@ -309,8 +371,8 @@ class CDPBridge {
   }
 
   /**
-   * 获取元素的边界框
-   * @param {number} nodeId - 节点 ID
+   * Get element bounding box
+   * @param {number} nodeId - Node ID
    * @returns {Promise<{x, y, width, height}|null>}
    */
   async getBoundingBox(nodeId) {
@@ -318,7 +380,7 @@ class CDPBridge {
       const result = await this.sendCommand('DOM.getBoxModel', { nodeId });
       if (result.model) {
         const quad = result.model.content;
-        // quad 是 8 个数字：[x1,y1, x2,y2, x3,y3, x4,y4]
+        // quad is 8 numbers: [x1,y1, x2,y2, x3,y3, x4,y4]
         const x = quad[0];
         const y = quad[1];
         const width = quad[2] - quad[0];
@@ -332,29 +394,33 @@ class CDPBridge {
   }
 
   /**
-   * 点击选择器匹配的元素
-   * @param {string} selector - CSS 选择器
+   * Click element matching selector
+   * @param {string} selector - CSS selector
    */
   async clickSelector(selector) {
+    // Safety check - prevent accidental mouse input
+    if (!this._checkInputSafety('clickSelector')) {
+      return { error: 'Input blocked for safety' };
+    }
     
-    // 支持 text= 选择器
+    // Support text= selector
     if (selector.startsWith('text=')) {
       const text = selector.slice(5);
       return this.clickByText(text);
     }
     
-    // 支持 xpath= 前缀的选择器
+    // Support xpath= prefix selector
     if (selector.startsWith('xpath=')) {
       const xpath = selector.slice(6);
       return this.clickByXPath(xpath);
     }
     
-    // 支持直接的 XPath 选择器
+    // Support direct XPath selectors
     if (selector.startsWith('//') || selector.startsWith('/')) {
       return this.clickByXPath(selector);
     }
     
-    // 支持 :has-text() 伪选择器 (Playwright 特有)
+    // Support :has-text() pseudo-selector (Playwright specific)
     if (selector.includes(':has-text(')) {
       const match = selector.match(/(.+):has-text\("(.+)"\)/);
       if (match) {
@@ -374,19 +440,19 @@ class CDPBridge {
       throw new Error(`Cannot get bounding box: ${selector}`);
     }
 
-    // 点击元素中心
+    // Click element center
     const centerX = box.x + box.width / 2;
     const centerY = box.y + box.height / 2;
 
-    // 如果元素不在视口内，先滚动到元素位置
+    // If element is not in viewport, scroll to element first
     const viewportHeight = await this.evaluate('window.innerHeight');
     if (centerY > viewportHeight || centerY < 0) {
-      // 滚动到元素位置（元素居中显示）
+      // Scroll to element position (center element in view)
       const scrollY = Math.max(0, centerY - viewportHeight / 2);
       await this.evaluate(`window.scrollTo(0, ${scrollY})`);
-      await this._sleep(100); // 等待滚动完成
+      await this._sleep(100); // Wait for scroll to complete
       
-      // 重新获取元素位置（滚动后坐标会变化）
+      // Re-get element position (coordinates change after scroll)
       const newBox = await this.getBoundingBox(nodeId);
       if (newBox) {
         const newCenterX = newBox.x + newBox.width / 2;
@@ -400,11 +466,11 @@ class CDPBridge {
   }
 
   /**
-   * 通过文本内容点击元素
-   * @param {string} text - 要匹配的文本
+   * Click element by text content
+   * @param {string} text - Text to match
    */
   async clickByText(text) {
-    // 使用 JavaScript 查找包含文本的元素
+    // Use JavaScript to find element containing text
     const result = await this.evaluate(`
       (function() {
         const xpath = "//*[contains(text(), '${text.replace(/'/g, "\\'")}')]";
@@ -426,8 +492,8 @@ class CDPBridge {
   }
 
   /**
-   * 通过 XPath 点击元素
-   * @param {string} xpath - XPath 表达式
+   * Click element by XPath
+   * @param {string} xpath - XPath expression
    */
   async clickByXPath(xpath) {
     const result = await this.evaluate(`
@@ -450,9 +516,9 @@ class CDPBridge {
   }
 
   /**
-   * 通过基础选择器和文本内容点击元素
-   * @param {string} baseSelector - CSS 选择器
-   * @param {string} text - 要匹配的文本
+   * Click element by base selector and text content
+   * @param {string} baseSelector - CSS selector
+   * @param {string} text - Text to match
    */
   async clickByTextInElement(baseSelector, text) {
     const result = await this.evaluate(`
@@ -479,14 +545,19 @@ class CDPBridge {
   }
 
   /**
-   * 在选择器匹配的元素中输入文本
-   * @param {string} selector - CSS 选择器
-   * @param {string} text - 要输入的文本
+   * Type text into element matching selector
+   * @param {string} selector - CSS selector
+   * @param {string} text - Text to input
    */
   async typeInSelector(selector, text) {
-    // 支持 text=, xpath= 和 XPath 选择器
+    // Safety check - prevent accidental keyboard input
+    if (!this._checkInputSafety('typeInSelector')) {
+      return { error: 'Input blocked for safety' };
+    }
+    
+    // Support text=, xpath= and XPath selectors
     if (selector.startsWith('text=') || selector.startsWith('xpath=') || selector.startsWith('//') || selector.startsWith('/')) {
-      // 对于文本/XPath 选择器，使用 JavaScript 直接操作
+      // For text/XPath selectors, use JavaScript direct manipulation
       const escapedSelector = selector.replace(/'/g, "\\'").replace(/"/g, '\\"');
       const escapedText = text.replace(/'/g, "\\'").replace(/"/g, '\\"');
       
@@ -534,13 +605,13 @@ class CDPBridge {
   }
 
   // ============================================================
-  // 截图
+  // Screenshot
   // ============================================================
 
   /**
-   * 截取页面截图
-   * @param {object} options - 选项
-   * @returns {Promise<string>} - Base64 编码的图片
+   * Take page screenshot
+   * @param {object} options - Options
+   * @returns {Promise<string>} - Base64 encoded image
    */
   async screenshot(options = {}) {
     const { format = 'jpeg', quality = 70, fullPage = false } = options;
@@ -554,7 +625,7 @@ class CDPBridge {
     }
 
     if (fullPage) {
-      // 获取完整页面尺寸
+      // Get full page dimensions
       const metrics = await this.sendCommand('Page.getLayoutMetrics');
       params.clip = {
         x: 0,
@@ -570,12 +641,12 @@ class CDPBridge {
   }
 
   // ============================================================
-  // JavaScript 执行
+  // JavaScript Execution
   // ============================================================
 
   /**
-   * 执行 JavaScript 代码
-   * @param {string} expression - JavaScript 表达式
+   * Execute JavaScript code
+   * @param {string} expression - JavaScript expression
    * @returns {Promise<any>}
    */
   async evaluate(expression) {
@@ -592,21 +663,21 @@ class CDPBridge {
   }
 
   /**
-   * 获取页面标题
+   * Get page title
    */
   async getTitle() {
     return this.evaluate('document.title');
   }
 
   /**
-   * 获取当前 URL
+   * Get current URL
    */
   async getURL() {
     return this.evaluate('window.location.href');
   }
 
   // ============================================================
-  // 辅助方法
+  // Helper Methods
   // ============================================================
 
   _sleep(ms) {
@@ -614,7 +685,7 @@ class CDPBridge {
   }
 
   /**
-   * 获取调试器状态
+   * Get debugger status
    */
   getStatus() {
     return {

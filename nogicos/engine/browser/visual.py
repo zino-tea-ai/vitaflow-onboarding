@@ -1,12 +1,12 @@
 """
 NogicOS Visual Feedback Module
 
-使用 Motion 库实现顶级动效：
-- Spring 边角高亮
-- 点击涟漪效果
-- 学习通知
+Premium animations using Motion library:
+- Spring corner highlight
+- Click ripple effects
+- Learning notifications
 
-通过 Playwright page.evaluate() 注入 JavaScript 实现
+Implemented via Playwright page.evaluate() JavaScript injection
 """
 
 import asyncio
@@ -20,16 +20,16 @@ logger = logging.getLogger(__name__)
 # Motion CDN URL (ESM module)
 MOTION_CDN = "https://cdn.jsdelivr.net/npm/motion@12/+esm"
 
-# NogicOS 品牌颜色
+# NogicOS brand colors
 BRAND_GREEN = "#22c55e"
 BRAND_BLUE = "#3b82f6"
 
 
 class VisualFeedback:
     """
-    AI 操作可视化反馈
+    AI operation visual feedback
     
-    在目标页面注入 Motion 动效，让用户看到 AI 的每一步操作
+    Injects Motion animations into target page to show users each AI action
     """
     
     def __init__(self, color: str = BRAND_GREEN):
@@ -38,16 +38,16 @@ class VisualFeedback:
     
     async def inject_motion(self, page: Page) -> bool:
         """
-        注入 Motion 库到页面
+        Inject Motion library into page
         
         Returns:
-            bool: 是否注入成功
+            bool: Whether injection succeeded
         """
         if self._motion_injected:
             return True
             
         try:
-            # 检查是否已经注入
+            # Check if already injected
             already_injected = await page.evaluate("""
                 () => typeof window.__nogicMotion !== 'undefined'
             """)
@@ -56,14 +56,14 @@ class VisualFeedback:
                 self._motion_injected = True
                 return True
             
-            # 注入 Motion 库（通过动态创建 script）
+            # Inject Motion library (via dynamic script creation)
             await page.evaluate(f"""
                 () => {{
                     return new Promise((resolve, reject) => {{
-                        // 标记已注入
+                        // Mark as injected
                         window.__nogicMotion = true;
                         
-                        // 创建 script 标签
+                        // Create script tag
                         const script = document.createElement('script');
                         script.type = 'module';
                         script.textContent = `
@@ -74,7 +74,7 @@ class VisualFeedback:
                         `;
                         document.head.appendChild(script);
                         
-                        // 等待加载完成
+                        // Wait for load completion
                         let attempts = 0;
                         const check = setInterval(() => {{
                             attempts++;
@@ -83,7 +83,7 @@ class VisualFeedback:
                                 resolve(true);
                             }} else if (attempts > 50) {{
                                 clearInterval(check);
-                                // 即使 Motion 加载失败，也提供 fallback
+                                // Even if Motion fails to load, provide fallback
                                 window.motionAnimate = null;
                                 resolve(false);
                             }}
@@ -108,18 +108,18 @@ class VisualFeedback:
         color: Optional[str] = None
     ) -> bool:
         """
-        高亮目标元素 - Spring 边角动画
+        Highlight target element - Spring corner animation
         
-        4 个边角从外向内 Spring 飞入，形成聚焦框
+        4 corners spring in from outside, forming a focus frame
         
         Args:
-            page: Playwright Page 对象
-            selector: CSS 选择器
-            duration: 动画持续时间（秒）
-            color: 高亮颜色，默认品牌绿
+            page: Playwright Page object
+            selector: CSS selector
+            duration: Animation duration (seconds)
+            color: Highlight color, defaults to brand green
             
         Returns:
-            bool: 是否成功显示
+            bool: Whether display succeeded
         """
         color = color or self.color
         
@@ -135,13 +135,13 @@ class VisualFeedback:
                     const scrollX = window.scrollX;
                     const scrollY = window.scrollY;
                     
-                    // 边角尺寸
+                    // Corner dimensions
                     const cornerSize = 20;
                     const cornerThickness = 3;
                     const color = '{color}';
-                    const offset = 8; // 距离元素的偏移
+                    const offset = 8; // Offset from element
                     
-                    // 创建容器
+                    // Create container
                     const container = document.createElement('div');
                     container.className = 'nogic-highlight';
                     container.style.cssText = `
@@ -154,7 +154,7 @@ class VisualFeedback:
                         z-index: 2147483647;
                     `;
                     
-                    // 4 个边角位置配置
+                    // 4 corner position configs
                     const corners = [
                         {{ name: 'top-left', x: 0, y: 0, rotate: 0, fromX: -30, fromY: -30 }},
                         {{ name: 'top-right', x: 'calc(100% - {cornerSize}px)', y: 0, rotate: 90, fromX: 30, fromY: -30 }},
@@ -175,7 +175,7 @@ class VisualFeedback:
                             transform: translate(${{corner.fromX}}px, ${{corner.fromY}}px);
                         `;
                         
-                        // L 形边角（使用两个 div）
+                        // L-shaped corner (using two divs)
                         el.innerHTML = `
                             <div style="
                                 position: absolute;
@@ -200,9 +200,9 @@ class VisualFeedback:
                     
                     document.body.appendChild(container);
                     
-                    // 执行动画
+                    // Execute animation
                     if (window.motionAnimate) {{
-                        // 使用 Motion Spring
+                        // Use Motion Spring
                         const cornerEls = container.querySelectorAll('.nogic-corner');
                         cornerEls.forEach((el, i) => {{
                             window.motionAnimate(
@@ -218,10 +218,10 @@ class VisualFeedback:
                             );
                         }});
                         
-                        // 移除容器
+                        // Remove container
                         setTimeout(() => container.remove(), {int((duration + 0.3) * 1000)});
                     }} else {{
-                        // Fallback: CSS 动画
+                        // Fallback: CSS animation
                         const style = document.createElement('style');
                         style.textContent = `
                             @keyframes nogicCornerIn {{
@@ -269,21 +269,21 @@ class VisualFeedback:
         color: Optional[str] = None
     ) -> bool:
         """
-        显示点击涟漪效果
+        Show click ripple effect
         
-        3 层动画叠加：
-        1. 中心点 - 缩放入场
-        2. 外圈 - 扩散淡出
-        3. 涟漪波 - 多次扩散
+        3-layer animation overlay:
+        1. Center point - scale entrance
+        2. Outer ring - expanding fade out
+        3. Ripple wave - multiple expansions
         
         Args:
-            page: Playwright Page 对象
-            x: 点击 X 坐标（相对视口）
-            y: 点击 Y 坐标（相对视口）
-            color: 涟漪颜色
+            page: Playwright Page object
+            x: Click X coordinate (relative to viewport)
+            y: Click Y coordinate (relative to viewport)
+            color: Ripple color
             
         Returns:
-            bool: 是否成功显示
+            bool: Whether display succeeded
         """
         color = color or self.color
         
@@ -296,7 +296,7 @@ class VisualFeedback:
                     const scrollY = window.scrollY;
                     const color = '{color}';
                     
-                    // 创建容器
+                    // Create container
                     const container = document.createElement('div');
                     container.className = 'nogic-click';
                     container.style.cssText = `
@@ -307,7 +307,7 @@ class VisualFeedback:
                         z-index: 2147483647;
                     `;
                     
-                    // 1. 中心点
+                    // 1. Center point
                     const center = document.createElement('div');
                     center.style.cssText = `
                         position: absolute;
@@ -320,7 +320,7 @@ class VisualFeedback:
                     `;
                     container.appendChild(center);
                     
-                    // 2. 外圈
+                    // 2. Outer ring
                     const outer = document.createElement('div');
                     outer.style.cssText = `
                         position: absolute;
@@ -333,7 +333,7 @@ class VisualFeedback:
                     `;
                     container.appendChild(outer);
                     
-                    // 3. 涟漪波
+                    // 3. Ripple wave
                     const ripple = document.createElement('div');
                     ripple.style.cssText = `
                         position: absolute;
@@ -348,30 +348,30 @@ class VisualFeedback:
                     
                     document.body.appendChild(container);
                     
-                    // 执行动画
+                    // Execute animation
                     if (window.motionAnimate) {{
-                        // 中心点 Spring 缩放
+                        // Center point Spring scale
                         window.motionAnimate(
                             center,
                             {{ transform: ['translate(-50%, -50%) scale(0)', 'translate(-50%, -50%) scale(1.2)', 'translate(-50%, -50%) scale(1)'] }},
                             {{ duration: 0.3, easing: window.motionSpring({{ stiffness: 600, damping: 20 }}) }}
                         );
                         
-                        // 外圈扩散
+                        // Outer ring expansion
                         window.motionAnimate(
                             outer,
                             {{ transform: ['translate(-50%, -50%) scale(0.3)', 'translate(-50%, -50%) scale(1.5)'], opacity: [1, 0] }},
                             {{ duration: 0.5, easing: 'ease-out' }}
                         );
                         
-                        // 涟漪波
+                        // Ripple wave
                         window.motionAnimate(
                             ripple,
                             {{ transform: ['translate(-50%, -50%) scale(0.2)', 'translate(-50%, -50%) scale(2)'], opacity: [0.6, 0] }},
                             {{ duration: 0.7, easing: 'ease-out' }}
                         );
                     }} else {{
-                        // Fallback: CSS 动画
+                        // Fallback: CSS animation
                         const style = document.createElement('style');
                         style.textContent = `
                             @keyframes nogicCenterPop {{
@@ -397,7 +397,7 @@ class VisualFeedback:
                         setTimeout(() => style.remove(), 1000);
                     }}
                     
-                    // 移除容器
+                    // Remove container
                     setTimeout(() => container.remove(), 800);
                 }}
             """, x, y)
@@ -417,15 +417,15 @@ class VisualFeedback:
         color: Optional[str] = None
     ) -> bool:
         """
-        显示输入指示器
+        Show typing indicator
         
-        在输入框旁边显示正在输入的文字预览
+        Display text preview next to input field
         
         Args:
-            page: Playwright Page 对象
-            selector: 输入框选择器
-            text: 正在输入的文字
-            color: 指示器颜色
+            page: Playwright Page object
+            selector: Input field selector
+            text: Text being typed
+            color: Indicator color
         """
         color = color or BRAND_BLUE
         
@@ -439,11 +439,11 @@ class VisualFeedback:
                     const scrollX = window.scrollX;
                     const scrollY = window.scrollY;
                     
-                    // 移除旧的指示器
+                    // Remove old indicator
                     const old = document.querySelector('.nogic-typing');
                     if (old) old.remove();
                     
-                    // 创建指示器
+                    // Create indicator
                     const indicator = document.createElement('div');
                     indicator.className = 'nogic-typing';
                     indicator.style.cssText = `
@@ -470,7 +470,7 @@ class VisualFeedback:
                     
                     document.body.appendChild(indicator);
                     
-                    // 3 秒后移除
+                    // Remove after 3 seconds
                     setTimeout(() => indicator.remove(), 3000);
                 }}
             """, selector, text)
@@ -488,9 +488,9 @@ class VisualFeedback:
         type: str = "success"  # success, info, warning, error
     ) -> bool:
         """
-        显示通知（右下角）
+        Show notification (bottom right)
         
-        用于显示学习完成、技能合成等事件
+        Used for learning complete, skill synthesis events
         """
         colors = {
             "success": BRAND_GREEN,
@@ -503,7 +503,7 @@ class VisualFeedback:
         try:
             await page.evaluate(f"""
                 (message, color) => {{
-                    // 创建通知
+                    // Create notification
                     const notification = document.createElement('div');
                     notification.className = 'nogic-notification';
                     notification.style.cssText = `
@@ -532,12 +532,12 @@ class VisualFeedback:
                     
                     document.body.appendChild(notification);
                     
-                    // 入场动画
+                    // Entrance animation
                     requestAnimationFrame(() => {{
                         notification.style.transform = 'translateX(0)';
                     }});
                     
-                    // 3 秒后退出
+                    // Exit after 3 seconds
                     setTimeout(() => {{
                         notification.style.transform = 'translateX(120%)';
                         setTimeout(() => notification.remove(), 300);
@@ -562,7 +562,7 @@ class VisualFeedback:
         color: Optional[str] = None
     ) -> bool:
         """
-        通过坐标高亮区域（当没有选择器时）
+        Highlight area by coordinates (when no selector available)
         """
         color = color or self.color
         
@@ -575,7 +575,7 @@ class VisualFeedback:
                     const scrollY = window.scrollY;
                     const color = '{color}';
                     
-                    // 创建高亮框
+                    // Create highlight box
                     const box = document.createElement('div');
                     box.className = 'nogic-coord-highlight';
                     box.style.cssText = `
@@ -620,10 +620,9 @@ class VisualFeedback:
             return False
     
     def reset(self):
-        """重置状态（页面导航后调用）"""
+        """Reset state (call after page navigation)"""
         self._motion_injected = False
 
 
-# 单例实例
+# Singleton instance
 visual_feedback = VisualFeedback()
-

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-CDP Browser Session - Electron 内部浏览器控制
+CDP Browser Session - Electron internal browser control
 
-使用 StatusServer.send_cdp_command 通过 WebSocket 控制 Electron 窗口内的浏览器
-兼容 BrowserSession 接口，可作为 Playwright 的替代方案
+Uses StatusServer.send_cdp_command to control browser within Electron window via WebSocket.
+Compatible with BrowserSession interface, can be used as Playwright alternative.
 
-用法：
+Usage:
     session = CDPBrowserSession(status_server)
     await session.start(url="https://example.com")
     state = await session.observe()
@@ -26,17 +26,17 @@ if TYPE_CHECKING:
     from engine.server.websocket import StatusServer
 
 class CDPError(Exception):
-    """CDP 命令执行错误"""
+    """CDP command execution error"""
     pass
 
 
 class CDPLocator:
     """
-    Playwright Locator 兼容层
+    Playwright Locator compatibility layer
     
-    模拟 Playwright 的 Locator API，使 AI 生成的代码能够在 CDP 模式下运行。
+    Mimics Playwright's Locator API, allowing AI-generated code to run in CDP mode.
     
-    支持的 API:
+    Supported API:
         - locator.first
         - locator.click()
         - locator.fill(value)
@@ -50,36 +50,36 @@ class CDPLocator:
     
     @property
     def first(self) -> "CDPLocator":
-        """返回第一个匹配的元素（CDP 模式下就是自身）"""
+        """Return first matching element (same as self in CDP mode)"""
         return self
     
     async def click(self, **kwargs):
-        """点击元素"""
+        """Click element"""
         await self._session._send_cdp("clickSelector", {"selector": self._selector})
     
     async def fill(self, value: str, **kwargs):
-        """填充文本"""
+        """Fill text"""
         await self._session._send_cdp("typeInSelector", {"selector": self._selector, "text": value})
     
     async def type(self, text: str, **kwargs):
-        """输入文本"""
+        """Type text"""
         await self._session._send_cdp("typeInSelector", {"selector": self._selector, "text": text})
     
     async def press(self, key: str, **kwargs):
-        """按键"""
-        # 先聚焦到元素，然后按键
+        """Press key"""
+        # Focus on element first, then press key
         await self._session._send_cdp("clickSelector", {"selector": self._selector})
         await self._session._send_cdp("pressKey", {"key": key})
     
     async def inner_text(self) -> str:
-        """获取元素文本"""
+        """Get element text"""
         result = await self._session._send_cdp("evaluate", {
             "expression": f"document.querySelector('{self._selector}')?.innerText || ''"
         })
         return result.get("value", "") if result else ""
     
     async def get_attribute(self, name: str) -> str:
-        """获取元素属性"""
+        """Get element attribute"""
         result = await self._session._send_cdp("evaluate", {
             "expression": f"document.querySelector('{self._selector}')?.getAttribute('{name}') || ''"
         })
@@ -88,7 +88,7 @@ class CDPLocator:
 
 @dataclass
 class PageState:
-    """Snapshot of current page state (兼容 session.py 的 PageState)"""
+    """Snapshot of current page state (compatible with session.py PageState)"""
     id: str
     url: str
     title: str
@@ -124,7 +124,7 @@ class CDPBrowserSession:
     """
     CDP-based browser session for Electron internal control
     
-    兼容 BrowserSession 接口，使用 CDP 命令而非 Playwright
+    Compatible with BrowserSession interface, uses CDP commands instead of Playwright
     
     Usage:
         async with CDPBrowserSession(status_server) as browser:
@@ -135,7 +135,7 @@ class CDPBrowserSession:
     def __init__(self, status_server: "StatusServer"):
         """
         Args:
-            status_server: StatusServer 实例（用于发送 CDP 命令到 Electron）
+            status_server: StatusServer instance (for sending CDP commands to Electron)
         """
         self._server = status_server
         self._current_url = ""
@@ -143,7 +143,7 @@ class CDPBrowserSession:
     
     @property
     def active_page(self):
-        """Compatibility property (CDP 模式下没有实际的 Page 对象)"""
+        """Compatibility property (no actual Page object in CDP mode)"""
         return self
     
     @property
@@ -156,8 +156,8 @@ class CDPBrowserSession:
         """Current URL"""
         return self._current_url
     
-    async def _send_cdp(self, method: str, params: dict = None, timeout: float = 30.0) -> Any:
-        """发送 CDP 命令"""
+    async def _send_cdp(self, method: str, params: dict = None, timeout: float = 10.0) -> Any:
+        """Send CDP command"""
         return await self._server.send_cdp_command(method, params, timeout)
     
     async def __aenter__(self):
@@ -169,7 +169,7 @@ class CDPBrowserSession:
     async def start(
         self,
         url: str = "about:blank",
-        headless: bool = True,  # 忽略，CDP 模式始终使用 Electron 窗口
+        headless: bool = True,  # Ignored, CDP mode always uses Electron window
         width: int = 1280,
         height: int = 720,
     ) -> "CDPBrowserSession":
@@ -183,7 +183,7 @@ class CDPBrowserSession:
         return self
     
     async def close(self):
-        """Close browser session (CDP 模式下仅重置状态)"""
+        """Close browser session (only resets state in CDP mode)"""
         self._started = False
         self._current_url = ""
     
@@ -195,22 +195,26 @@ class CDPBrowserSession:
         """Navigate to URL"""
         await self._send_cdp("navigate", {"url": url})
         self._current_url = url
-        # 等待页面加载
-        await asyncio.sleep(1.5)  # 简单等待，后续可改进
+        # Brief wait for page to start loading
+        await asyncio.sleep(0.5)
+    
+    async def navigate(self, url: str):
+        """Navigate to URL (alias for goto)"""
+        await self.goto(url)
     
     async def observe(self) -> PageState:
         """Capture current page state"""
-        # 获取基本信息
+        # Get basic info
         url_result = await self._send_cdp("getURL")
         url = url_result.get("url", "") if url_result else ""
         
         title_result = await self._send_cdp("getTitle")
         title = title_result.get("title", "") if title_result else ""
         
-        # 截图
+        # Screenshot
         screenshot = await self._take_screenshot()
         
-        # 获取可访问性树
+        # Get accessibility tree
         ax_tree = await self._capture_accessibility_tree()
         
         return PageState(
@@ -273,7 +277,7 @@ class CDPBrowserSession:
         return node_map.get(root_id, {})
     
     # ============================================================
-    # 浏览器操作方法（兼容 Playwright Page 接口）
+    # Browser operation methods (compatible with Playwright Page interface)
     # ============================================================
     
     async def click(self, selector: str, **kwargs):
@@ -295,7 +299,7 @@ class CDPBrowserSession:
     async def wait_for_selector(
         self,
         selector: str,
-        timeout: float = 10000,  # 毫秒
+        timeout: float = 10000,  # milliseconds
         **kwargs
     ):
         """Wait for an element to appear"""
@@ -310,23 +314,23 @@ class CDPBrowserSession:
     
     async def wait_for_load_state(self, state: str = "load", **kwargs):
         """Wait for page load state"""
-        # 简单实现：等待一段时间
+        # Simple implementation: wait for a while
         await asyncio.sleep(0.5)
     
     async def evaluate(self, expression: str, *args, **kwargs):
         """
         Execute JavaScript in the page
         
-        兼容 Playwright 的 evaluate API:
+        Compatible with Playwright's evaluate API:
         - page.evaluate("() => 1 + 1")
         - page.evaluate("(a, b) => a + b", 1, 2)
         """
-        # 如果有额外参数，将它们注入到 JS 代码中
+        # If there are extra arguments, inject them into the JS code
         if args:
-            # 将参数序列化为 JSON 并在 JS 中解析
+            # Serialize arguments to JSON and parse in JS
             import json
             args_json = json.dumps(args)
-            # 包装表达式，将参数传入
+            # Wrap expression to pass arguments
             wrapped_expression = f"""
                 (function() {{
                     const __args = {args_json};
@@ -345,31 +349,31 @@ class CDPBrowserSession:
         return result.get("nodeId") if result else None
     
     # ============================================================
-    # Playwright Locator 兼容 API
+    # Playwright Locator Compatible API
     # ============================================================
     
     def locator(self, selector: str) -> CDPLocator:
         """
-        Playwright locator() 兼容方法
+        Playwright locator() compatible method
         
-        支持的选择器格式:
+        Supported selector formats:
         - CSS: 'input[type="text"]', '.class', '#id'
-        - Text: 'text=Submit' (直接传递给 Electron 处理)
+        - Text: 'text=Submit' (passed directly to Electron for handling)
         """
-        # 直接传递选择器，Electron 端会处理 text= 和 XPath
+        # Pass selector directly, Electron side handles text= and XPath
         return CDPLocator(self, selector)
     
     def get_by_role(self, role: str, name: str = None, **kwargs) -> CDPLocator:
         """
-        Playwright get_by_role() 兼容方法
+        Playwright get_by_role() compatible method
         
         Args:
-            role: ARIA 角色 (button, textbox, link, etc.)
-            name: 元素的可访问名称
+            role: ARIA role (button, textbox, link, etc.)
+            name: Element's accessible name
         """
         if name:
-            # 使用 XPath 来匹配 role 和包含特定文本的元素
-            # 这比 CSS 选择器更可靠
+            # Use XPath to match role and elements containing specific text
+            # This is more reliable than CSS selectors
             selector = f'xpath=//*[@role="{role}"][contains(., "{name}")]'
         else:
             selector = f'[role="{role}"]'
@@ -377,15 +381,15 @@ class CDPBrowserSession:
         return CDPLocator(self, selector)
     
     def get_by_text(self, text: str, **kwargs) -> CDPLocator:
-        """Playwright get_by_text() 兼容方法"""
+        """Playwright get_by_text() compatible method"""
         return self.locator(f"text={text}")
     
     def get_by_placeholder(self, placeholder: str, **kwargs) -> CDPLocator:
-        """Playwright get_by_placeholder() 兼容方法"""
+        """Playwright get_by_placeholder() compatible method"""
         return CDPLocator(self, f'[placeholder*="{placeholder}"]')
     
     def get_by_label(self, label: str, **kwargs) -> CDPLocator:
-        """Playwright get_by_label() 兼容方法"""
+        """Playwright get_by_label() compatible method"""
         return CDPLocator(self, f'[aria-label*="{label}"]')
     
     async def screenshot(self, **kwargs) -> bytes:

@@ -257,7 +257,7 @@ class HiveAgent:
                 url=url,
                 actions=actions,
                 success=True,
-                result=result.get("result"),  # 保存最终结果，供 Fast Path 复用
+                result=result.get("result"),  # Save final result for Fast Path reuse
                 metadata={
                     "thread_id": thread_id,
                     "steps": result["steps"],
