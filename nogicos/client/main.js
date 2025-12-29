@@ -214,7 +214,7 @@ function createWindow() {
     // === Transparent Window Settings ===
     transparent: true,              // Enable transparency
     frame: false,                   // Remove system title bar (custom title bar in HTML)
-    backgroundColor: '#00000000',   // Fully transparent background
+    backgroundColor: '#1a1a1c',   // Fully transparent background
     roundedCorners: true,           // Windows 11 native rounded corners
     // Note: On Windows 11 22H2+, we'll apply Acrylic/Mica effect
     // On macOS, we'll apply vibrancy
