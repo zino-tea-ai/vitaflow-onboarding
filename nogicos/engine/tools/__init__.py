@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-NogicOS Tools - Unified tool system
+NogicOS Tools - V2 Unified Tool System
 
 This module provides:
 - ToolRegistry: Central registry for all tools
-- Browser Tools: Web automation capabilities
+- Browser Tools: Web automation capabilities (via Electron IPC)
 - Local Tools: File system and shell operations
-- Plan Tools: Todo/planning capabilities (via middleware)
 """
 
 from .base import (
@@ -20,18 +19,21 @@ from .base import (
 from .browser import register_browser_tools
 from .local import register_local_tools
 
-# Try to import dispatcher for backwards compatibility
+# Desktop tools (Phase C) - optional, requires pyautogui
 try:
-    from .dispatcher import get_dispatcher, init_dispatcher_with_server
+    from .desktop import register_desktop_tools
+    DESKTOP_TOOLS_AVAILABLE = True
 except ImportError:
-    # Fallback if dispatcher doesn't exist
-    def get_dispatcher():
-        return get_registry()
-    
-    async def init_dispatcher_with_server(status_server):
-        registry = get_registry()
-        registry.set_context("status_server", status_server)
-        return registry
+    DESKTOP_TOOLS_AVAILABLE = False
+    register_desktop_tools = None
+
+# Vision tools (Phase C4) - optional, requires anthropic
+try:
+    from .vision import register_vision_tools
+    VISION_TOOLS_AVAILABLE = True
+except ImportError:
+    VISION_TOOLS_AVAILABLE = False
+    register_vision_tools = None
 
 
 def create_full_registry() -> ToolRegistry:
@@ -39,11 +41,20 @@ def create_full_registry() -> ToolRegistry:
     Create a fully populated tool registry with all tools.
     
     Returns:
-        ToolRegistry with browser, local, and plan tools registered.
+        ToolRegistry with browser, local, desktop, and vision tools registered.
     """
     registry = ToolRegistry()
     register_browser_tools(registry)
     register_local_tools(registry)
+    
+    # Register desktop tools if available (Phase C)
+    if DESKTOP_TOOLS_AVAILABLE and register_desktop_tools:
+        register_desktop_tools(registry)
+    
+    # Register vision tools if available (Phase C4)
+    if VISION_TOOLS_AVAILABLE and register_vision_tools:
+        register_vision_tools(registry)
+    
     return registry
 
 
@@ -57,6 +68,4 @@ __all__ = [
     'register_browser_tools',
     'register_local_tools',
     'create_full_registry',
-    'get_dispatcher',
-    'init_dispatcher_with_server',
 ]

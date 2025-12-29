@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-NogicOS Health Checks
+NogicOS Health Checks - V2
 """
 
 import asyncio
@@ -26,9 +26,9 @@ class HealthChecker:
     async def check_all(self) -> dict:
         """Check all modules"""
         results = {
-            "hive": await self.check_hive(),
-            "browser": await self.check_browser(),
-            "knowledge": await self.check_knowledge(),
+            "agent": await self.check_agent(),
+            "tools": await self.check_tools(),
+            "websocket": await self.check_websocket(),
         }
         
         statuses = [r.status for r in results.values()]
@@ -44,39 +44,43 @@ class HealthChecker:
             "modules": {k: {"status": v.status, "error": v.error} for k, v in results.items()},
         }
     
-    async def check_hive(self) -> HealthResult:
-        """Check hive module"""
+    async def check_agent(self) -> HealthResult:
+        """Check agent module"""
         start = time.time()
         try:
-            from engine.hive.graph import create_agent
-            agent = create_agent()
+            from engine.agent.react_agent import ReActAgent
             
             # Check API key
             if not os.environ.get("ANTHROPIC_API_KEY"):
-                return HealthResult("hive", "degraded", error="No API key")
+                return HealthResult("agent", "degraded", error="No API key")
             
-            return HealthResult("hive", "healthy", (time.time() - start) * 1000)
+            return HealthResult("agent", "healthy", (time.time() - start) * 1000)
         except Exception as e:
-            return HealthResult("hive", "unhealthy", error=str(e))
+            return HealthResult("agent", "unhealthy", error=str(e))
     
-    async def check_browser(self) -> HealthResult:
-        """Check browser module"""
+    async def check_tools(self) -> HealthResult:
+        """Check tools module"""
         start = time.time()
         try:
-            from engine.browser.session import BrowserSession
-            return HealthResult("browser", "healthy", (time.time() - start) * 1000)
+            from engine.tools import create_full_registry
+            registry = create_full_registry()
+            tool_count = len(registry.to_anthropic_format())
+            
+            if tool_count == 0:
+                return HealthResult("tools", "degraded", error="No tools registered")
+            
+            return HealthResult("tools", "healthy", (time.time() - start) * 1000)
         except Exception as e:
-            return HealthResult("browser", "unhealthy", error=str(e))
+            return HealthResult("tools", "unhealthy", error=str(e))
     
-    async def check_knowledge(self) -> HealthResult:
-        """Check knowledge module"""
+    async def check_websocket(self) -> HealthResult:
+        """Check websocket module"""
         start = time.time()
         try:
-            from engine.knowledge.store import KnowledgeStore
-            store = KnowledgeStore()
-            return HealthResult("knowledge", "healthy", (time.time() - start) * 1000)
+            from engine.server.websocket import StatusServer
+            return HealthResult("websocket", "healthy", (time.time() - start) * 1000)
         except Exception as e:
-            return HealthResult("knowledge", "degraded", error=str(e))
+            return HealthResult("websocket", "unhealthy", error=str(e))
 
 
 async def check_all() -> dict:
@@ -97,7 +101,7 @@ def main():
         pass
     
     print("=" * 50)
-    print("NogicOS Health Check")
+    print("NogicOS Health Check - V2")
     print("=" * 50)
     
     results = asyncio.run(check_all())
@@ -114,4 +118,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

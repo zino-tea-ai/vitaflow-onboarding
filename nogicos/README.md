@@ -2,53 +2,75 @@
 
 **Your AI Work Partner, living in your computer.**
 
-> "Input your need, get the finished product."
+> "Cursor for Everyone" - The AI work partner that lives in your computer, not just your browser.
 
 ## What is NogicOS?
 
 NogicOS is an AI control center that bridges the internet and your local environment. Unlike traditional AI assistants that only chat, NogicOS **executes** tasks end-to-end:
 
 - Browse the web and extract data
-- Analyze information and find patterns
-- Generate reports and save files
-- Learn from every interaction to get faster
+- Organize files and manage your desktop
+- Execute shell commands
+- Intelligent decision-making with ReAct Agent
 
-## Core Philosophy
-
-```
-Input: "需求" (Your Need)
-    ↓
-NogicOS: 数据采集 → 整理 → 分析 → 生成
-    ↓
-Output: "成品" (Finished Product)
-```
-
-## Features
-
-- 🎯 **End-to-End Execution**: From task to deliverable, not just answers
-- 🧠 **Ask/Plan/Agent Modes**: Choose your interaction style
-- ⚡ **Smart Routing**: Instant for learned tasks, full AI for new ones
-- 🔗 **CDP + Tools**: Browser control + file system + terminal
-- 📚 **Collective Learning**: Every user makes it smarter for everyone
-- 🎨 **Glassmorphism UI**: Modern, transparent design
-
-## Architecture
+## Architecture (V2)
 
 ```
-┌─────────────────────────────────────────┐
-│           Electron Client               │
-│  ┌─────────────┐  ┌─────────────┐       │
-│  │  User View  │  │  AI Panel   │       │
-│  └─────────────┘  └─────────────┘       │
-└─────────────────────┬───────────────────┘
-                      │ WebSocket + HTTP
-┌─────────────────────▼───────────────────┐
-│           Python Backend                │
-│  ┌────────┐  ┌────────┐  ┌──────────┐  │
-│  │ Router │→ │ Agent  │→ │Knowledge │  │
-│  └────────┘  └────────┘  └──────────┘  │
-└─────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                    Electron Client                           |
+|  +----------------------+  +------------------------------+  |
+|  |   Glass UI Panel     |  |     BrowserView / Tools      |  |
+|  |   - Chat Interface   |  |     - Web Preview            |  |
+|  |   - Tool Cards       |  |     - File Operations        |  |
+|  |   - Real-time Stream |  |     - Shell Commands         |  |
+|  +----------------------+  +------------------------------+  |
++--------------------------------+----------------------------+
+                                 | WebSocket (8765) + HTTP (8080)
++--------------------------------v----------------------------+
+|                    Python Backend                            |
+|  +----------------------------------------------------------+
+|  |                   ReAct Agent                             |
+|  |   Think -> Act -> Observe -> Think -> Act -> ...         |
+|  +----------------------------------------------------------+
+|  +------------+  +------------+  +--------------------+      |
+|  |   Tools    |  |  WebSocket |  |   Observability    |      |
+|  | - Browser  |  |  - Stream  |  |   - Logging        |      |
+|  | - Local    |  |  - Status  |  |   - Health Check   |      |
+|  +------------+  +------------+  +--------------------+      |
++-------------------------------------------------------------+
 ```
+
+## Engine Structure
+
+```
+engine/
+├── agent/
+│   └── react_agent.py    # Pure ReAct Agent (core)
+├── tools/
+│   ├── base.py           # Tool Registry & Definitions
+│   ├── browser.py        # Browser automation tools
+│   └── local.py          # File system & shell tools
+├── server/
+│   └── websocket.py      # Real-time status broadcasting
+├── middleware/
+│   ├── filesystem.py     # File operation safety
+│   └── todo.py           # Task management
+├── health/
+│   └── __init__.py       # Health check system
+└── observability/
+    └── __init__.py       # Logging system
+```
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Server status |
+| `/stats` | GET | Execution statistics |
+| `/v2/execute` | POST | **Execute task with ReAct Agent** |
+| `/v2/tools` | GET | List available tools |
+| `/health` | GET | Health check |
+| `/read_file` | GET | Read file content |
 
 ## Quick Start
 
@@ -61,7 +83,7 @@ Output: "成品" (Finished Product)
 
 ```bash
 # Clone the repository
-git clone https://github.com/zino-tea-ai/nogicos.git
+git clone https://github.com/example/nogicos.git
 cd nogicos
 
 # Install Python dependencies
@@ -80,56 +102,58 @@ cp api_keys.example.py api_keys.py
 ### Running
 
 ```bash
-# Start the application (from client directory)
+# Option 1: Start from client (auto-starts backend)
+cd client
+npm start
+
+# Option 2: Start backend separately
+python hive_server.py
+# Then in another terminal:
 cd client
 npm start
 ```
 
-This will:
-1. Start the Python backend server (port 8080)
-2. Launch the Electron application
-3. Connect via WebSocket for real-time updates
+## Available Tools
 
-### Usage
+### Browser Tools
+- `navigate` - Navigate to URL
+- `click` - Click element
+- `type` - Type text
+- `scroll` - Scroll page
+- `screenshot` - Take screenshot
+- `get_page_content` - Extract page content
 
-1. Select mode: **Ask** (Q&A), **Plan** (confirm first), or **Agent** (execute directly)
-2. Enter a URL in the address bar
-3. Type your task
-4. Click **Execute**
-5. Watch the AI work and receive your deliverable
+### Local Tools
+- `read_file` - Read file content
+- `write_file` - Write to file
+- `list_directory` - List directory contents
+- `create_directory` - Create directory
+- `move_file` - Move/rename file
+- `copy_file` - Copy file
+- `delete_file` - Delete file
+- `shell_execute` - Run shell command
+- `glob_search` - Search files by pattern
+- `grep_search` - Search file contents
 
-## Demo Scenario: YC Analysis
+## Example Tasks
 
-**Try this:** "Analyze YC AI companies and find application best practices"
-
-NogicOS will:
-1. 📊 Navigate to YC company directory
-2. 🔍 Extract AI company data (founders, funding, tags)
-3. 📈 Analyze patterns and trends
-4. 📝 Generate `analysis.md` report
-5. 💡 Create `recommendations.md` with actionable insights
-6. 💾 Save everything to `~/yc_research/`
-
-**Output:**
 ```
-~/yc_research/
-├── raw_data.json      # Extracted company data
-├── analysis.md        # Pattern analysis report
-└── recommendations.md # YC application tips
+"Organize my desktop"
+-> Agent lists desktop, categorizes files, creates folders, moves files
+
+"Save this webpage content to a file"
+-> Agent navigates, extracts content, writes to file
+
+"Find all files containing TODO in this project"
+-> Agent uses grep_search to find matches
 ```
-
-## How It Works
-
-1. **First Time**: AI agent analyzes the page and executes actions (30-60s)
-2. **Second Time**: Replays learned trajectory (seconds)
-3. **With Skills**: Executes generalized procedure (sub-second)
 
 ## Tech Stack
 
-- **Frontend**: Electron + BrowserView
+- **Frontend**: Electron + Glassmorphism UI
 - **Backend**: Python + FastAPI + WebSocket
-- **AI**: Claude Opus 4.5 + LangGraph
-- **Browser Control**: Chrome DevTools Protocol (CDP)
+- **AI**: Claude 3.5 Sonnet + Pure ReAct Loop
+- **Design**: Vision Pro inspired floating panels
 
 ## License
 

@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-NogicOS Engine - Python Backend
+NogicOS Engine - V2 Architecture
 
 Core modules:
-- hive: LangGraph Agent (AI decision engine)
-- browser: Playwright control
-- knowledge: Trajectory storage
+- agent: ReAct Agent (AI decision engine)
+- tools: Unified tool system
+- server: WebSocket status broadcasting
+- middleware: Filesystem and Todo capabilities
+- observability: Logging system
 """
-

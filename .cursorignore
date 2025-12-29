@@ -1,0 +1,19 @@
+# 阻止递归符号链接循环 - 整个 nogicos 子目录
+nogicos/client/
+nogicos/reference/
+
+# 其他构建产物
+**/dist/
+**/build/
+**/win-unpacked/
+**/.next/
+**/out/
+
+# 大型依赖
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+
+# 额外排除
+_archive/
+poe2-tools/path-of-building/

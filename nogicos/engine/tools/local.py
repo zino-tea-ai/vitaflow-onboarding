@@ -25,11 +25,90 @@ ALLOWED_ROOTS = [
     os.getcwd(),  # Current working directory
 ]
 
+# Protected directories that should NOT be modified by file organization tasks
+PROTECTED_PATTERNS = [
+    "Cursor Project",  # User's main code project
+    ".git",            # Git repositories
+    "node_modules",    # Node.js dependencies
+    "__pycache__",     # Python cache
+    ".venv", "venv",   # Python virtual environments
+    ".cursor",         # Cursor IDE settings
+]
+
+# Code file extensions that indicate a directory is a code project
+CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css", ".scss",
+    ".java", ".cpp", ".c", ".h", ".hpp", ".go", ".rs", ".rb",
+    ".php", ".swift", ".kt", ".scala", ".vue", ".svelte",
+}
+
 
 def _is_path_allowed(path: str) -> bool:
     """Check if path is within allowed directories"""
     abs_path = os.path.abspath(path)
     return any(abs_path.startswith(root) for root in ALLOWED_ROOTS)
+
+
+def _is_protected_path(path: str) -> tuple[bool, str]:
+    """
+    Check if path is a protected code directory that should not be modified.
+    
+    Returns:
+        (is_protected, reason)
+    """
+    abs_path = os.path.abspath(path)
+    path_lower = abs_path.lower()
+    
+    # Check for protected patterns in path
+    for pattern in PROTECTED_PATTERNS:
+        if pattern.lower() in path_lower:
+            return True, f"Path contains protected pattern: {pattern}"
+    
+    # Check if directory contains .git (it's a code repository)
+    dir_to_check = abs_path if os.path.isdir(abs_path) else os.path.dirname(abs_path)
+    if os.path.exists(os.path.join(dir_to_check, ".git")):
+        return True, "This is a git repository (code project)"
+    
+    # Check parent directories for .git
+    current = dir_to_check
+    for _ in range(5):  # Check up to 5 levels up
+        parent = os.path.dirname(current)
+        if parent == current:  # Reached root
+            break
+        if os.path.exists(os.path.join(parent, ".git")):
+            return True, "This path is inside a git repository (code project)"
+        current = parent
+    
+    return False, ""
+
+
+def _check_file_safety(path: str, operation: str) -> tuple[bool, str]:
+    """
+    Check if a file operation is safe to perform.
+    
+    Args:
+        path: Path to check
+        operation: Operation type (move, delete, write)
+        
+    Returns:
+        (is_safe, error_message)
+    """
+    # Check basic permission
+    if not _is_path_allowed(path):
+        return False, f"Access denied to path: {path}"
+    
+    # Check for protected directories
+    is_protected, reason = _is_protected_path(path)
+    if is_protected:
+        return False, f"PROTECTED: {reason}. This path should not be modified by file organization tasks."
+    
+    # Check file extension for code files
+    if os.path.isfile(path):
+        ext = os.path.splitext(path)[1].lower()
+        if ext in CODE_EXTENSIONS:
+            return False, f"PROTECTED: This is a code file ({ext}). Code files should not be modified by file organization tasks."
+    
+    return True, ""
 
 
 def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistry:
@@ -89,8 +168,10 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
     async def write_file(path: str, content: str) -> str:
         """Write content to file"""
         try:
-            if not _is_path_allowed(path):
-                return f"Error: Access denied to path: {path}"
+            # Safety check for code files
+            is_safe, error = _check_file_safety(path, "write")
+            if not is_safe:
+                return f"Error: {error}"
             
             # Create parent directories if needed
             parent = os.path.dirname(path)
@@ -341,10 +422,15 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
         """Move/rename file or directory"""
         import shutil
         try:
-            if not _is_path_allowed(source):
-                return f"Error: Access denied to source path: {source}"
-            if not _is_path_allowed(destination):
-                return f"Error: Access denied to destination path: {destination}"
+            # Safety check for source
+            is_safe, error = _check_file_safety(source, "move")
+            if not is_safe:
+                return f"Error: {error}"
+            
+            # Safety check for destination
+            is_safe, error = _check_file_safety(destination, "move")
+            if not is_safe:
+                return f"Error: {error}"
             
             if not os.path.exists(source):
                 return f"Error: Source not found: {source}"
@@ -401,13 +487,15 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
         """Delete file or directory"""
         import shutil
         try:
-            if not _is_path_allowed(path):
-                return f"Error: Access denied to path: {path}"
+            # Enhanced safety check
+            is_safe, error = _check_file_safety(path, "delete")
+            if not is_safe:
+                return f"Error: {error}"
             
             if not os.path.exists(path):
                 return f"Error: Path not found: {path}"
             
-            # Safety check: don't delete important directories
+            # Additional safety check: don't delete important directories
             danger_paths = [
                 os.path.expanduser("~"),
                 "C:\\",

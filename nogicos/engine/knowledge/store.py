@@ -1,949 +1,1144 @@
 # -*- coding: utf-8 -*-
 """
-Knowledge Store - Trajectory and Skill storage with semantic search
+Knowledge Store - SQLite-based Persistent Storage
 
-Based on LangGraph's InMemoryStore pattern for semantic retrieval.
-Integrated with SkillWeaver-style skill synthesis and ExpeL-style confidence weighting.
-
-Architecture:
-    Task → Embed → Vector Search → Best Match → Skill/Replay
-
-Features:
-    - Semantic similarity search (not just keyword match)
-    - Domain-based namespacing
-    - Trajectory replay generation
-    - Skill storage with parameterized code (SkillWeaver)
-    - Confidence-based skill weighting (ExpeL)
-    - Integration with LangGraph store
+B1: Knowledge Storage Architecture
+- SQLite database for persistence
+- UserProfile management
+- Trajectory storage and retrieval
+- Learned skill extraction
 """
 
-import json
 import os
-import hashlib
+import json
+import sqlite3
+import uuid
 import logging
-from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
+from typing import List, Optional, Dict, Any
+from contextlib import contextmanager
+
+from .models import UserProfile, Trajectory, LearnedSkill, SQL_SCHEMA
 
 logger = logging.getLogger("nogicos.knowledge")
 
 
-@dataclass
-class SearchResult:
-    """Search result with confidence score"""
-    matched: bool
-    confidence: float = 0.0
-    trajectory: Optional[List[dict]] = None
-    source_task: Optional[str] = None
-    replay_code: Optional[str] = None
-    cached_result: Optional[str] = None  # Cached final answer
-    
-    def can_replay(self) -> bool:
-        """Check if result has enough confidence for replay"""
-        return self.matched and self.confidence >= 0.7
-    
-    def has_cached_result(self) -> bool:
-        """Check if we have a cached result to return directly"""
-        return self.cached_result is not None and len(self.cached_result) > 0
-
-
-@dataclass
-class TrajectoryEntry:
-    """A stored trajectory entry"""
-    id: str
-    task: str
-    domain: str
-    url: str
-    actions: List[dict]
-    success: bool
-    created_at: str
-    execution_count: int = 0
-    success_rate: float = 1.0
-    embedding: Optional[List[float]] = None
-
-
-@dataclass
-class SkillParameter:
-    """A parameter for a skill function"""
-    name: str
-    param_type: str = "str"  # str, int, float, bool
-    description: str = ""
-    required: bool = True
-    default: Optional[str] = None
-
-
-@dataclass
-class Skill:
-    """
-    A learned skill - parameterized Python function for browser automation
-    
-    Based on SkillWeaver's API format + ExpeL's confidence weighting.
-    
-    Example:
-        Skill(
-            id="search_hn_abc123",
-            name="search_hn",
-            description="Search for content on Hacker News",
-            parameters=[SkillParameter(name="query", param_type="str", description="Search query")],
-            code='''
-async def search_hn(page, query: str):
-    await page.fill("input[type=text]", query)
-    await page.click("button[type=submit]")
-    return True
-''',
-            domain="news.ycombinator.com",
-        )
-    """
-    id: str
-    name: str                                    # Function name, e.g. "search_hn"
-    description: str                             # Natural language description
-    parameters: List[SkillParameter] = field(default_factory=list)  # Parameter definitions
-    code: str = ""                               # Playwright Python code
-    domain: str = ""                             # Target domain
-    confidence: int = 2                          # ExpeL-style weight (starts at 2)
-    success_count: int = 0                       # Successful executions
-    fail_count: int = 0                          # Failed executions
-    created_at: str = ""                         # Creation timestamp
-    updated_at: str = ""                         # Last update timestamp
-    source_trajectory_id: Optional[str] = None   # Original trajectory this skill was synthesized from
-    embedding: Optional[List[float]] = None      # Embedding for semantic search
-    
-    def update_confidence(self, success: bool):
-        """Update confidence based on execution result (ExpeL-style)"""
-        if success:
-            self.confidence += 1
-            self.success_count += 1
-        else:
-            self.confidence -= 1
-            self.fail_count += 1
-        self.updated_at = datetime.now().isoformat()
-    
-    @property
-    def success_rate(self) -> float:
-        """Calculate success rate"""
-        total = self.success_count + self.fail_count
-        return self.success_count / total if total > 0 else 1.0
-    
-    @property
-    def is_reliable(self) -> bool:
-        """Check if skill is reliable enough to use"""
-        return self.confidence > 0 and self.success_rate >= 0.5
-    
-    def to_dict(self) -> dict:
-        """Convert to dictionary for storage"""
-        return {
-            "id": self.id,
-            "name": self.name,
-            "description": self.description,
-            "parameters": [asdict(p) for p in self.parameters],
-            "code": self.code,
-            "domain": self.domain,
-            "confidence": self.confidence,
-            "success_count": self.success_count,
-            "fail_count": self.fail_count,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "source_trajectory_id": self.source_trajectory_id,
-        }
-    
-    @classmethod
-    def from_dict(cls, data: dict) -> "Skill":
-        """Create from dictionary"""
-        params = [
-            SkillParameter(**p) if isinstance(p, dict) else p 
-            for p in data.get("parameters", [])
-        ]
-        return cls(
-            id=data["id"],
-            name=data["name"],
-            description=data["description"],
-            parameters=params,
-            code=data.get("code", ""),
-            domain=data.get("domain", ""),
-            confidence=data.get("confidence", 2),
-            success_count=data.get("success_count", 0),
-            fail_count=data.get("fail_count", 0),
-            created_at=data.get("created_at", ""),
-            updated_at=data.get("updated_at", ""),
-            source_trajectory_id=data.get("source_trajectory_id"),
-        )
-
-
-@dataclass
-class SkillSearchResult:
-    """Result from skill search"""
-    matched: bool
-    skill: Optional[Skill] = None
-    confidence: float = 0.0
-    
-    def can_use(self, threshold: float = 0.7) -> bool:
-        """Check if skill is usable"""
-        return (
-            self.matched 
-            and self.skill is not None 
-            and self.confidence >= threshold
-            and self.skill.is_reliable
-        )
-
-
 class KnowledgeStore:
     """
-    Local knowledge store with semantic search
+    SQLite-based knowledge store for persistent context.
     
-    Stores both trajectories (raw action sequences) and skills (parameterized code).
-    Uses embeddings for similarity matching when available,
-    falls back to keyword matching otherwise.
-    
-    Directory structure:
-        data/knowledge/
-        ├── index.json           # Trajectory index
-        ├── skills_index.json    # Skill index
-        ├── {traj_id}.json       # Individual trajectories
-        └── skills/
-            └── {skill_id}.json  # Individual skills
+    Features:
+    - User profile management (B1.2)
+    - Trajectory storage (B1.3)
+    - Learned skill management
     """
     
-    def __init__(
+    def __init__(self, db_path: Optional[str] = None):
+        """
+        Initialize knowledge store.
+        
+        Args:
+            db_path: Path to SQLite database file.
+                     Defaults to ~/.nogicos/knowledge.db
+        """
+        if db_path is None:
+            # Default to user home directory
+            home = os.path.expanduser("~")
+            nogicos_dir = os.path.join(home, ".nogicos")
+            os.makedirs(nogicos_dir, exist_ok=True)
+            db_path = os.path.join(nogicos_dir, "knowledge.db")
+        
+        self.db_path = db_path
+        self._init_database()
+        
+        logger.info(f"[Knowledge] Initialized store at {db_path}")
+    
+    def _init_database(self):
+        """Initialize database schema"""
+        with self._get_connection() as conn:
+            conn.executescript(SQL_SCHEMA)
+            conn.commit()
+    
+    @contextmanager
+    def _get_connection(self):
+        """Get database connection with context manager"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+    
+    # ========================================================================
+    # User Profile Management (B1.2)
+    # ========================================================================
+    
+    def get_profile(self, profile_id: str = "default") -> UserProfile:
+        """
+        Get user profile by ID. Creates default if not exists.
+        
+        Args:
+            profile_id: Profile ID (default: "default")
+            
+        Returns:
+            UserProfile instance
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM user_profiles WHERE id = ?",
+                (profile_id,)
+            )
+            row = cursor.fetchone()
+            
+            if row is None:
+                # Create default profile
+                profile = UserProfile(id=profile_id)
+                self.save_profile(profile)
+                return profile
+            
+            return UserProfile(
+                id=row["id"],
+                frequent_folders=json.loads(row["frequent_folders"] or "[]"),
+                frequent_websites=json.loads(row["frequent_websites"] or "[]"),
+                preferences=json.loads(row["preferences"] or "{}"),
+                common_tasks=json.loads(row["common_tasks"] or "[]"),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+    
+    def save_profile(self, profile: UserProfile):
+        """
+        Save user profile.
+        
+        Args:
+            profile: UserProfile instance
+        """
+        profile.updated_at = datetime.now().isoformat()
+        
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO user_profiles 
+                (id, frequent_folders, frequent_websites, preferences, 
+                 common_tasks, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                profile.id,
+                json.dumps(profile.frequent_folders, ensure_ascii=False),
+                json.dumps(profile.frequent_websites, ensure_ascii=False),
+                json.dumps(profile.preferences, ensure_ascii=False),
+                json.dumps(profile.common_tasks, ensure_ascii=False),
+                profile.created_at,
+                profile.updated_at,
+            ))
+            conn.commit()
+        
+        logger.debug(f"[Knowledge] Saved profile: {profile.id}")
+    
+    def update_profile_from_execution(
         self,
-        data_dir: str = None,
-        embed_fn: Callable[[str], List[float]] = None,
+        profile_id: str,
+        task: str,
+        tool_calls: List[Dict[str, Any]],
     ):
-        if data_dir is None:
-            data_dir = str(Path(__file__).parent.parent.parent / "data" / "knowledge")
+        """
+        Update profile based on execution history (B2.4 Preference Learning).
         
-        self.data_dir = data_dir
-        os.makedirs(data_dir, exist_ok=True)
+        Extracts patterns from tool calls to update:
+        - Frequent folders (from file operations)
+        - Frequent websites (from browser operations)
+        - Common tasks
         
-        # Skills directory
-        self._skills_dir = os.path.join(data_dir, "skills")
-        os.makedirs(self._skills_dir, exist_ok=True)
+        Args:
+            profile_id: Profile ID
+            task: Task description
+            tool_calls: List of tool calls made
+        """
+        profile = self.get_profile(profile_id)
         
-        # Trajectory index
-        self._index_path = os.path.join(data_dir, "index.json")
-        self._index = self._load_index()
+        # Extract paths and URLs from tool calls
+        for call in tool_calls:
+            tool_name = call.get("name", "")
+            args = call.get("args", {})
+            success = call.get("success", False)
+            
+            if not success:
+                continue
+            
+            # File operations → frequent folders
+            if tool_name in ["list_directory", "read_file", "write_file", "move_file"]:
+                path = args.get("path") or args.get("source") or args.get("directory")
+                if path:
+                    # Extract folder from path
+                    folder = os.path.dirname(path) if os.path.isfile(path) else path
+                    if folder:
+                        profile.add_frequent_folder(folder)
+            
+            # Browser operations → frequent websites
+            if tool_name == "browser_navigate":
+                url = args.get("url")
+                if url:
+                    profile.add_frequent_website(url)
         
-        # Skills index
-        self._skills_index_path = os.path.join(data_dir, "skills_index.json")
-        self._skills_index = self._load_skills_index()
+        # Add task to common tasks (if not duplicate)
+        task_normalized = task.strip().lower()
+        if task_normalized and task_normalized not in [t.lower() for t in profile.common_tasks]:
+            profile.common_tasks.insert(0, task)
+            profile.common_tasks = profile.common_tasks[:20]  # Keep last 20
         
-        # Embedding function (optional)
-        self._embed_fn = embed_fn
-        self._embeddings_cache: Dict[str, List[float]] = {}
+        self.save_profile(profile)
     
-    def _load_index(self) -> dict:
-        """Load trajectory index from disk"""
-        if os.path.exists(self._index_path):
-            try:
-                with open(self._index_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except:
-                pass
+    # ========================================================================
+    # Trajectory Management (B1.3)
+    # ========================================================================
+    
+    def save_trajectory(self, trajectory: Trajectory) -> str:
+        """
+        Save execution trajectory.
+        
+        Args:
+            trajectory: Trajectory instance
+            
+        Returns:
+            Trajectory ID
+        """
+        if not trajectory.id:
+            trajectory.id = str(uuid.uuid4())[:8]
+        
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO trajectories
+                (id, session_id, task, url, tool_calls, success, error,
+                 context, created_at, duration_ms, iterations)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                trajectory.id,
+                trajectory.session_id,
+                trajectory.task,
+                trajectory.url,
+                json.dumps(trajectory.tool_calls, ensure_ascii=False),
+                1 if trajectory.success else 0,
+                trajectory.error,
+                json.dumps(trajectory.context, ensure_ascii=False),
+                trajectory.created_at,
+                trajectory.duration_ms,
+                trajectory.iterations,
+            ))
+            conn.commit()
+        
+        logger.debug(f"[Knowledge] Saved trajectory: {trajectory.id}")
+        return trajectory.id
+    
+    def get_trajectory(self, trajectory_id: str) -> Optional[Trajectory]:
+        """
+        Get trajectory by ID.
+        
+        Args:
+            trajectory_id: Trajectory ID
+            
+        Returns:
+            Trajectory instance or None
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM trajectories WHERE id = ?",
+                (trajectory_id,)
+            )
+            row = cursor.fetchone()
+            
+            if row is None:
+                return None
+            
+            return self._row_to_trajectory(row)
+    
+    def search_trajectories(
+        self,
+        query: str = "",
+        session_id: Optional[str] = None,
+        success_only: bool = False,
+        limit: int = 10,
+    ) -> List[Trajectory]:
+        """
+        Search trajectories.
+        
+        Args:
+            query: Search query (matches task description)
+            session_id: Filter by session ID
+            success_only: Only return successful trajectories
+            limit: Maximum results
+            
+        Returns:
+            List of matching trajectories
+        """
+        conditions = []
+        params = []
+        
+        if query:
+            conditions.append("task LIKE ?")
+            params.append(f"%{query}%")
+        
+        if session_id:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        
+        if success_only:
+            conditions.append("success = 1")
+        
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        
+        with self._get_connection() as conn:
+            cursor = conn.execute(f"""
+                SELECT * FROM trajectories
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, params + [limit])
+            
+            return [self._row_to_trajectory(row) for row in cursor.fetchall()]
+    
+    def get_recent_trajectories(
+        self,
+        session_id: str,
+        limit: int = 10,
+    ) -> List[Trajectory]:
+        """
+        Get recent trajectories for a session.
+        
+        Args:
+            session_id: Session ID
+            limit: Maximum results
+            
+        Returns:
+            List of recent trajectories
+        """
+        return self.search_trajectories(
+            session_id=session_id,
+            limit=limit,
+        )
+    
+    def _row_to_trajectory(self, row) -> Trajectory:
+        """Convert database row to Trajectory"""
+        return Trajectory(
+            id=row["id"],
+            session_id=row["session_id"],
+            task=row["task"],
+            url=row["url"],
+            tool_calls=json.loads(row["tool_calls"] or "[]"),
+            success=bool(row["success"]),
+            error=row["error"],
+            context=json.loads(row["context"] or "{}"),
+            created_at=row["created_at"],
+            duration_ms=row["duration_ms"] or 0.0,
+            iterations=row["iterations"] or 0,
+        )
+    
+    # ========================================================================
+    # Statistics
+    # ========================================================================
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get knowledge store statistics"""
+        with self._get_connection() as conn:
+            # Count trajectories
+            cursor = conn.execute("SELECT COUNT(*) FROM trajectories")
+            trajectory_count = cursor.fetchone()[0]
+            
+            # Count successful
+            cursor = conn.execute("SELECT COUNT(*) FROM trajectories WHERE success = 1")
+            success_count = cursor.fetchone()[0]
+            
+            # Count profiles
+            cursor = conn.execute("SELECT COUNT(*) FROM user_profiles")
+            profile_count = cursor.fetchone()[0]
+            
+            # Count skills
+            cursor = conn.execute("SELECT COUNT(*) FROM learned_skills")
+            skill_count = cursor.fetchone()[0]
+        
         return {
-            "version": "2.0",
-            "trajectories": [],
-            "domains": {},
+            "trajectory_count": trajectory_count,
+            "success_count": success_count,
+            "success_rate": success_count / trajectory_count if trajectory_count > 0 else 0,
+            "profile_count": profile_count,
+            "skill_count": skill_count,
+            "db_path": self.db_path,
         }
+
+
+# Global instance
+_store: Optional[KnowledgeStore] = None
+
+
+def get_store() -> KnowledgeStore:
+    """Get or create global knowledge store instance"""
+    global _store
+    if _store is None:
+        _store = KnowledgeStore()
+    return _store
+
+
+# ============================================================================
+# Session Persistence (Plan: 2.2 会话持久化)
+# ============================================================================
+
+class PersistentSessionStore:
+    """
+    Simple session persistence for cross-session memory.
     
-    def _load_skills_index(self) -> dict:
-        """Load skills index from disk"""
-        if os.path.exists(self._skills_index_path):
-            try:
-                with open(self._skills_index_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except:
-                pass
-        return {
-            "version": "1.0",
-            "skills": [],
-            "domains": {},
-        }
+    Stores:
+    - Session history (messages)
+    - User preferences per session
+    - Last active timestamp
     
-    def _save_skills_index(self):
-        """Save skills index to disk"""
-        with open(self._skills_index_path, "w", encoding="utf-8") as f:
-            json.dump(self._skills_index, f, indent=2, ensure_ascii=False)
+    This allows users to "resume" previous sessions and maintain context.
+    """
     
-    def _save_index(self):
-        """Save index to disk"""
-        with open(self._index_path, "w", encoding="utf-8") as f:
-            json.dump(self._index, f, indent=2, ensure_ascii=False)
+    def __init__(self, db_path: Optional[str] = None):
+        """
+        Initialize persistent session store.
+        
+        Args:
+            db_path: Path to SQLite database.
+                     Defaults to ~/.nogicos/sessions.db
+        """
+        if db_path is None:
+            home = os.path.expanduser("~")
+            nogicos_dir = os.path.join(home, ".nogicos")
+            os.makedirs(nogicos_dir, exist_ok=True)
+            db_path = os.path.join(nogicos_dir, "sessions.db")
+        
+        self.db_path = db_path
+        self._init_database()
+        
+        logger.info(f"[Sessions] Initialized store at {db_path}")
     
-    def _extract_domain(self, url: str) -> str:
-        """Extract domain from URL for namespacing"""
+    def _init_database(self):
+        """Initialize session database schema"""
+        with self._get_connection() as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    history TEXT NOT NULL DEFAULT '[]',
+                    preferences TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    message_count INTEGER DEFAULT 0
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_sessions_updated 
+                ON sessions(updated_at DESC);
+                
+                CREATE TABLE IF NOT EXISTS session_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    tool_calls TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_messages_session 
+                ON session_messages(session_id);
+            """)
+            conn.commit()
+    
+    @contextmanager
+    def _get_connection(self):
+        """Get database connection with context manager"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
         try:
-            from urllib.parse import urlparse
-            parsed = urlparse(url)
-            return parsed.netloc or "unknown"
-        except:
-            return "unknown"
+            yield conn
+        finally:
+            conn.close()
     
-    def _compute_embedding(self, text: str) -> Optional[List[float]]:
-        """Compute embedding for text"""
-        if not self._embed_fn:
+    def save_session(
+        self,
+        session_id: str,
+        history: List[Dict[str, Any]],
+        preferences: Optional[Dict[str, Any]] = None,
+        title: Optional[str] = None,
+    ):
+        """
+        Save or update a session.
+        
+        Args:
+            session_id: Unique session identifier
+            history: List of message dictionaries
+            preferences: Optional user preferences for this session
+            title: Optional session title (auto-generated from first message if None)
+        """
+        now = datetime.now().isoformat()
+        
+        # Auto-generate title from first user message if not provided
+        if title is None and history:
+            for msg in history:
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    title = content[:50] + ("..." if len(content) > 50 else "")
+                    break
+        
+        title = title or f"Session {session_id[:8]}"
+        preferences = preferences or {}
+        
+        with self._get_connection() as conn:
+            # Check if session exists
+            cursor = conn.execute(
+                "SELECT id, created_at FROM sessions WHERE id = ?",
+                (session_id,)
+            )
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Update existing session
+                conn.execute("""
+                    UPDATE sessions 
+                    SET history = ?, preferences = ?, title = ?, 
+                        updated_at = ?, message_count = ?
+                    WHERE id = ?
+                """, (
+                    json.dumps(history, ensure_ascii=False),
+                    json.dumps(preferences, ensure_ascii=False),
+                    title,
+                    now,
+                    len(history),
+                    session_id,
+                ))
+            else:
+                # Insert new session
+                conn.execute("""
+                    INSERT INTO sessions 
+                    (id, title, history, preferences, created_at, updated_at, message_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    session_id,
+                    title,
+                    json.dumps(history, ensure_ascii=False),
+                    json.dumps(preferences, ensure_ascii=False),
+                    now,
+                    now,
+                    len(history),
+                ))
+            
+            conn.commit()
+        
+        logger.debug(f"[Sessions] Saved session {session_id} ({len(history)} messages)")
+    
+    def load_session(self, session_id: str) -> Dict[str, Any]:
+        """
+        Load a session by ID.
+        
+        Args:
+            session_id: Session ID to load
+            
+        Returns:
+            Dictionary with 'history', 'preferences', 'title', etc.
+            Returns empty history if session doesn't exist.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?",
+                (session_id,)
+            )
+            row = cursor.fetchone()
+            
+            if row is None:
+                return {
+                    "id": session_id,
+                    "title": f"New Session",
+                    "history": [],
+                    "preferences": {},
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            
+            return {
+                "id": row["id"],
+                "title": row["title"],
+                "history": json.loads(row["history"] or "[]"),
+                "preferences": json.loads(row["preferences"] or "{}"),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "message_count": row["message_count"],
+            }
+    
+    def list_sessions(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        List recent sessions.
+        
+        Args:
+            limit: Maximum sessions to return
+            offset: Offset for pagination
+            
+        Returns:
+            List of session summaries (without full history)
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT id, title, created_at, updated_at, message_count
+                FROM sessions
+                ORDER BY updated_at DESC
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
+            
+            return [
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "message_count": row["message_count"],
+                }
+                for row in cursor.fetchall()
+            ]
+    
+    def delete_session(self, session_id: str) -> bool:
+        """
+        Delete a session.
+        
+        Args:
+            session_id: Session ID to delete
+            
+        Returns:
+            True if session was deleted
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM sessions WHERE id = ?",
+                (session_id,)
+            )
+            conn.commit()
+            
+            deleted = cursor.rowcount > 0
+            if deleted:
+                logger.info(f"[Sessions] Deleted session {session_id}")
+            
+            return deleted
+    
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        tool_calls: Optional[List[Dict]] = None,
+    ):
+        """
+        Add a single message to a session (incremental update).
+        
+        Args:
+            session_id: Session ID
+            role: Message role ('user' or 'assistant')
+            content: Message content
+            tool_calls: Optional tool calls for assistant messages
+        """
+        now = datetime.now().isoformat()
+        
+        with self._get_connection() as conn:
+            # Insert message
+            conn.execute("""
+                INSERT INTO session_messages 
+                (session_id, role, content, tool_calls, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                session_id,
+                role,
+                content,
+                json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None,
+                now,
+            ))
+            
+            # Update session timestamp and count
+            conn.execute("""
+                UPDATE sessions 
+                SET updated_at = ?, message_count = message_count + 1
+                WHERE id = ?
+            """, (now, session_id))
+            
+            conn.commit()
+    
+    def get_session_stats(self) -> Dict[str, Any]:
+        """Get session store statistics"""
+        with self._get_connection() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
+            session_count = cursor.fetchone()[0]
+            
+            cursor = conn.execute("SELECT SUM(message_count) FROM sessions")
+            total_messages = cursor.fetchone()[0] or 0
+            
+            cursor = conn.execute("""
+                SELECT MAX(updated_at) FROM sessions
+            """)
+            last_activity = cursor.fetchone()[0]
+        
+        return {
+            "session_count": session_count,
+            "total_messages": total_messages,
+            "last_activity": last_activity,
+            "db_path": self.db_path,
+        }
+
+
+# Global session store instance
+_session_store: Optional[PersistentSessionStore] = None
+
+
+def get_session_store() -> PersistentSessionStore:
+    """Get or create global session store instance"""
+    global _session_store
+    if _session_store is None:
+        _session_store = PersistentSessionStore()
+    return _session_store
+
+
+# ============================================================================
+# Semantic Memory Store (Long-term Memory System)
+# ============================================================================
+
+class SemanticMemoryStore:
+    """
+    Semantic memory store with embedding-based retrieval.
+    
+    Based on LangMem + Mem0 architecture:
+    - Store memories as subject-predicate-object triples
+    - Use embeddings for semantic search
+    - Support conflict detection and resolution
+    
+    Features:
+    - Add/update/delete memories
+    - Semantic search with cosine similarity
+    - Session-scoped memory isolation
+    - Importance-based prioritization
+    """
+    
+    EMBEDDING_DIM = 1536  # text-embedding-3-small dimension
+    
+    def __init__(self, db_path: Optional[str] = None):
+        """
+        Initialize semantic memory store.
+        
+        Args:
+            db_path: Path to SQLite database.
+                     Defaults to ~/.nogicos/memory.db
+        """
+        if db_path is None:
+            home = os.path.expanduser("~")
+            nogicos_dir = os.path.join(home, ".nogicos")
+            os.makedirs(nogicos_dir, exist_ok=True)
+            db_path = os.path.join(nogicos_dir, "memory.db")
+        
+        self.db_path = db_path
+        self._embedding_client = None
+        self._init_database()
+        
+        logger.info(f"[Memory] Initialized store at {db_path}")
+    
+    def _init_database(self):
+        """Initialize memory database schema"""
+        # Import schema from memory module
+        from .memory import MEMORY_SQL_SCHEMA
+        
+        with self._get_connection() as conn:
+            conn.executescript(MEMORY_SQL_SCHEMA)
+            conn.commit()
+    
+    @contextmanager
+    def _get_connection(self):
+        """Get database connection with context manager"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+    
+    def _get_embedding_client(self):
+        """Lazy-load OpenAI client for embeddings"""
+        if self._embedding_client is None:
+            try:
+                import openai
+                api_key = os.environ.get("OPENAI_API_KEY")
+                if api_key:
+                    self._embedding_client = openai.OpenAI(api_key=api_key)
+                else:
+                    logger.warning("[Memory] OPENAI_API_KEY not set, embeddings disabled")
+            except ImportError:
+                logger.warning("[Memory] openai package not installed, embeddings disabled")
+        return self._embedding_client
+    
+    async def get_embedding(self, text: str) -> Optional[List[float]]:
+        """
+        Get embedding vector for text.
+        
+        Args:
+            text: Text to embed
+            
+        Returns:
+            1536-dim embedding vector or None if unavailable
+        """
+        client = self._get_embedding_client()
+        if client is None:
             return None
         
-        cache_key = hashlib.md5(text.encode()).hexdigest()
-        if cache_key in self._embeddings_cache:
-            return self._embeddings_cache[cache_key]
-        
         try:
-            embedding = self._embed_fn(text)
-            self._embeddings_cache[cache_key] = embedding
-            return embedding
+            response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=text,
+            )
+            return response.data[0].embedding
         except Exception as e:
-            logger.warning(f"[Knowledge] Embedding failed: {e}")
+            logger.error(f"[Memory] Embedding error: {e}")
             return None
+    
+    def _embedding_to_bytes(self, embedding: List[float]) -> bytes:
+        """Convert embedding list to bytes for storage"""
+        import struct
+        return struct.pack(f'{len(embedding)}f', *embedding)
+    
+    def _bytes_to_embedding(self, data: bytes) -> List[float]:
+        """Convert bytes back to embedding list"""
+        import struct
+        count = len(data) // 4  # 4 bytes per float
+        return list(struct.unpack(f'{count}f', data))
+    
+    async def add_memory(
+        self,
+        subject: str,
+        predicate: str,
+        obj: str,
+        session_id: str = "default",
+        memory_type: str = "fact",
+        importance: str = "medium",
+        context: Optional[str] = None,
+        source_task: Optional[str] = None,
+    ) -> str:
+        """
+        Add a new memory.
+        
+        Handles conflict detection: if a memory with same subject+predicate
+        exists, it will be superseded (marked inactive).
+        
+        Args:
+            subject: Memory subject (e.g., "user")
+            predicate: Relationship (e.g., "prefers")
+            obj: Object (e.g., "dark mode")
+            session_id: Session ID for scoping
+            memory_type: Type (fact/preference/event/relationship/instruction)
+            importance: Importance level (high/medium/low)
+            context: Additional context
+            source_task: Task that generated this memory
+            
+        Returns:
+            Memory ID
+        """
+        from .memory import Memory, MemoryType, Importance
+        
+        memory_id = str(uuid.uuid4())[:8]
+        now = datetime.now().isoformat()
+        
+        with self._get_connection() as conn:
+            # Check for conflicting memories (same subject + predicate)
+            cursor = conn.execute("""
+                SELECT id FROM memories 
+                WHERE session_id = ? AND subject = ? AND predicate = ? AND is_active = 1
+            """, (session_id, subject.lower(), predicate.lower()))
+            
+            existing = cursor.fetchall()
+            
+            # Mark existing conflicting memories as inactive
+            if existing:
+                for row in existing:
+                    conn.execute("""
+                        UPDATE memories SET is_active = 0, updated_at = ?
+                        WHERE id = ?
+                    """, (now, row["id"]))
+                logger.debug(f"[Memory] Superseded {len(existing)} existing memories")
+            
+            # Insert new memory
+            conn.execute("""
+                INSERT INTO memories 
+                (id, session_id, subject, predicate, object, memory_type, 
+                 importance, context, source_task, version, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+            """, (
+                memory_id,
+                session_id,
+                subject.lower(),
+                predicate.lower(),
+                obj,
+                memory_type,
+                importance,
+                context,
+                source_task,
+                now,
+                now,
+            ))
+            conn.commit()
+        
+        # Generate and store embedding asynchronously
+        memory_text = f"{subject} {predicate} {obj}"
+        embedding = await self.get_embedding(memory_text)
+        
+        if embedding:
+            with self._get_connection() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO memory_embeddings 
+                    (memory_id, embedding, model, created_at)
+                    VALUES (?, ?, 'text-embedding-3-small', ?)
+                """, (memory_id, self._embedding_to_bytes(embedding), now))
+                conn.commit()
+        
+        logger.debug(f"[Memory] Added: {subject} {predicate} {obj} (id={memory_id})")
+        return memory_id
+    
+    def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
+        """Get a memory by ID"""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM memories WHERE id = ?",
+                (memory_id,)
+            )
+            row = cursor.fetchone()
+            
+            if row is None:
+                return None
+            
+            return dict(row)
+    
+    def list_memories(
+        self,
+        session_id: str = "default",
+        memory_type: Optional[str] = None,
+        importance: Optional[str] = None,
+        active_only: bool = True,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        List memories with optional filtering.
+        
+        Args:
+            session_id: Filter by session
+            memory_type: Filter by type
+            importance: Filter by importance
+            active_only: Only return active memories
+            limit: Maximum results
+            
+        Returns:
+            List of memory dictionaries
+        """
+        conditions = ["session_id = ?"]
+        params: List[Any] = [session_id]
+        
+        if active_only:
+            conditions.append("is_active = 1")
+        
+        if memory_type:
+            conditions.append("memory_type = ?")
+            params.append(memory_type)
+        
+        if importance:
+            conditions.append("importance = ?")
+            params.append(importance)
+        
+        where_clause = " AND ".join(conditions)
+        
+        with self._get_connection() as conn:
+            cursor = conn.execute(f"""
+                SELECT * FROM memories
+                WHERE {where_clause}
+                ORDER BY 
+                    CASE importance 
+                        WHEN 'high' THEN 1 
+                        WHEN 'medium' THEN 2 
+                        ELSE 3 
+                    END,
+                    updated_at DESC
+                LIMIT ?
+            """, params + [limit])
+            
+            return [dict(row) for row in cursor.fetchall()]
+    
+    async def search_memories(
+        self,
+        query: str,
+        session_id: str = "default",
+        limit: int = 5,
+        threshold: float = 0.5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Semantic search for relevant memories.
+        
+        Args:
+            query: Search query
+            session_id: Filter by session
+            limit: Maximum results
+            threshold: Minimum similarity score (0-1)
+            
+        Returns:
+            List of memories with similarity scores
+        """
+        # Get query embedding
+        query_embedding = await self.get_embedding(query)
+        
+        if query_embedding is None:
+            # Fallback to keyword search if embeddings unavailable
+            return self._keyword_search(query, session_id, limit)
+        
+        # Get all active memories with embeddings
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT m.*, e.embedding
+                FROM memories m
+                JOIN memory_embeddings e ON m.id = e.memory_id
+                WHERE m.session_id = ? AND m.is_active = 1
+            """, (session_id,))
+            
+            rows = cursor.fetchall()
+        
+        if not rows:
+            return []
+        
+        # Calculate cosine similarities
+        results = []
+        for row in rows:
+            memory_embedding = self._bytes_to_embedding(row["embedding"])
+            score = self._cosine_similarity(query_embedding, memory_embedding)
+            
+            if score >= threshold:
+                memory_dict = dict(row)
+                del memory_dict["embedding"]  # Don't return raw embedding
+                memory_dict["score"] = score
+                results.append(memory_dict)
+        
+        # Sort by score descending
+        results.sort(key=lambda x: x["score"], reverse=True)
+        
+        return results[:limit]
+    
+    def _keyword_search(
+        self,
+        query: str,
+        session_id: str,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Fallback keyword search when embeddings unavailable"""
+        keywords = query.lower().split()
+        
+        with self._get_connection() as conn:
+            # Simple LIKE search on subject, predicate, object
+            conditions = []
+            params = [session_id]
+            
+            for keyword in keywords[:5]:  # Limit keywords
+                conditions.append(
+                    "(subject LIKE ? OR predicate LIKE ? OR object LIKE ?)"
+                )
+                pattern = f"%{keyword}%"
+                params.extend([pattern, pattern, pattern])
+            
+            if conditions:
+                keyword_clause = " OR ".join(conditions)
+                query_sql = f"""
+                    SELECT * FROM memories
+                    WHERE session_id = ? AND is_active = 1 AND ({keyword_clause})
+                    ORDER BY importance, updated_at DESC
+                    LIMIT ?
+                """
+            else:
+                query_sql = """
+                    SELECT * FROM memories
+                    WHERE session_id = ? AND is_active = 1
+                    ORDER BY importance, updated_at DESC
+                    LIMIT ?
+                """
+            
+            params.append(limit)
+            cursor = conn.execute(query_sql, params)
+            
+            results = []
+            for row in cursor.fetchall():
+                memory_dict = dict(row)
+                memory_dict["score"] = 0.5  # Default score for keyword matches
+                results.append(memory_dict)
+            
+            return results
     
     def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
-        """Compute cosine similarity between two vectors"""
-        if not a or not b or len(a) != len(b):
-            return 0.0
+        """Calculate cosine similarity between two vectors"""
+        import math
         
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = sum(x * x for x in a) ** 0.5
-        norm_b = sum(x * x for x in b) ** 0.5
+        dot_product = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(x * x for x in b))
         
         if norm_a == 0 or norm_b == 0:
             return 0.0
         
-        return dot / (norm_a * norm_b)
+        return dot_product / (norm_a * norm_b)
     
-    def _extract_key_terms(self, text: str) -> set:
+    def delete_memory(self, memory_id: str) -> bool:
         """
-        Extract key terms from task description
-        
-        Key terms are nouns/verbs that define the task semantics.
-        Excludes common stop words and prepositions.
-        """
-        stop_words = {
-            'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-            'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
-            'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-            'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'go', 'tell',
-            'me', 'you', 'it', 'what', 'how', 'where', 'when', 'why', 'which',
-            'this', 'that', 'these', 'those', 'i', 'we', 'they', 'he', 'she',
-            'search', 'find', 'get', 'show', 'see', 'look', 'news', 'content',
-        }
-        
-        # Important short terms that should NOT be filtered (domain terms)
-        important_short_terms = {'ai', 'ml', 'ux', 'ui', 'js', 'py', 'db', 'api'}
-        
-        words = set(text.lower().split())
-        # Remove stop words and short words (unless important)
-        key_terms = {
-            w for w in words 
-            if w not in stop_words and (len(w) > 2 or w in important_short_terms)
-        }
-        return key_terms
-    
-    def _keyword_similarity(self, task1: str, task2: str, url1: str = "", url2: str = "") -> float:
-        """
-        Improved keyword similarity with key term matching
-        
-        Requires key terms to match, not just any words.
-        """
-        words1 = set(task1.lower().split())
-        words2 = set(task2.lower().split())
-        
-        if not words1 or not words2:
-            return 0.0
-        
-        # Basic Jaccard similarity
-        intersection = len(words1 & words2)
-        union = len(words1 | words2)
-        base_score = intersection / union if union > 0 else 0.0
-        
-        # Extract and compare key terms
-        key1 = self._extract_key_terms(task1)
-        key2 = self._extract_key_terms(task2)
-        
-        if key1 and key2:
-            key_intersection = len(key1 & key2)
-            key_union = len(key1 | key2)
-            key_score = key_intersection / key_union if key_union > 0 else 0.0
-            
-            # If key terms don't match well, heavily penalize
-            if key_score < 0.5:
-                base_score *= 0.3  # 70% penalty
-            elif key_score >= 0.8:
-                base_score = min(1.0, base_score * 1.2)  # 20% bonus
-        
-        # Domain match (reduced bonus)
-        domain1 = self._extract_domain(url1)
-        domain2 = self._extract_domain(url2)
-        if domain1 and domain2 and domain1 == domain2:
-            base_score = min(1.0, base_score + 0.05)  # Only 5% bonus (was 15%)
-        
-        return base_score
-    
-    async def search(
-        self,
-        task: str,
-        url: str = "",
-        limit: int = 5,
-    ) -> SearchResult:
-        """
-        Search for matching trajectory
-        
-        Uses semantic search if embeddings available,
-        falls back to keyword matching.
-        """
-        if not self._index["trajectories"]:
-            return SearchResult(matched=False, confidence=0.0)
-        
-        domain = self._extract_domain(url)
-        
-        # Compute query embedding
-        query_embedding = self._compute_embedding(task)
-        
-        # Score all trajectories
-        scored = []
-        for entry in self._index["trajectories"]:
-            # Prefer same domain
-            entry_domain = entry.get("domain", "")
-            domain_match = entry_domain == domain if domain else True
-            
-            # Compute similarity
-            if query_embedding and entry.get("embedding"):
-                score = self._cosine_similarity(query_embedding, entry["embedding"])
-            else:
-                score = self._keyword_similarity(task, entry["task"], url, entry.get("url", ""))
-            
-            # Domain bonus
-            if domain_match:
-                score = min(1.0, score * 1.2)
-            
-            scored.append((score, entry))
-        
-        # Sort by score
-        scored.sort(key=lambda x: x[0], reverse=True)
-        
-        # Get best match (threshold raised from 0.5 to 0.7 for precision)
-        if scored and scored[0][0] >= 0.7:
-            best_score, best_entry = scored[0]
-            
-            # Load full trajectory
-            trajectory = await self._load_trajectory(best_entry["id"])
-            
-            if trajectory:
-                # Generate replay code
-                replay_code = self._generate_replay_code(trajectory.get("actions", []))
-                
-                return SearchResult(
-                    matched=True,
-                    confidence=best_score,
-                    trajectory=trajectory.get("actions", []),
-                    source_task=best_entry["task"],
-                    replay_code=replay_code,
-                    cached_result=trajectory.get("result"),  # Return cached result
-                )
-        
-        return SearchResult(matched=False, confidence=scored[0][0] if scored else 0.0)
-    
-    async def _load_trajectory(self, traj_id: str) -> Optional[dict]:
-        """Load full trajectory from disk"""
-        filepath = os.path.join(self.data_dir, f"{traj_id}.json")
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except:
-                pass
-        return None
-    
-    def _generate_replay_code(self, actions: List[dict]) -> str:
-        """Generate Playwright code for replay"""
-        lines = [
-            "async def replay(page):",
-            '    """Auto-generated replay from knowledge base"""',
-        ]
-        
-        for action in actions:
-            action_type = action.get("action_type", "")
-            selector = action.get("selector", "")
-            value = action.get("value", "")
-            url = action.get("url", "")
-            
-            if action_type == "navigate" and url:
-                lines.append(f'    await page.goto("{url}")')
-            elif action_type == "click" and selector:
-                lines.append(f'    await page.click("{selector}", timeout=15000)')
-            elif action_type == "input" and selector and value:
-                # Mask sensitive data
-                safe_value = "***" if any(kw in selector.lower() for kw in ["password", "secret", "token"]) else value
-                lines.append(f'    await page.fill("{selector}", "{safe_value}", timeout=15000)')
-            elif action_type == "submit":
-                if selector:
-                    lines.append(f'    await page.click("{selector} [type=submit]", timeout=15000)')
-        
-        lines.append("    return True")
-        return "\n".join(lines)
-    
-    async def save(
-        self,
-        task: str,
-        url: str,
-        actions: List[dict],
-        success: bool = True,
-        result: Optional[str] = None,  # Final result/answer
-        metadata: dict = None,
-    ) -> str:
-        """
-        Save a trajectory to knowledge store
+        Delete a memory (soft delete - mark as inactive).
         
         Args:
-            task: Task description
-            url: Starting URL
-            actions: List of recorded actions
-            success: Whether task succeeded
-            result: The final result/answer from the task (for Fast Path reuse)
-            metadata: Additional metadata
-        
+            memory_id: Memory ID to delete
+            
         Returns:
-            Trajectory ID
+            True if deleted
         """
-        domain = self._extract_domain(url)
-        traj_id = hashlib.sha256(f"{task}|{url}|{datetime.now().isoformat()}".encode()).hexdigest()[:16]
+        now = datetime.now().isoformat()
         
-        # Compute embedding
-        embedding = self._compute_embedding(task)
-        
-        # Save full trajectory
-        data = {
-            "id": traj_id,
-            "task": task,
-            "domain": domain,
-            "url": url,
-            "actions": actions,
-            "success": success,
-            "result": result,  # Save final result
-            "created_at": datetime.now().isoformat(),
-            "metadata": metadata or {},
-        }
-        
-        filepath = os.path.join(self.data_dir, f"{traj_id}.json")
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        
-        # Update index
-        index_entry = {
-            "id": traj_id,
-            "task": task,
-            "domain": domain,
-            "url": url,
-            "action_count": len(actions),
-            "success": success,
-            "created_at": datetime.now().isoformat(),
-        }
-        
-        if embedding:
-            index_entry["embedding"] = embedding
-        
-        # Check for existing entry with same task+domain
-        existing_idx = None
-        for i, entry in enumerate(self._index["trajectories"]):
-            if entry["task"] == task and entry.get("domain") == domain:
-                existing_idx = i
-                break
-        
-        if existing_idx is not None:
-            # Update existing
-            self._index["trajectories"][existing_idx] = index_entry
-        else:
-            # Add new
-            self._index["trajectories"].append(index_entry)
-        
-        # Update domain stats
-        if domain not in self._index["domains"]:
-            self._index["domains"][domain] = {"count": 0, "success_count": 0}
-        self._index["domains"][domain]["count"] += 1
-        if success:
-            self._index["domains"][domain]["success_count"] += 1
-        
-        self._save_index()
-        
-        logger.info(f"[Knowledge] Saved trajectory {traj_id} for '{task[:50]}...' on {domain}")
-        return traj_id
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                UPDATE memories SET is_active = 0, updated_at = ?
+                WHERE id = ?
+            """, (now, memory_id))
+            conn.commit()
+            
+            return cursor.rowcount > 0
     
-    def count(self) -> int:
-        """Get total trajectory count"""
-        return len(self._index["trajectories"])
-    
-    def count_by_domain(self, domain: str) -> int:
-        """Get trajectory count for a domain"""
-        return self._index["domains"].get(domain, {}).get("count", 0)
-    
-    def get_domains(self) -> List[str]:
-        """List all domains with stored trajectories"""
-        return list(self._index["domains"].keys())
-    
-    def get_stats(self) -> dict:
-        """Get knowledge store statistics"""
-        total = self.count()
-        success = sum(1 for t in self._index["trajectories"] if t.get("success", False))
+    def get_stats(self) -> Dict[str, Any]:
+        """Get memory store statistics"""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE is_active = 1"
+            )
+            active_count = cursor.fetchone()[0]
+            
+            cursor = conn.execute("SELECT COUNT(*) FROM memories")
+            total_count = cursor.fetchone()[0]
+            
+            cursor = conn.execute("SELECT COUNT(*) FROM memory_embeddings")
+            embedding_count = cursor.fetchone()[0]
+            
+            cursor = conn.execute("""
+                SELECT importance, COUNT(*) as count
+                FROM memories WHERE is_active = 1
+                GROUP BY importance
+            """)
+            by_importance = {row["importance"]: row["count"] for row in cursor.fetchall()}
         
         return {
-            "total_trajectories": total,
-            "successful": success,
-            "success_rate": success / total if total > 0 else 0.0,
-            "domains": len(self._index["domains"]),
-            "domain_stats": self._index["domains"],
-            "total_skills": self.skill_count(),
-        }
-    
-    # ========================================================================
-    # Skill Management (SkillWeaver-style)
-    # ========================================================================
-    
-    async def save_skill(
-        self,
-        name: str,
-        description: str,
-        code: str,
-        domain: str,
-        parameters: List[SkillParameter] = None,
-        source_trajectory_id: str = None,
-    ) -> Skill:
-        """
-        Save a new skill to the knowledge store
-        
-        Args:
-            name: Function name (e.g., "search_hn")
-            description: Natural language description
-            code: Playwright Python code
-            domain: Target domain
-            parameters: List of parameter definitions
-            source_trajectory_id: ID of trajectory this skill was synthesized from
-        
-        Returns:
-            Created Skill object
-        """
-        skill_id = hashlib.sha256(f"{name}|{domain}|{datetime.now().isoformat()}".encode()).hexdigest()[:16]
-        
-        skill = Skill(
-            id=skill_id,
-            name=name,
-            description=description,
-            parameters=parameters or [],
-            code=code,
-            domain=domain,
-            confidence=2,  # ExpeL: new skills start with confidence 2
-            success_count=0,
-            fail_count=0,
-            created_at=datetime.now().isoformat(),
-            updated_at=datetime.now().isoformat(),
-            source_trajectory_id=source_trajectory_id,
-        )
-        
-        # Compute embedding for semantic search
-        embed_text = f"{name} {description}"
-        skill.embedding = self._compute_embedding(embed_text)
-        
-        # Save skill to file
-        filepath = os.path.join(self._skills_dir, f"{skill_id}.json")
-        skill_data = skill.to_dict()
-        if skill.embedding:
-            skill_data["embedding"] = skill.embedding
-        
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(skill_data, f, indent=2, ensure_ascii=False)
-        
-        # Update index
-        index_entry = {
-            "id": skill_id,
-            "name": name,
-            "description": description,
-            "domain": domain,
-            "confidence": skill.confidence,
-            "created_at": skill.created_at,
-        }
-        if skill.embedding:
-            index_entry["embedding"] = skill.embedding
-        
-        # Check for existing skill with same name+domain
-        existing_idx = None
-        for i, entry in enumerate(self._skills_index["skills"]):
-            if entry["name"] == name and entry.get("domain") == domain:
-                existing_idx = i
-                break
-        
-        if existing_idx is not None:
-            # Update existing (new version of skill)
-            self._skills_index["skills"][existing_idx] = index_entry
-            logger.info(f"[Knowledge] Updated skill: {name} ({skill_id}) for {domain}")
-        else:
-            # Add new
-            self._skills_index["skills"].append(index_entry)
-            logger.info(f"[Knowledge] Saved new skill: {name} ({skill_id}) for {domain}")
-        
-        # Update domain stats
-        if domain not in self._skills_index["domains"]:
-            self._skills_index["domains"][domain] = {"count": 0}
-        self._skills_index["domains"][domain]["count"] += 1
-        
-        self._save_skills_index()
-        
-        return skill
-    
-    async def find_skill(
-        self,
-        task: str,
-        url: str = "",
-        confidence_threshold: float = 0.7,
-    ) -> SkillSearchResult:
-        """
-        Find a matching skill for a task
-        
-        Uses semantic search to find the best matching skill.
-        
-        Args:
-            task: Task description
-            url: Target URL (for domain matching)
-            confidence_threshold: Minimum confidence for skill to be usable
-        
-        Returns:
-            SkillSearchResult with matched skill and confidence
-        """
-        if not self._skills_index["skills"]:
-            return SkillSearchResult(matched=False, confidence=0.0)
-        
-        domain = self._extract_domain(url)
-        
-        # Compute query embedding
-        query_embedding = self._compute_embedding(task)
-        
-        # Score all skills
-        scored = []
-        for entry in self._skills_index["skills"]:
-            # Skip low-confidence skills
-            if entry.get("confidence", 2) <= 0:
-                continue
-            
-            # Prefer same domain
-            entry_domain = entry.get("domain", "")
-            domain_match = entry_domain == domain if domain else True
-            
-            # Compute similarity
-            if query_embedding and entry.get("embedding"):
-                score = self._cosine_similarity(query_embedding, entry["embedding"])
-            else:
-                # Fallback to keyword matching
-                search_text = f"{entry['name']} {entry['description']}"
-                score = self._keyword_similarity(task, search_text, url, "")
-            
-            # Domain bonus
-            if domain_match and domain:
-                score = min(1.0, score * 1.3)  # Stronger domain bonus for skills
-            
-            scored.append((score, entry))
-        
-        # Sort by score
-        scored.sort(key=lambda x: x[0], reverse=True)
-        
-        # Get best match (threshold raised from 0.5 to 0.7 for precision)
-        if scored and scored[0][0] >= 0.7:
-            best_score, best_entry = scored[0]
-            
-            # Load full skill
-            skill = await self._load_skill(best_entry["id"])
-            
-            if skill and skill.is_reliable:
-                return SkillSearchResult(
-                    matched=True,
-                    skill=skill,
-                    confidence=best_score,
-                )
-        
-        return SkillSearchResult(
-            matched=False, 
-            confidence=scored[0][0] if scored else 0.0
-        )
-    
-    async def _load_skill(self, skill_id: str) -> Optional[Skill]:
-        """Load full skill from disk"""
-        filepath = os.path.join(self._skills_dir, f"{skill_id}.json")
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    return Skill.from_dict(data)
-            except Exception as e:
-                logger.error(f"[Knowledge] Failed to load skill {skill_id}: {e}")
-        return None
-    
-    async def update_skill_confidence(self, skill_id: str, success: bool) -> Optional[Skill]:
-        """
-        Update skill confidence based on execution result (ExpeL-style)
-        
-        Args:
-            skill_id: Skill ID
-            success: Whether execution succeeded
-        
-        Returns:
-            Updated skill or None if not found
-        """
-        skill = await self._load_skill(skill_id)
-        if not skill:
-            return None
-        
-        # Update confidence
-        skill.update_confidence(success)
-        
-        # Save updated skill
-        filepath = os.path.join(self._skills_dir, f"{skill_id}.json")
-        skill_data = skill.to_dict()
-        
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(skill_data, f, indent=2, ensure_ascii=False)
-        
-        # Update index
-        for entry in self._skills_index["skills"]:
-            if entry["id"] == skill_id:
-                entry["confidence"] = skill.confidence
-                break
-        
-        self._save_skills_index()
-        
-        logger.info(f"[Knowledge] Updated skill {skill_id} confidence: {skill.confidence} (success={success})")
-        
-        return skill
-    
-    async def get_skill_by_id(self, skill_id: str) -> Optional[Skill]:
-        """Get a skill by ID"""
-        return await self._load_skill(skill_id)
-    
-    async def get_skills_for_domain(self, domain: str) -> List[Skill]:
-        """Get all skills for a domain"""
-        skills = []
-        for entry in self._skills_index["skills"]:
-            if entry.get("domain") == domain:
-                skill = await self._load_skill(entry["id"])
-                if skill:
-                    skills.append(skill)
-        return skills
-    
-    def skill_count(self) -> int:
-        """Get total skill count"""
-        return len(self._skills_index["skills"])
-    
-    def get_skill_stats(self) -> dict:
-        """Get skill statistics"""
-        total = self.skill_count()
-        reliable = sum(1 for s in self._skills_index["skills"] if s.get("confidence", 0) > 0)
-        
-        return {
-            "total_skills": total,
-            "reliable_skills": reliable,
-            "domains": len(self._skills_index["domains"]),
-            "domain_stats": self._skills_index["domains"],
+            "active_memories": active_count,
+            "total_memories": total_count,
+            "embeddings": embedding_count,
+            "by_importance": by_importance,
+            "db_path": self.db_path,
         }
 
 
-# Quick test
-if __name__ == "__main__":
-    import asyncio
-    
-    async def test_store():
-        print("=" * 50)
-        print("Knowledge Store Test")
-        print("=" * 50)
-        
-        store = KnowledgeStore()
-        
-        # Test save trajectory
-        print("\n[1] Testing trajectory save...")
-        traj_id = await store.save(
-            task="Login to Hacker News",
-            url="https://news.ycombinator.com",
-            actions=[
-                {"action_type": "click", "selector": "a.login"},
-                {"action_type": "input", "selector": "#username", "value": "testuser"},
-                {"action_type": "input", "selector": "#password", "value": "***"},
-                {"action_type": "click", "selector": "button[type=submit]"},
-            ],
-            success=True,
-        )
-        print(f"    [OK] Saved trajectory: {traj_id}")
-        
-        # Test search (exact match)
-        print("\n[2] Testing trajectory search (exact)...")
-        result = await store.search("Login to Hacker News", "https://news.ycombinator.com")
-        print(f"    Matched: {result.matched}")
-        print(f"    Confidence: {result.confidence:.2f}")
-        print(f"    Can replay: {result.can_replay()}")
-        
-        # Test search (similar)
-        print("\n[3] Testing trajectory search (similar)...")
-        result = await store.search("Sign in to HN", "https://news.ycombinator.com")
-        print(f"    Matched: {result.matched}")
-        print(f"    Confidence: {result.confidence:.2f}")
-        
-        # =====================================================================
-        # Skill Tests
-        # =====================================================================
-        
-        print("\n" + "-" * 50)
-        print("Skill Tests")
-        print("-" * 50)
-        
-        # Test save skill
-        print("\n[4] Testing skill save...")
-        skill = await store.save_skill(
-            name="search_hn",
-            description="Search for content on Hacker News",
-            code='''
-async def search_hn(page, query: str):
-    """Search for content on Hacker News"""
-    await page.fill("input[type=text]", query)
-    await page.click("button[type=submit]")
-    await page.wait_for_load_state("networkidle")
-    return True
-''',
-            domain="news.ycombinator.com",
-            parameters=[
-                SkillParameter(name="query", param_type="str", description="Search query"),
-            ],
-            source_trajectory_id=traj_id,
-        )
-        print(f"    [OK] Saved skill: {skill.name} ({skill.id})")
-        print(f"    Confidence: {skill.confidence}")
-        print(f"    Parameters: {[p.name for p in skill.parameters]}")
-        
-        # Test find skill (exact match)
-        print("\n[5] Testing skill search (exact)...")
-        result = await store.find_skill("Search for AI on Hacker News", "https://news.ycombinator.com")
-        print(f"    Matched: {result.matched}")
-        print(f"    Confidence: {result.confidence:.2f}")
-        if result.skill:
-            print(f"    Skill: {result.skill.name}")
-            print(f"    Can use: {result.can_use()}")
-        
-        # Test find skill (similar)
-        print("\n[6] Testing skill search (similar)...")
-        result = await store.find_skill("Find Python articles", "https://news.ycombinator.com")
-        print(f"    Matched: {result.matched}")
-        print(f"    Confidence: {result.confidence:.2f}")
-        
-        # Test update confidence
-        print("\n[7] Testing skill confidence update...")
-        updated = await store.update_skill_confidence(skill.id, success=True)
-        if updated:
-            print(f"    [OK] Updated confidence: {updated.confidence}")
-            print(f"    Success count: {updated.success_count}")
-        
-        # Test stats
-        print("\n[8] Testing stats...")
-        stats = store.get_stats()
-        print(f"    Total trajectories: {stats['total_trajectories']}")
-        print(f"    Total skills: {stats['total_skills']}")
-        print(f"    Domains: {stats['domains']}")
-        
-        skill_stats = store.get_skill_stats()
-        print(f"    Reliable skills: {skill_stats['reliable_skills']}")
-        
-        print("\n" + "=" * 50)
-        print("Knowledge Store Test Complete!")
-        print("=" * 50)
-    
-    asyncio.run(test_store())
+# Global semantic memory store instance
+_memory_store: Optional[SemanticMemoryStore] = None
+
+
+def get_memory_store() -> SemanticMemoryStore:
+    """Get or create global semantic memory store instance"""
+    global _memory_store
+    if _memory_store is None:
+        _memory_store = SemanticMemoryStore()
+    return _memory_store
+

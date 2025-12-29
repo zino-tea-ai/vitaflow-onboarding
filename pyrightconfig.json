@@ -1,0 +1,25 @@
+{
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/venv",
+    "**/.venv",
+    "**/dist",
+    "**/build",
+    "**/.git",
+    "**/*.egg-info",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.tox",
+    "**/htmlcov",
+    "**/.coverage"
+  ]
+}
+
+
+
+
+
+
+
+

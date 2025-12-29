@@ -1,19 +1,121 @@
 {
-  "name": "nogicos-client",
-  "version": "0.1.0",
-  "description": "NogicOS AI Browser Client",
+  "name": "nogicos",
+  "version": "0.2.0",
+  "description": "NogicOS - AI Work Partner",
   "main": "main.js",
+  "author": {
+    "name": "NogicOS Team",
+    "email": "team@nogicos.ai"
+  },
+  "license": "MIT",
+  "homepage": "https://nogicos.ai",
   "scripts": {
     "start": "electron . --remote-debugging-port=9222",
-    "start:debug": "electron . --remote-debugging-port=9222 --enable-logging"
+    "start:debug": "electron . --remote-debugging-port=9222 --enable-logging",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "pack": "electron-builder --dir"
   },
-  "author": "NogicOS Team",
-  "license": "MIT",
   "dependencies": {
     "ws": "^8.14.0"
   },
   "devDependencies": {
-    "electron": "^28.0.0"
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "electron-updater": "^6.1.7"
+  },
+  "build": {
+    "appId": "ai.nogicos.app",
+    "productName": "NogicOS",
+    "copyright": "Copyright © 2025 NogicOS Team",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "**/*",
+      "!**/*.map",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/node_modules/.bin",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+      "!.editorconfig",
+      "!**/._*",
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
+      "!**/{appveyor.yml,.travis.yml,circle.yml}",
+      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
+    ],
+    "extraResources": [
+      {
+        "from": "../",
+        "to": "python",
+        "filter": [
+          "hive_server.py",
+          "api_keys.py",
+          "requirements.txt",
+          "engine/**/*.py",
+          "!engine/**/__pycache__/**",
+          "!**/client/**",
+          "!**/dist/**",
+          "!**/node_modules/**",
+          "!**/*.pyc",
+          "!**/__pycache__/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NogicOS"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icon.png",
+      "category": "Utility",
+      "maintainer": "team@nogicos.ai"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "nogicos",
+      "repo": "nogicos",
+      "releaseType": "release"
+    }
   }
 }
-

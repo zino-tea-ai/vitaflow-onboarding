@@ -64,6 +64,16 @@ class AgentStatus:
 
 
 @dataclass
+class PerformanceMetrics:
+    """Performance metrics for monitoring (A3.1)"""
+    ttft_ms: Optional[float] = None  # Time to First Token
+    total_time_ms: Optional[float] = None  # Total execution time
+    tokens_generated: int = 0
+    tool_calls: int = 0
+    iterations: int = 0
+
+
+@dataclass
 class LearningStatus:
     """Passive learning status"""
     state: str = "idle"  # idle, recording, saved
@@ -912,6 +922,50 @@ class StatusServer:
             },
         )
         await self.broadcast_stream_chunk(chunk)
+    
+    # ========================================================================
+    # Performance Metrics (A3.1 - TTFT Monitoring)
+    # ========================================================================
+    
+    async def broadcast_performance(
+        self,
+        message_id: str,
+        ttft_ms: Optional[float] = None,
+        total_time_ms: Optional[float] = None,
+        tokens_generated: int = 0,
+        tool_calls: int = 0,
+        iterations: int = 0,
+    ):
+        """
+        Broadcast performance metrics to all clients.
+        
+        Args:
+            message_id: Message ID for this task
+            ttft_ms: Time to First Token in milliseconds
+            total_time_ms: Total execution time in milliseconds
+            tokens_generated: Number of tokens generated
+            tool_calls: Number of tool calls made
+            iterations: Number of ReAct iterations
+        """
+        metrics = PerformanceMetrics(
+            ttft_ms=ttft_ms,
+            total_time_ms=total_time_ms,
+            tokens_generated=tokens_generated,
+            tool_calls=tool_calls,
+            iterations=iterations,
+        )
+        
+        message = {
+            "type": "performance",
+            "message_id": message_id,
+            "data": asdict(metrics),
+        }
+        
+        await self.broadcast(message)
+        
+        # Also log for monitoring
+        if ttft_ms is not None and total_time_ms is not None:
+            logger.info(f"[Perf] TTFT: {ttft_ms:.0f}ms | Total: {total_time_ms:.0f}ms | Iterations: {iterations} | Tools: {tool_calls}")
 
 
 # Global server instance

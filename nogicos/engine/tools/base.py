@@ -267,8 +267,31 @@ class ToolRegistry:
         
         return tools
     
-    async def execute(self, name: str, args: Dict[str, Any]) -> ToolResult:
-        """Execute a tool by name with given arguments"""
+    async def execute(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        max_retries: int = 3,
+        timeout_seconds: float = 30.0,
+    ) -> ToolResult:
+        """
+        Execute a tool by name with given arguments.
+        
+        Phase D: Reliability improvements
+        - D1.1: Automatic retry (up to max_retries)
+        - D1.2: Timeout handling (timeout_seconds)
+        - D1.3: Graceful degradation
+        - D1.4: User-friendly error messages
+        
+        Args:
+            name: Tool name
+            args: Tool arguments
+            max_retries: Maximum retry attempts (default: 3)
+            timeout_seconds: Execution timeout in seconds (default: 30)
+            
+        Returns:
+            ToolResult with success status and output
+        """
         import time
         start_time = time.time()
         
@@ -277,42 +300,99 @@ class ToolRegistry:
             return ToolResult(
                 success=False,
                 output=None,
-                error=f"Tool '{name}' not found",
+                error=f"Tool '{name}' not found. Available tools: {', '.join(list(self._tools.keys())[:5])}...",
                 tool_name=name
             )
         
-        try:
-            # Inject required context
-            call_args = dict(args)
-            for ctx_key in tool.requires_context:
-                if ctx_key in self._context:
-                    call_args[ctx_key] = self._context[ctx_key]
+        last_error = None
+        
+        # D1.1: Retry logic
+        for attempt in range(max_retries):
+            try:
+                # Inject required context
+                call_args = dict(args)
+                for ctx_key in tool.requires_context:
+                    if ctx_key in self._context:
+                        call_args[ctx_key] = self._context[ctx_key]
+                
+                # D1.2: Timeout handling
+                if iscoroutinefunction(tool.handler):
+                    result = await asyncio.wait_for(
+                        tool.handler(**call_args),
+                        timeout=timeout_seconds
+                    )
+                else:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(tool.handler, **call_args),
+                        timeout=timeout_seconds
+                    )
+                
+                duration_ms = int((time.time() - start_time) * 1000)
+                
+                return ToolResult(
+                    success=True,
+                    output=result,
+                    tool_name=name,
+                    duration_ms=duration_ms
+                )
+                
+            except asyncio.TimeoutError:
+                last_error = f"Tool '{name}' timed out after {timeout_seconds}s"
+                logger.warning(f"{last_error} (attempt {attempt + 1}/{max_retries})")
+                
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Tool '{name}' failed: {e} (attempt {attempt + 1}/{max_retries})")
             
-            # Execute handler
-            if iscoroutinefunction(tool.handler):
-                result = await tool.handler(**call_args)
-            else:
-                result = await asyncio.to_thread(tool.handler, **call_args)
+            # Wait before retry (exponential backoff)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(0.5 * (attempt + 1))
+        
+        # D1.3: Graceful degradation - all retries failed
+        duration_ms = int((time.time() - start_time) * 1000)
+        
+        # D1.4: User-friendly error messages
+        friendly_error = self._make_friendly_error(name, last_error)
+        
+        logger.error(f"Tool '{name}' failed after {max_retries} attempts: {friendly_error}")
+        
+        return ToolResult(
+            success=False,
+            output=None,
+            error=friendly_error,
+            tool_name=name,
+            duration_ms=duration_ms
+        )
+    
+    def _make_friendly_error(self, tool_name: str, error: str) -> str:
+        """
+        D1.4: Convert technical errors to user-friendly messages.
+        
+        Args:
+            tool_name: Name of the tool that failed
+            error: Technical error message
             
-            duration_ms = int((time.time() - start_time) * 1000)
-            
-            return ToolResult(
-                success=True,
-                output=result,
-                tool_name=name,
-                duration_ms=duration_ms
-            )
-            
-        except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"Tool '{name}' execution failed: {e}")
-            return ToolResult(
-                success=False,
-                output=None,
-                error=str(e),
-                tool_name=name,
-                duration_ms=duration_ms
-            )
+        Returns:
+            User-friendly error message
+        """
+        # Common error patterns and friendly translations
+        if "timed out" in error.lower():
+            return f"{tool_name} took too long to respond. Try again or simplify the request."
+        
+        if "not found" in error.lower() or "no such file" in error.lower():
+            return f"Could not find the requested resource. Check if the path or target exists."
+        
+        if "permission" in error.lower() or "access denied" in error.lower():
+            return f"Permission denied. Check if you have access to this resource."
+        
+        if "connection" in error.lower() or "network" in error.lower():
+            return f"Connection issue. Check your network or try again later."
+        
+        if "api key" in error.lower() or "unauthorized" in error.lower():
+            return f"Authentication failed. Check your API key configuration."
+        
+        # Default: return original error with context
+        return f"{tool_name} failed: {error}"
 
 
 # Global registry instance
