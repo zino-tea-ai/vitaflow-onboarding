@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "framer-motion": "^12.23.26",
-    "motion-plus": "https://api.motion.dev/registry?package=motion-plus&version=latest&token=0df16000e6ba08dfe8af8555588d4023ebcad4c041809d1072571e8cffd992c4"
-  }
-}

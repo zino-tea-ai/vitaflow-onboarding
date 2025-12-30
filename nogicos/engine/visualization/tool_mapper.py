@@ -372,3 +372,4 @@ async def visualize_tool_end(server, tool_name: str, success: bool, step: int = 
     except Exception as e:
         logger.warning(f"[Viz] Failed to visualize tool end: {e}")
 
+

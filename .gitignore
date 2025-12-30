@@ -71,3 +71,28 @@ PM_Test_Assistant/data/sessions/
 
 # Cursor MCP 配置（包含敏感token）
 .cursor/mcp.json
+
+# API Keys（敏感）
+api_keys.py
+**/api_keys.py
+
+# 日志目录
+logs/
+**/logs/
+
+# 归档的 reference 项目（克隆的第三方仓库，太大）
+_archive/references/
+
+# 归档目录中的其他内容可以保留
+# _archive/
+
+# 临时目录
+_temp/
+
+# 构建产物
+dist/
+build/
+.next/
+
+# reference 目录（太大，已有 .cursorignore 处理）
+nogicos/reference/

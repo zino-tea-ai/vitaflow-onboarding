@@ -54,3 +54,5 @@ coverage.xml
 
 # Keep .github folder for CI
 !.github/
+# Reference repos (downloaded for study)
+reference/
