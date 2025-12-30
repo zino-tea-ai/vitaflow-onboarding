@@ -69,9 +69,15 @@ from engine.knowledge.store import get_session_store
 
 class ExecuteRequest(BaseModel):
     """Task execution request"""
-    message: str
+    task: Optional[str] = None      # New field name (preferred)
+    message: Optional[str] = None   # Legacy field name (alias)
     session_id: str = "default"
     max_steps: int = 20
+    
+    @property
+    def task_content(self) -> str:
+        """Get the task content, supporting both 'task' and 'message' fields"""
+        return self.task or self.message or ""
 
 
 class ExecuteResponse(BaseModel):
@@ -134,7 +140,8 @@ class NogicEngine:
             raise HTTPException(status_code=429, detail="Another task is executing")
         
         self._executing = True
-        self._current_task = request.message[:100]
+        task_content = request.task_content
+        self._current_task = task_content[:100]
         start_time = time.time()
         
         try:
@@ -146,7 +153,7 @@ class NogicEngine:
             
             # Execute with planning for complex tasks
             result = await agent.run_with_planning(
-                task=request.message,
+                task=task_content,
                 session_id=request.session_id,
             )
             
@@ -286,6 +293,7 @@ async def get_stats():
 
 
 @app.post("/v2/execute", response_model=ExecuteResponse)
+@app.post("/execute", response_model=ExecuteResponse)  # Legacy route alias
 async def execute_v2(request: ExecuteRequest):
     """
     Execute task using Pure ReAct Agent.

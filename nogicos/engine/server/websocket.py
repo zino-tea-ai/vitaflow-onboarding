@@ -924,6 +924,144 @@ class StatusServer:
         await self.broadcast_stream_chunk(chunk)
     
     # ========================================================================
+    # Visualization Events (for AI operation visualization panel)
+    # ========================================================================
+    
+    async def viz_cursor_move(
+        self,
+        x: float,
+        y: float,
+        duration: float = 0.8,
+    ):
+        """
+        Move AI cursor to target position.
+        
+        Args:
+            x: Target X coordinate
+            y: Target Y coordinate
+            duration: Animation duration in seconds
+        """
+        await self.broadcast({
+            "type": "cursor_move",
+            "data": {
+                "x": x,
+                "y": y,
+                "duration": duration,
+            }
+        })
+    
+    async def viz_cursor_click(self):
+        """Trigger click animation on AI cursor."""
+        await self.broadcast({"type": "cursor_click"})
+    
+    async def viz_cursor_type(self):
+        """Start typing animation on AI cursor."""
+        await self.broadcast({"type": "cursor_type"})
+    
+    async def viz_cursor_stop_type(self):
+        """Stop typing animation on AI cursor."""
+        await self.broadcast({"type": "cursor_stop_type"})
+    
+    async def viz_highlight(
+        self,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        label: Optional[str] = None,
+    ):
+        """
+        Highlight a rectangular area on the simulated screen.
+        
+        Args:
+            x: X coordinate of highlight area
+            y: Y coordinate of highlight area
+            width: Width of highlight area
+            height: Height of highlight area
+            label: Optional label text
+        """
+        await self.broadcast({
+            "type": "highlight",
+            "data": {
+                "rect": {"x": x, "y": y, "width": width, "height": height},
+                "label": label,
+            }
+        })
+    
+    async def viz_highlight_hide(self):
+        """Hide the current highlight."""
+        await self.broadcast({"type": "highlight_hide"})
+    
+    async def viz_screen_glow(self, intensity: str = "medium"):
+        """
+        Set screen glow effect.
+        
+        Args:
+            intensity: Glow intensity (off, low, medium, high, success, error)
+        """
+        await self.broadcast({
+            "type": "screen_glow",
+            "data": {"intensity": intensity}
+        })
+    
+    async def viz_screen_glow_stop(self):
+        """Stop screen glow effect."""
+        await self.broadcast({"type": "screen_glow_stop"})
+    
+    async def viz_task_start(
+        self,
+        max_steps: int = 0,
+        url: Optional[str] = None,
+    ):
+        """
+        Notify visualization panel that a task is starting.
+        
+        Args:
+            max_steps: Maximum number of steps (for progress indicator)
+            url: URL to display in simulated browser
+        """
+        await self.broadcast({
+            "type": "task_start",
+            "data": {
+                "max_steps": max_steps,
+                "url": url,
+            }
+        })
+    
+    async def viz_step_start(self, step: int):
+        """
+        Notify visualization panel that a step is starting.
+        
+        Args:
+            step: Step index (0-based)
+        """
+        await self.broadcast({
+            "type": "step_start",
+            "data": {"step": step}
+        })
+    
+    async def viz_step_complete(self, step: int, success: bool = True):
+        """
+        Notify visualization panel that a step completed.
+        
+        Args:
+            step: Step index (0-based)
+            success: Whether step completed successfully
+        """
+        await self.broadcast({
+            "type": "step_complete",
+            "data": {"step": step, "success": success}
+        })
+    
+    async def viz_task_complete(self):
+        """Notify visualization panel that task completed successfully."""
+        await self.broadcast({"type": "task_complete"})
+    
+    async def viz_task_error(self):
+        """Notify visualization panel that task failed."""
+        await self.broadcast({"type": "task_error"})
+    
+    # ========================================================================
     # Performance Metrics (A3.1 - TTFT Monitoring)
     # ========================================================================
     

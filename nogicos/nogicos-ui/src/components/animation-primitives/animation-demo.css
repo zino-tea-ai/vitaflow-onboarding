@@ -1,0 +1,483 @@
+/**
+ * NogicOS Animation Primitives Demo Styles
+ * 
+ * 设计系统：
+ * - 背景：深空黑 #101012
+ * - 主色：Vision Pro 蓝 #3B82F6
+ * - 玻璃拟态效果
+ * - Urbanist 字体
+ */
+
+.animation-demo-container {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #0a0a0c 0%, #101018 50%, #0a0a0c 100%);
+  padding: 3rem 2rem;
+  font-family: 'Urbanist', sans-serif;
+}
+
+/* Header */
+.demo-header {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.demo-header h1 {
+  font-size: 2.5rem;
+  font-weight: 600;
+  background: linear-gradient(135deg, #fff 0%, #a0a0a0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 0.5rem;
+}
+
+.demo-header p {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 1rem;
+}
+
+/* Grid Layout */
+.demo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+  gap: 1.5rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* Demo Section Card */
+.demo-section {
+  background: rgba(30, 30, 35, 0.6);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1.5rem;
+  padding: 1.5rem;
+  transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.demo-section:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  transform: translateY(-2px);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+}
+
+.demo-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 0.25rem;
+}
+
+.demo-desc {
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 1.5rem;
+}
+
+.demo-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+/* Common Button Styles */
+.demo-target-btn,
+.demo-trigger-btn {
+  padding: 0.75rem 1.5rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  border-radius: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: 'Urbanist', sans-serif;
+}
+
+.demo-target-btn {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #3B82F6;
+}
+
+.demo-target-btn:hover {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+.demo-trigger-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.demo-trigger-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.demo-trigger-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.demo-trigger-btn.success {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #10B981;
+}
+
+.demo-trigger-btn.error {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #EF4444;
+}
+
+/* ============================================================
+   1. Focus Demo
+   ============================================================ */
+
+.focus-ring {
+  position: absolute;
+  inset: -8px;
+  border: 2px solid #3B82F6;
+  border-radius: 1rem;
+  pointer-events: none;
+  box-shadow: 
+    0 0 20px rgba(59, 130, 246, 0.3),
+    inset 0 0 20px rgba(59, 130, 246, 0.1);
+}
+
+/* ============================================================
+   2. Path Demo
+   ============================================================ */
+
+.path-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 320px;
+  position: relative;
+  height: 100px;
+}
+
+.path-point {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.875rem;
+  z-index: 2;
+}
+
+.path-start {
+  background: rgba(139, 92, 246, 0.2);
+  border: 2px solid #8B5CF6;
+  color: #8B5CF6;
+}
+
+.path-end {
+  background: rgba(139, 92, 246, 0.2);
+  border: 2px solid #8B5CF6;
+  color: #8B5CF6;
+}
+
+.path-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* ============================================================
+   3. Input Demo
+   ============================================================ */
+
+.input-container {
+  width: 100%;
+  max-width: 280px;
+}
+
+.input-field {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.9rem;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.input-text {
+  color: #10B981;
+}
+
+.input-cursor {
+  color: #10B981;
+  font-weight: 300;
+  margin-left: 1px;
+}
+
+/* ============================================================
+   4. Action Demo
+   ============================================================ */
+
+.action-btn {
+  position: relative;
+  overflow: hidden;
+  padding: 1rem 2.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2) 0%, rgba(245, 158, 11, 0.1) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 0.75rem;
+  color: #F59E0B;
+  cursor: pointer;
+  font-family: 'Urbanist', sans-serif;
+}
+
+.action-btn:hover {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.3) 0%, rgba(245, 158, 11, 0.15) 100%);
+}
+
+.ripple {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(245, 158, 11, 0.4);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* ============================================================
+   5. Change Demo
+   ============================================================ */
+
+.change-container {
+  width: 100%;
+  max-width: 280px;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.change-content {
+  padding: 0.75rem 1.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.5rem;
+  color: #fff;
+  font-size: 0.95rem;
+}
+
+/* ============================================================
+   6. Complete Demo V3 - 基于 Motion+ Multi-State Badge 官方示例
+   ============================================================ */
+
+/* Badge 主容器 - 官方风格 */
+.complete-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  will-change: transform, filter;
+  overflow: hidden;
+  min-width: 140px;
+}
+
+/* 图标容器 */
+.badge-icon-container {
+  height: 32px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.badge-icon {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 文字标签容器 */
+.badge-label-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 80px;
+  height: 24px;
+}
+
+.badge-label {
+  position: absolute;
+  white-space: nowrap;
+  font-size: 1rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+  letter-spacing: 0.5px;
+}
+
+/* 按钮 V2 */
+.complete-buttons-v2 {
+  display: flex;
+  gap: 1rem;
+}
+
+.trigger-btn-success,
+.trigger-btn-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 0.75rem;
+  cursor: pointer;
+  font-family: 'Urbanist', sans-serif;
+  transition: all 0.2s ease;
+}
+
+.trigger-btn-success {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #10B981;
+}
+
+.trigger-btn-success:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.25);
+  border-color: #10B981;
+}
+
+.trigger-btn-error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #EF4444;
+}
+
+.trigger-btn-error:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: #EF4444;
+}
+
+.trigger-btn-success:disabled,
+.trigger-btn-error:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-icon {
+  font-size: 1rem;
+}
+
+/* Legacy styles (keeping for reference) */
+.complete-container {
+  width: 120px;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.complete-idle {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+.complete-loading {
+  font-size: 2.5rem;
+}
+
+.complete-success,
+.complete-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  position: relative;
+}
+
+.complete-success {
+  font-size: 3rem;
+  color: #10B981;
+}
+
+.complete-error {
+  font-size: 3rem;
+  color: #EF4444;
+}
+
+.complete-text {
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.particle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10B981;
+  top: 50%;
+  left: 50%;
+}
+
+.complete-buttons {
+  display: flex;
+  gap: 0.75rem;
+}
+
+/* ============================================================
+   Footer
+   ============================================================ */
+
+.demo-footer {
+  text-align: center;
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.demo-footer p {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.875rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+/* ============================================================
+   Responsive
+   ============================================================ */
+
+@media (max-width: 768px) {
+  .animation-demo-container {
+    padding: 1.5rem 1rem;
+  }
+  
+  .demo-header h1 {
+    font-size: 1.75rem;
+  }
+  
+  .demo-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

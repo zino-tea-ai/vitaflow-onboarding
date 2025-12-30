@@ -6,6 +6,7 @@ Based on LangGraph's plan-and-execute pattern:
 - Decompose complex tasks into steps
 - Execute steps sequentially
 - Replan when errors occur
+- Dynamic tool discovery from registry
 
 Architecture:
     User Task → Planner → [Step 1 → Step 2 → ...] → Response
@@ -16,7 +17,7 @@ Architecture:
 import os
 import json
 import re
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Tuple, Union, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -31,6 +32,10 @@ except ImportError:
 from engine.observability import get_logger
 logger = get_logger("planner")
 
+# Type checking imports
+if TYPE_CHECKING:
+    from engine.tools.base import ToolRegistry, ToolDefinition
+
 
 class TaskComplexity(Enum):
     """Task complexity levels"""
@@ -40,11 +45,21 @@ class TaskComplexity(Enum):
 
 
 @dataclass
+class PlanStep:
+    """A single step in a plan"""
+    description: str
+    suggested_tool: Optional[str] = None
+    tool_args_hint: Optional[Dict[str, Any]] = None
+    status: str = "pending"  # pending, in_progress, completed, failed
+
+
+@dataclass
 class Plan:
     """Execution plan with steps"""
     steps: List[str]
     complexity: TaskComplexity = TaskComplexity.MODERATE
     estimated_tools: int = 0
+    detailed_steps: List[PlanStep] = field(default_factory=list)
     
     def __len__(self):
         return len(self.steps)
@@ -61,6 +76,14 @@ class Plan:
     @property
     def remaining(self) -> int:
         return len(self.steps)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            "steps": self.steps,
+            "complexity": self.complexity.value,
+            "estimated_tools": self.estimated_tools,
+        }
 
 
 @dataclass
@@ -73,53 +96,53 @@ class PlanExecuteState:
     error: Optional[str] = None
 
 
-# Planning prompt
-PLANNER_PROMPT = """You are a task planner for an AI agent that can control browser and files.
+# Dynamic planning prompt template
+PLANNER_PROMPT_TEMPLATE = """You are a task planner for an AI agent. Your job is to break down complex tasks into simple, executable steps.
 
 ## Available Tools
-- list_directory: List files in a folder
-- move_file: Move/rename a file
-- create_directory: Create a folder
-- delete_file: Delete a file
-- read_file: Read file content
-- write_file: Write to a file
-- navigate: Go to a URL
-- click: Click on page elements
-- screenshot: Take a screenshot
+{tools_description}
 
 ## Task
 {task}
 
 ## Instructions
-Break this task into 2-7 simple, executable steps.
-Each step should be ONE tool call.
-Steps should be in order of execution.
-Do not add unnecessary steps.
-The final step should complete the objective.
+1. Analyze the task carefully
+2. Break it into 2-7 simple, executable steps
+3. Each step should map to ONE tool call
+4. Steps should be in order of execution
+5. Do not add unnecessary steps
+6. The final step should complete the objective
+7. For each step, suggest which tool to use
 
 ## Output Format
-Return a JSON object with this structure:
+Return a JSON object:
 ```json
-{
+{{
   "complexity": "simple|moderate|complex",
-  "steps": ["Step 1 description", "Step 2 description", ...]
-}
+  "steps": [
+    {{"description": "Step 1 description", "tool": "suggested_tool_name"}},
+    {{"description": "Step 2 description", "tool": "suggested_tool_name"}}
+  ]
+}}
 ```
 
 If the task is simple (single action), return:
 ```json
-{
+{{
   "complexity": "simple",
-  "steps": ["Execute the single action"]
-}
+  "steps": [{{"description": "Execute the action", "tool": "tool_name"}}]
+}}
 ```
 """
 
-# Replanning prompt
-REPLANNER_PROMPT = """You are replanning a task after an error occurred.
+# Smart replanning prompt with error analysis
+REPLANNER_PROMPT = """You are replanning a task after an error occurred. Analyze the error and choose the best recovery strategy.
 
 ## Original Task
 {task}
+
+## Available Tools
+{tools_description}
 
 ## Original Plan
 {plan}
@@ -131,22 +154,31 @@ REPLANNER_PROMPT = """You are replanning a task after an error occurred.
 Step: {current_step}
 Error: {error}
 
+## Error Analysis Guidelines
+1. **Permission Error**: Suggest alternative path or ask user for permission
+2. **File Not Found**: Use list_directory first to find the file
+3. **Network Error**: Retry with exponential backoff or use cached data
+4. **Invalid Input**: Correct the input and retry
+5. **Tool Not Available**: Find alternative tool or approach
+6. **Timeout**: Simplify the step or break it down further
+
 ## Instructions
-1. Analyze what went wrong
-2. Decide if the task can continue or needs a different approach
-3. If continuing: update the remaining steps
-4. If the task is complete: set response
-5. If the task cannot be completed: explain why
+1. Analyze what went wrong (classify the error type)
+2. Decide if the task can continue with a different approach
+3. If continuing: provide updated steps with specific tool suggestions
+4. If complete: summarize results
+5. If failed: explain why clearly
 
 ## Output Format
-Return a JSON object:
 ```json
-{
+{{
   "action": "continue|respond|fail",
-  "steps": ["Remaining step 1", ...],  // if action is "continue"
-  "response": "Final answer",           // if action is "respond" or "fail"
+  "error_type": "permission|not_found|network|invalid_input|timeout|other",
+  "analysis": "Brief analysis of what went wrong",
+  "steps": [{{"description": "Step", "tool": "tool_name"}}],
+  "response": "Final answer or error message",
   "reason": "Why this action"
-}
+}}
 ```
 """
 
@@ -159,7 +191,12 @@ class TaskPlanner:
     1. Analyze task complexity
     2. If simple: pass directly to ReAct agent
     3. If complex: generate plan, execute step by step
-    4. On error: replan or abort
+    4. On error: replan with intelligent error analysis
+    
+    Key Features:
+    - Dynamic tool discovery from ToolRegistry
+    - Smart error recovery with error type classification
+    - Tool suggestion for each step
     """
     
     # Patterns for simple tasks (don't need planning)
@@ -171,15 +208,27 @@ class TaskPlanner:
         r"^(help|帮助|怎么)",             # Help requests
     ]
     
-    def __init__(self, model: str = "claude-opus-4-5-20251101"):
+    def __init__(
+        self, 
+        model: str = "claude-opus-4-5-20251101",
+        registry: Optional["ToolRegistry"] = None
+    ):
         """
         Initialize task planner.
         
         Args:
             model: Claude model for planning
+            registry: ToolRegistry for dynamic tool discovery
         """
         self.model = model
         self._client = None
+        self._registry = registry
+        self._tools_cache: Optional[str] = None
+    
+    def set_registry(self, registry: "ToolRegistry") -> None:
+        """Set or update the tool registry"""
+        self._registry = registry
+        self._tools_cache = None  # Clear cache
     
     def _get_client(self):
         """Lazy-load Anthropic client"""
@@ -188,6 +237,52 @@ class TaskPlanner:
             if api_key:
                 self._client = anthropic.Anthropic(api_key=api_key)
         return self._client
+    
+    def _build_tools_description(self, category_filter: Optional[str] = None) -> str:
+        """
+        Build tools description from registry.
+        
+        Args:
+            category_filter: Optional category to filter tools (browser, local, etc.)
+            
+        Returns:
+            Formatted string describing available tools
+        """
+        if self._registry is None:
+            # Fallback to hardcoded list if no registry
+            return """- list_directory: List files in a folder
+- move_file: Move/rename a file  
+- create_directory: Create a folder
+- delete_file: Delete a file
+- read_file: Read file content
+- write_file: Write to a file
+- browser_navigate: Go to a URL
+- browser_click: Click on page elements
+- browser_screenshot: Take a screenshot"""
+        
+        # Get tools from registry
+        tools = self._registry.get_all()
+        
+        # Filter by category if specified
+        if category_filter:
+            from engine.tools.base import ToolCategory
+            try:
+                cat = ToolCategory(category_filter)
+                tools = [t for t in tools if t.category == cat]
+            except ValueError:
+                pass  # Invalid category, use all tools
+        
+        # Build description with examples
+        lines = []
+        for tool in tools:
+            # Extract parameter info
+            params = tool.input_schema.get("properties", {})
+            param_str = ", ".join(params.keys()) if params else "none"
+            
+            lines.append(f"- **{tool.name}**: {tool.description}")
+            lines.append(f"  Parameters: {param_str}")
+        
+        return "\n".join(lines)
     
     def is_simple_task(self, task: str) -> bool:
         """
@@ -227,15 +322,20 @@ class TaskPlanner:
         # Default: longer tasks are complex
         return len(task) < 30
     
-    async def plan(self, task: str) -> Plan:
+    async def plan(
+        self, 
+        task: str, 
+        category_filter: Optional[str] = None
+    ) -> Plan:
         """
         Generate execution plan for a task.
         
         Args:
             task: User's task description
+            category_filter: Optional tool category to focus on
             
         Returns:
-            Plan with steps
+            Plan with steps and tool suggestions
         """
         # Check for simple task
         if self.is_simple_task(task):
@@ -252,13 +352,21 @@ class TaskPlanner:
             return Plan(steps=[task], complexity=TaskComplexity.SIMPLE)
         
         try:
-            # Call Claude for planning
-            prompt = PLANNER_PROMPT.format(task=task)
+            # Build dynamic tools description from registry
+            tools_description = self._build_tools_description(category_filter)
             
+            # Call Claude for planning with dynamic prompt
+            prompt = PLANNER_PROMPT_TEMPLATE.format(
+                tools_description=tools_description,
+                task=task
+            )
+            
+            # Call with timeout protection (30 seconds)
             response = client.messages.create(
                 model=self.model,
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
+                timeout=30.0,  # 30 second timeout for planning
             )
             
             # Parse response
@@ -270,14 +378,32 @@ class TaskPlanner:
                 return Plan(steps=[task], complexity=TaskComplexity.SIMPLE)
             
             complexity = TaskComplexity(plan_data.get("complexity", "moderate"))
-            steps = plan_data["steps"]
             
-            logger.info(f"Generated plan with {len(steps)} steps ({complexity.value})")
+            # Parse steps - now with tool suggestions
+            steps_data = plan_data["steps"]
+            step_descriptions = []
+            detailed_steps = []
+            
+            for step in steps_data:
+                if isinstance(step, dict):
+                    desc = step.get("description", str(step))
+                    tool = step.get("tool")
+                    step_descriptions.append(desc)
+                    detailed_steps.append(PlanStep(
+                        description=desc,
+                        suggested_tool=tool
+                    ))
+                else:
+                    step_descriptions.append(str(step))
+                    detailed_steps.append(PlanStep(description=str(step)))
+            
+            logger.info(f"Generated plan with {len(step_descriptions)} steps ({complexity.value})")
             
             return Plan(
-                steps=steps,
+                steps=step_descriptions,
                 complexity=complexity,
-                estimated_tools=len(steps),
+                estimated_tools=len(step_descriptions),
+                detailed_steps=detailed_steps,
             )
             
         except Exception as e:
@@ -289,26 +415,31 @@ class TaskPlanner:
         state: PlanExecuteState,
         current_step: str,
         error: str,
-    ) -> Tuple[str, Union[Plan, str]]:
+        category_filter: Optional[str] = None,
+    ) -> Tuple[str, Union[Plan, str], Optional[str]]:
         """
-        Replan after an error.
+        Replan after an error with intelligent error analysis.
         
         Args:
             state: Current execution state
             current_step: Step that failed
             error: Error message
+            category_filter: Optional tool category filter
             
         Returns:
-            Tuple of (action, result)
-            - ("continue", Plan): Continue with updated plan
-            - ("respond", str): Return response to user
-            - ("fail", str): Abort with error message
+            Tuple of (action, result, error_type)
+            - ("continue", Plan, error_type): Continue with updated plan
+            - ("respond", str, error_type): Return response to user
+            - ("fail", str, error_type): Abort with error message
         """
         client = self._get_client()
         if not client:
-            return ("fail", f"Step failed: {error}")
+            return ("fail", f"Step failed: {error}", "other")
         
         try:
+            # Build dynamic tools description
+            tools_description = self._build_tools_description(category_filter)
+            
             # Format past steps
             past_steps_str = "\n".join(
                 f"- {step}: {result}" for step, result in state.past_steps
@@ -319,44 +450,73 @@ class TaskPlanner:
             
             prompt = REPLANNER_PROMPT.format(
                 task=state.input,
+                tools_description=tools_description,
                 plan=plan_str,
                 past_steps=past_steps_str,
                 current_step=current_step,
                 error=error,
             )
             
+            # Call with timeout protection (30 seconds)
             response = client.messages.create(
                 model=self.model,
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
+                timeout=30.0,  # 30 second timeout for replanning
             )
             
             response_text = response.content[0].text
             replan_data = self._parse_json_response(response_text)
             
             if not replan_data:
-                return ("fail", f"Replanning failed: {error}")
+                return ("fail", f"Replanning failed: {error}", "other")
             
             action = replan_data.get("action", "fail")
+            error_type = replan_data.get("error_type", "other")
+            analysis = replan_data.get("analysis", "")
+            
+            if analysis:
+                logger.info(f"Error analysis: {analysis}")
             
             if action == "continue":
-                new_steps = replan_data.get("steps", [])
-                if new_steps:
-                    logger.info(f"Replanned with {len(new_steps)} remaining steps")
-                    return ("continue", Plan(steps=new_steps))
-                return ("fail", "No steps to continue")
+                steps_data = replan_data.get("steps", [])
+                if steps_data:
+                    # Parse steps with tool suggestions
+                    step_descriptions = []
+                    detailed_steps = []
+                    
+                    for step in steps_data:
+                        if isinstance(step, dict):
+                            desc = step.get("description", str(step))
+                            tool = step.get("tool")
+                            step_descriptions.append(desc)
+                            detailed_steps.append(PlanStep(
+                                description=desc,
+                                suggested_tool=tool
+                            ))
+                        else:
+                            step_descriptions.append(str(step))
+                            detailed_steps.append(PlanStep(description=str(step)))
+                    
+                    logger.info(f"Replanned with {len(step_descriptions)} steps (error_type={error_type})")
+                    new_plan = Plan(
+                        steps=step_descriptions,
+                        detailed_steps=detailed_steps
+                    )
+                    return ("continue", new_plan, error_type)
+                return ("fail", "No steps to continue", error_type)
             
             elif action == "respond":
-                response = replan_data.get("response", "Task completed with partial results.")
-                return ("respond", response)
+                resp = replan_data.get("response", "Task completed with partial results.")
+                return ("respond", resp, error_type)
             
             else:  # fail
                 reason = replan_data.get("response", error)
-                return ("fail", reason)
+                return ("fail", reason, error_type)
                 
         except Exception as e:
             logger.error(f"Replanning error: {e}")
-            return ("fail", f"Replanning failed: {e}")
+            return ("fail", f"Replanning failed: {e}", "other")
     
     def _parse_json_response(self, text: str) -> Optional[Dict[str, Any]]:
         """Parse JSON from LLM response"""
@@ -385,9 +545,9 @@ class TaskPlanner:
 
 
 # Convenience functions
-async def create_plan(task: str) -> Plan:
-    """Quick plan creation"""
-    planner = TaskPlanner()
+async def create_plan(task: str, registry: Optional["ToolRegistry"] = None) -> Plan:
+    """Quick plan creation with optional registry"""
+    planner = TaskPlanner(registry=registry)
     return await planner.plan(task)
 
 
@@ -395,4 +555,16 @@ def is_simple_task(task: str) -> bool:
     """Quick complexity check"""
     planner = TaskPlanner()
     return planner.is_simple_task(task)
+
+
+# Export all for easy importing
+__all__ = [
+    "TaskPlanner",
+    "Plan",
+    "PlanStep",
+    "PlanExecuteState",
+    "TaskComplexity",
+    "create_plan",
+    "is_simple_task",
+]
 

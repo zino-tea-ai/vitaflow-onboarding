@@ -125,7 +125,18 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
         registry = get_registry()
     
     @registry.action(
-        description="Read the content of a file. Use limit parameter to read only first N lines for large files.",
+        description="""Read the content of a file.
+
+Examples:
+- read_file("~/Documents/notes.txt") → Read entire file
+- read_file("config.json", limit=50) → Read first 50 lines only
+- read_file("C:/Users/WIN/Desktop/report.md") → Read file from absolute path
+
+Parameters:
+- path: File path (relative or absolute, supports ~)
+- limit: Max lines to read (0 = no limit)
+
+Returns: File content as string, truncated if >50KB""",
         category=ToolCategory.LOCAL
     )
     async def read_file(path: str, limit: int = 0) -> str:
@@ -162,7 +173,19 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
             return f"Error reading file: {str(e)}"
     
     @registry.action(
-        description="Write content to a file. Creates the file if it doesn't exist, overwrites if it does.",
+        description="""Write content to a file (creates or overwrites).
+
+Examples:
+- write_file("output.txt", "Hello World") → Create new file
+- write_file("~/notes.md", "# Title\nContent") → Write Markdown file
+- write_file("data.json", '{"key": "value"}') → Write JSON file
+
+Parameters:
+- path: Target file path
+- content: Content to write
+
+Returns: Success message with byte count
+Note: Parent directories are created automatically""",
         category=ToolCategory.LOCAL
     )
     async def write_file(path: str, content: str) -> str:
@@ -207,7 +230,21 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
             return f"Error appending to file: {str(e)}"
     
     @registry.action(
-        description="Execute a shell command and return the output. Use with caution.",
+        description="""Execute a shell command and return output.
+
+Examples:
+- shell_execute("dir") → List directory (Windows)
+- shell_execute("ls -la") → List directory (Unix)
+- shell_execute("python --version") → Check Python version
+- shell_execute("pip list") → List installed packages
+- shell_execute("git status") → Check git status
+
+Parameters:
+- command: Shell command to run
+- timeout: Max seconds to wait (default: 30)
+
+Returns: STDOUT, STDERR, and exit code
+BLOCKED: rm -rf /, sudo, format, shutdown commands""",
         category=ToolCategory.LOCAL
     )
     async def shell_execute(command: str, timeout: int = 30) -> str:
@@ -261,7 +298,19 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
             return f"Error executing command: {str(e)}"
     
     @registry.action(
-        description="Search for files matching a glob pattern. Example: '**/*.py' finds all Python files.",
+        description="""Search for files matching a glob pattern.
+
+Examples:
+- glob_search("*.txt") → All .txt files in current dir
+- glob_search("**/*.py") → All Python files (recursive)
+- glob_search("**/*.{jpg,png}", "~/Pictures") → Images in Pictures
+- glob_search("test_*.py", "src/tests") → Test files in specific folder
+
+Parameters:
+- pattern: Glob pattern (*, **, ?, [abc])
+- root: Starting directory (default: current)
+
+Returns: List of matching file paths (max 100)""",
         category=ToolCategory.LOCAL
     )
     async def glob_search(pattern: str, root: str = ".") -> str:
@@ -298,7 +347,20 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
             return f"Error searching files: {str(e)}"
     
     @registry.action(
-        description="Search for a pattern in files. Returns matching lines with file paths and line numbers.",
+        description="""Search for text pattern in files (like grep).
+
+Examples:
+- grep_search("TODO") → Find TODO in all files
+- grep_search("def main", ".", "*.py") → Find main function in Python files
+- grep_search("error", "logs/") → Find errors in log directory
+- grep_search("import.*pandas", ".", "*.py") → Regex search
+
+Parameters:
+- pattern: Text or regex pattern to find
+- path: File or directory to search (default: current)
+- file_pattern: Filter files by glob (default: *)
+
+Returns: Matching lines with file:line: format (max 50)""",
         category=ToolCategory.LOCAL
     )
     async def grep_search(pattern: str, path: str = ".", file_pattern: str = "*") -> str:
@@ -352,7 +414,19 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
             return f"Error searching: {str(e)}"
     
     @registry.action(
-        description="List files and directories in a path.",
+        description="""List files and directories in a path.
+
+Examples:
+- list_directory() → List current directory
+- list_directory(".") → Same as above
+- list_directory("~/Desktop") → List Desktop folder
+- list_directory("C:/Users/WIN/Documents") → List Documents
+
+Parameters:
+- path: Directory path (default: current directory)
+
+Returns: Formatted list with [DIR] and [FILE] markers and file sizes
+Use this FIRST when unsure what files exist in a location""",
         category=ToolCategory.LOCAL
     )
     async def list_directory(path: str = ".") -> str:
@@ -386,7 +460,18 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
             return f"Error listing directory: {str(e)}"
     
     @registry.action(
-        description="Create a new directory. Creates parent directories if needed.",
+        description="""Create a new directory (with parents if needed).
+
+Examples:
+- create_directory("new_folder") → Create in current dir
+- create_directory("~/Desktop/Project/src") → Create nested structure
+- create_directory("C:/Users/WIN/Documents/Archive/2024") → Full path
+
+Parameters:
+- path: Directory path to create
+
+Returns: Success message
+Note: Safe to call even if directory exists""",
         category=ToolCategory.LOCAL
     )
     async def create_directory(path: str) -> str:
@@ -415,7 +500,21 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
     # ========================================
     
     @registry.action(
-        description="Move or rename a file or directory from source to destination.",
+        description="""Move or rename a file/directory.
+
+Examples:
+- move_file("old.txt", "new.txt") → Rename file
+- move_file("file.txt", "folder/file.txt") → Move to folder
+- move_file("src_folder", "dst_folder") → Move entire folder
+- move_file("~/Desktop/doc.pdf", "~/Documents/doc.pdf") → Move between folders
+
+Parameters:
+- source: Path to file/folder to move
+- destination: Target path
+
+Returns: Success message
+Note: Creates destination directory if needed
+PROTECTED: Won't move files in .git, code projects, or system folders""",
         category=ToolCategory.LOCAL
     )
     async def move_file(source: str, destination: str) -> str:
@@ -448,7 +547,19 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
             return f"Error moving file: {str(e)}"
     
     @registry.action(
-        description="Copy a file or directory from source to destination.",
+        description="""Copy a file or directory.
+
+Examples:
+- copy_file("doc.txt", "doc_backup.txt") → Copy file
+- copy_file("folder", "folder_copy") → Copy entire folder
+- copy_file("~/config.json", "~/backup/config.json") → Copy to different location
+
+Parameters:
+- source: Path to copy from
+- destination: Path to copy to
+
+Returns: Success message
+Note: Preserves file metadata, creates destination dir if needed""",
         category=ToolCategory.LOCAL
     )
     async def copy_file(source: str, destination: str) -> str:
@@ -480,7 +591,19 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
             return f"Error copying file: {str(e)}"
     
     @registry.action(
-        description="Delete a file or empty directory. Use with caution!",
+        description="""Delete a file or directory.
+
+Examples:
+- delete_file("temp.txt") → Delete single file
+- delete_file("empty_folder") → Delete empty directory
+- delete_file("old_project", recursive=True) → Delete folder with contents
+
+Parameters:
+- path: File or directory to delete
+- recursive: If True, delete non-empty directories
+
+Returns: Success message
+PROTECTED: Won't delete .git, code projects, or system files""",
         category=ToolCategory.LOCAL
     )
     async def delete_file(path: str, recursive: bool = False) -> str:

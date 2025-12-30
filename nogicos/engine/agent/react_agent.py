@@ -23,19 +23,8 @@ import os
 import json
 import time
 import asyncio
-import copy
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
-
-# Anthropic client
-try:
-    import anthropic
-    from anthropic import AsyncAnthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
-    anthropic = None
-    AsyncAnthropic = None
 
 # Logging
 from engine.observability import get_logger
@@ -45,42 +34,47 @@ logger = get_logger("react_agent")
 from engine.tools.base import ToolRegistry, ToolCategory
 from engine.tools import create_full_registry
 
-# Import knowledge store (B2)
-try:
-    from engine.knowledge import KnowledgeStore, UserProfile, Trajectory
-    from engine.knowledge.store import get_store
-    KNOWLEDGE_AVAILABLE = True
-except ImportError:
-    KNOWLEDGE_AVAILABLE = False
-    KnowledgeStore = None
-    UserProfile = None
-    Trajectory = None
-
-# Import long-term memory system
-try:
-    from engine.knowledge import (
-        get_memory_store, 
-        SemanticMemorySearch,
-        BackgroundMemoryProcessor,
-        format_memories_for_prompt,
-    )
-    MEMORY_AVAILABLE = True
-except ImportError:
-    MEMORY_AVAILABLE = False
-    get_memory_store = None
-    SemanticMemorySearch = None
-    BackgroundMemoryProcessor = None
-    format_memories_for_prompt = None
-
-# Import task planner
-try:
-    from engine.agent.planner import TaskPlanner, Plan, PlanExecuteState
-    PLANNER_AVAILABLE = True
-except ImportError:
-    PLANNER_AVAILABLE = False
-    TaskPlanner = None
-    Plan = None
-    PlanExecuteState = None
+# Centralized optional imports (reduces ~80 lines of try/except boilerplate)
+from engine.agent.imports import (
+    # Anthropic
+    ANTHROPIC_AVAILABLE,
+    anthropic,
+    create_anthropic_client,
+    create_async_anthropic_client,
+    # Knowledge
+    KNOWLEDGE_AVAILABLE,
+    KnowledgeStore,
+    UserProfile,
+    Trajectory,
+    get_store,
+    # Memory
+    MEMORY_AVAILABLE,
+    get_memory_store,
+    SemanticMemorySearch,
+    BackgroundMemoryProcessor,
+    format_memories_for_prompt,
+    # Visualization
+    VISUALIZATION_AVAILABLE,
+    visualize_tool_start,
+    visualize_tool_end,
+    visualize_task_start,
+    visualize_task_complete,
+    visualize_task_error,
+    # Planner
+    PLANNER_AVAILABLE,
+    TaskPlanner,
+    Plan,
+    PlanStep,
+    PlanExecuteState,
+    # Classifier
+    CLASSIFIER_AVAILABLE,
+    TaskClassifier,
+    ClassifierComplexity,
+    # Browser
+    BROWSER_SESSION_AVAILABLE,
+    get_browser_session,
+    close_browser_session,
+)
 
 
 @dataclass
@@ -373,15 +367,8 @@ class ReActAgent:
         self.model = model
         
         # Initialize Anthropic clients (sync and async)
-        self.client = None
-        self.async_client = None
-        
-        if ANTHROPIC_AVAILABLE:
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
-            if api_key:
-                self.client = anthropic.Anthropic(api_key=api_key)
-                if AsyncAnthropic:
-                    self.async_client = AsyncAnthropic(api_key=api_key)
+        self.client = create_anthropic_client()
+        self.async_client = create_async_anthropic_client()
         
         # Tool registry - create once and reuse
         self.registry = create_full_registry()
@@ -394,8 +381,11 @@ class ReActAgent:
         self.memory_search = SemanticMemorySearch(self.memory_store) if MEMORY_AVAILABLE and self.memory_store else None
         self.memory_processor = BackgroundMemoryProcessor(self.memory_store) if MEMORY_AVAILABLE and self.memory_store else None
         
-        # Task planner for complex tasks
-        self.planner = TaskPlanner(model=model) if PLANNER_AVAILABLE else None
+        # Task classifier for routing
+        self.classifier = TaskClassifier() if CLASSIFIER_AVAILABLE else None
+        
+        # Task planner for complex tasks - connect to registry for dynamic tools
+        self.planner = TaskPlanner(model=model, registry=self.registry) if PLANNER_AVAILABLE else None
         
         # Base system prompt (will be customized per request with history)
         self.base_system_prompt = build_system_prompt(self.registry)
@@ -403,6 +393,62 @@ class ReActAgent:
         # Cache warming state (tracks which sessions have warm caches)
         self._warm_caches: Dict[str, float] = {}  # session_id -> timestamp
         self._cache_ttl = 300  # Cache warm for 5 minutes
+        
+        # Tool category cache (dynamically populated from registry)
+        self._tool_categories_cache: Dict[str, str] = {}
+        self._refresh_tool_categories()
+        
+        # Browser session state (lazy initialized for browser tasks)
+        self._browser_session = None
+        self._browser_session_active = False
+    
+    def _refresh_tool_categories(self) -> None:
+        """Refresh tool categories cache from registry"""
+        self._tool_categories_cache.clear()
+        for tool in self.registry.get_all():
+            self._tool_categories_cache[tool.name] = tool.category.value
+        logger.debug(f"Refreshed tool categories: {len(self._tool_categories_cache)} tools")
+    
+    async def cleanup_browser_session(self) -> None:
+        """
+        Cleanup browser session after task completion.
+        Call this when browser session is no longer needed.
+        """
+        if self._browser_session_active and close_browser_session:
+            try:
+                await close_browser_session()
+                self._browser_session = None
+                self._browser_session_active = False
+                self.registry.set_context("browser_session", None)
+                logger.info("[Agent] Browser session cleaned up")
+            except Exception as e:
+                logger.warning(f"[Agent] Error cleaning up browser session: {e}")
+    
+    def _get_tools_by_task_type(self, task_type: str) -> List[Dict[str, Any]]:
+        """
+        Get tools filtered by task type using registry categories.
+        
+        Args:
+            task_type: 'browser', 'local', or 'mixed'
+            
+        Returns:
+            List of tools in Anthropic format
+        """
+        all_tools = self.registry.to_anthropic_format()
+        
+        if task_type == "browser":
+            # Browser + Vision tools
+            allowed_categories = {"browser", "plan"}
+            return [t for t in all_tools 
+                    if self._tool_categories_cache.get(t["name"]) in allowed_categories]
+        elif task_type == "local":
+            # Local + Desktop tools
+            allowed_categories = {"local", "plan"}
+            return [t for t in all_tools 
+                    if self._tool_categories_cache.get(t["name"]) in allowed_categories]
+        else:
+            # Mixed or unknown: return all
+            return all_tools
     
     def _build_system_prompt_with_history(self, session_id: str, task: str = "") -> str:
         """
@@ -559,6 +605,56 @@ class ReActAgent:
             "cache_control": {"type": "ephemeral"}
         }]
     
+    def _classify_error(self, error: str) -> tuple[str, bool, str]:
+        """
+        Classify an error for smart handling.
+        
+        Returns:
+            Tuple of (error_type, is_retryable, suggested_action)
+            
+        Error types:
+        - not_found: File/resource doesn't exist
+        - permission: Access denied
+        - timeout: Operation timed out
+        - rate_limit: API rate limited
+        - network: Network connectivity issue
+        - invalid_input: Bad arguments
+        - resource_busy: Resource locked
+        - unknown: Unclassified error
+        """
+        error_lower = error.lower()
+        
+        # File not found
+        if any(kw in error_lower for kw in ["not found", "does not exist", "no such file", "cannot find"]):
+            return ("not_found", False, "Use list_directory to verify path exists")
+        
+        # Permission denied
+        if any(kw in error_lower for kw in ["permission denied", "access denied", "protected"]):
+            return ("permission", False, "Path is protected or requires elevated permissions")
+        
+        # Timeout
+        if any(kw in error_lower for kw in ["timeout", "timed out"]):
+            return ("timeout", True, "Retry with exponential backoff")
+        
+        # Rate limiting
+        if any(kw in error_lower for kw in ["rate limit", "too many requests", "429"]):
+            return ("rate_limit", True, "Wait and retry with longer delay")
+        
+        # Network issues
+        if any(kw in error_lower for kw in ["connection refused", "connection reset", "network error", "dns"]):
+            return ("network", True, "Check network connectivity, retry")
+        
+        # Invalid input
+        if any(kw in error_lower for kw in ["invalid argument", "invalid parameter", "syntax error", "parse error"]):
+            return ("invalid_input", False, "Fix the input arguments")
+        
+        # Resource busy
+        if any(kw in error_lower for kw in ["in use", "locked", "busy", "cannot access"]):
+            return ("resource_busy", True, "Resource locked, retry after delay")
+        
+        # Unknown
+        return ("unknown", True, "May be transient, try again")
+    
     async def _execute_with_retry(
         self,
         tool_name: str,
@@ -582,6 +678,7 @@ class ReActAgent:
             ToolResult with success/error status
         """
         last_error = None
+        error_type = "unknown"
         
         for attempt in range(max_retries + 1):
             result = await self.registry.execute(tool_name, args)
@@ -590,53 +687,43 @@ class ReActAgent:
                 # Mark if this was a retry success
                 if attempt > 0:
                     logger.info(f"Tool {tool_name} succeeded on retry {attempt}")
-                    result.retried = True
+                    result.retried = True  # type: ignore
                 return result
             
             last_error = result.error or "Unknown error"
-            error_lower = str(last_error).lower()
+            
+            # Classify the error for smart handling
+            error_type, is_retryable, suggestion = self._classify_error(last_error)
+            
+            # Log error classification
+            if attempt == 0:
+                logger.info(f"Tool {tool_name} failed: {error_type} - {suggestion}")
             
             # Smart retry strategy based on error type
             if attempt >= max_retries:
-                # Max retries exhausted
-                break
-                
-            # Don't retry deterministic failures
-            if any(keyword in error_lower for keyword in [
-                "not found", "does not exist", "no such file",
-                "permission denied", "access denied",
-                "invalid argument", "invalid parameter",
-                "syntax error", "parse error",
-            ]):
-                logger.debug(f"Tool {tool_name} failed with non-retryable error: {last_error}")
                 break
             
-            # Timeout errors: exponential backoff
-            if any(keyword in error_lower for keyword in [
-                "timeout", "timed out", "connection reset",
-                "connection refused", "network error",
-            ]):
+            if not is_retryable:
+                logger.debug(f"Tool {tool_name} failed with non-retryable error ({error_type})")
+                break
+            
+            # Calculate backoff based on error type
+            if error_type == "timeout":
                 backoff = 1.0 * (2 ** attempt)  # 1s, 2s, 4s...
-                logger.info(f"Tool {tool_name} timeout, retrying in {backoff}s (attempt {attempt + 1})")
-                await asyncio.sleep(backoff)
-                continue
-            
-            # Rate limiting: longer backoff
-            if any(keyword in error_lower for keyword in [
-                "rate limit", "too many requests", "429",
-            ]):
+            elif error_type == "rate_limit":
                 backoff = 5.0 * (attempt + 1)  # 5s, 10s, 15s...
-                logger.info(f"Tool {tool_name} rate limited, retrying in {backoff}s")
-                await asyncio.sleep(backoff)
-                continue
+            elif error_type == "resource_busy":
+                backoff = 2.0 * (attempt + 1)  # 2s, 4s, 6s...
+            else:
+                backoff = 0.5  # Quick retry for unknown transient errors
             
-            # Default: quick retry for transient errors
-            await asyncio.sleep(0.5)
-            logger.info(f"Tool {tool_name} failed, quick retry (attempt {attempt + 1})")
+            logger.info(f"Tool {tool_name} retrying in {backoff}s (attempt {attempt + 1}, {error_type})")
+            await asyncio.sleep(backoff)
         
-        # Return the last failed result
-        logger.warning(f"Tool {tool_name} failed after {max_retries} retries: {last_error}")
-        return result
+        # Return the last failed result with error metadata
+        final_attempts = max_retries + 1
+        logger.warning(f"Tool {tool_name} failed after {final_attempts} attempts: {error_type} - {last_error}")
+        return result  # type: ignore
     
     async def run(
         self,
@@ -645,7 +732,13 @@ class ReActAgent:
         context: Optional[str] = None,
     ) -> AgentResult:
         """
-        Execute a task autonomously using ReAct loop.
+        Execute a task autonomously using ReAct loop with smart routing.
+        
+        Flow:
+        1. Classify task (browser/local/mixed)
+        2. Filter tools based on task type
+        3. Generate plan for complex tasks
+        4. Execute with ReAct loop
         
         Args:
             task: User's task/question
@@ -662,22 +755,87 @@ class ReActAgent:
                 error="Anthropic client not available. Check API key.",
             )
         
-        # Get tools in Anthropic format
-        tools = self.registry.to_anthropic_format()
+        # Generate unique message ID
+        import uuid
+        message_id = str(uuid.uuid4())[:8]
+        
+        # ===========================================
+        # PHASE 1: Task Classification
+        # ===========================================
+        classification = None
+        task_type_str = "local"  # Default to local
+        
+        if self.classifier and CLASSIFIER_AVAILABLE:
+            classification = self.classifier.classify(task)
+            task_type_str = classification.task_type.value
+            
+            logger.info(f"Task classified as {task_type_str} (confidence={classification.confidence:.2f})")
+            
+            # Broadcast classification to frontend
+            if self.status_server:
+                await self.status_server.broadcast({
+                    "type": "classification",
+                    "message_id": message_id,
+                    "task_type": task_type_str,
+                    "complexity": classification.complexity.value,
+                    "confidence": classification.confidence,
+                    "reasoning": classification.reasoning,
+                })
+        
+        # ===========================================
+        # PHASE 2: Tool Selection based on task type
+        # ===========================================
+        tools = self._get_tools_by_task_type(task_type_str)
+        logger.info(f"Using {len(tools)} tools for {task_type_str} task")
+        
+        # ===========================================
+        # PHASE 2.5: Browser Session Initialization
+        # ===========================================
+        if task_type_str in ("browser", "mixed") and BROWSER_SESSION_AVAILABLE:
+            try:
+                if not self._browser_session_active:
+                    self._browser_session = await get_browser_session()
+                    self._browser_session_active = True
+                    # Inject browser session into registry context
+                    self.registry.set_context("browser_session", self._browser_session)
+                    logger.info("[Agent] Browser session initialized and injected")
+            except Exception as e:
+                logger.warning(f"[Agent] Failed to initialize browser session: {e}")
+                # Continue without browser session - tools will return errors
+        
+        # ===========================================
+        # PHASE 3: Planning for complex tasks
+        # ===========================================
+        plan = None
+        if self.planner and PLANNER_AVAILABLE and classification:
+            if classification.complexity != ClassifierComplexity.SIMPLE:
+                plan = await self.planner.plan(task, category_filter=task_type_str)
+                
+                if plan and len(plan.steps) > 1:
+                    logger.info(f"Generated plan with {len(plan.steps)} steps")
+                    
+                    # Broadcast plan to frontend
+                    if self.status_server:
+                        await self.status_server.broadcast({
+                            "type": "plan",
+                            "message_id": message_id,
+                            "steps": plan.steps,
+                            "complexity": plan.complexity.value,
+                        })
         
         # Build system prompt with session history and long-term memory (async)
         system_prompt = await self._build_system_prompt_with_memory(session_id, task)
         
-        # Build initial message
+        # Inject plan into context if we have one
         user_content = task
         if context:
             user_content = f"{context}\n\n{task}"
         
-        messages = [{"role": "user", "content": user_content}]
+        if plan and len(plan.steps) > 1:
+            plan_text = "\n".join([f"{i+1}. {step}" for i, step in enumerate(plan.steps)])
+            user_content = f"{user_content}\n\n**Suggested Plan:**\n{plan_text}\n\nFollow this plan step by step."
         
-        # Generate unique message ID
-        import uuid
-        message_id = str(uuid.uuid4())[:8]
+        messages = [{"role": "user", "content": user_content}]
         
         # ReAct loop
         iteration = 0
@@ -694,59 +852,162 @@ class ReActAgent:
         if use_caching:
             logger.info(f"Using warm cache for session {session_id}")
         
+        # Visualization: task start
+        if VISUALIZATION_AVAILABLE and self.status_server:
+            await visualize_task_start(self.status_server, max_steps=self.max_iterations)
+        
         while iteration < self.max_iterations:
             iteration += 1
             
             try:
-                # Call Claude with tools (use cached system prompt if available)
-                if use_caching:
-                    # Use cached system prompt format
-                    response = self.client.messages.create(
-                        model=self.model,
-                        max_tokens=4096,
-                        extra_headers={"anthropic-beta": self.PROMPT_CACHE_BETA},
-                        system=self._build_cached_system(system_prompt),
-                        tools=tools,
-                        messages=messages,
-                    )
-                else:
-                    # Standard call without caching
-                    response = self.client.messages.create(
-                        model=self.model,
-                        max_tokens=4096,
-                        system=system_prompt,
-                        tools=tools,
-                        messages=messages,
-                    )
-                
-                # Record TTFT (Time to First Token) - A3.1
-                if not ttft_recorded:
-                    ttft_ms = (time.time() - task_start_time) * 1000
-                    ttft_recorded = True
-                    if self.status_server:
-                        # Broadcast TTFT immediately
-                        await self.status_server.broadcast_performance(
-                            message_id=message_id,
-                            ttft_ms=ttft_ms,
-                        )
-                
-                # Process response
+                # Call Claude with streaming for real-time feedback
                 text_content = ""
                 tool_uses = []
+                current_tool_args = ""  # Accumulate tool args JSON
+                current_tool_index = -1
                 
-                for block in response.content:
-                    if block.type == "text":
-                        text_content += block.text
-                    elif block.type == "tool_use":
-                        tool_uses.append({
-                            "id": block.id,
-                            "name": block.name,
-                            "input": block.input,
-                        })
+                # Build API call params
+                api_params = {
+                    "model": self.model,
+                    "max_tokens": 16384,  # Increased for thinking budget
+                    "tools": tools,
+                    "messages": messages,
+                    # Enable Extended Thinking for Claude Opus 4.5
+                    "thinking": {
+                        "type": "enabled",
+                        "budget_tokens": 8192,  # Budget for reasoning
+                    },
+                }
                 
-                # Stream thinking/content
+                if use_caching:
+                    api_params["extra_headers"] = {"anthropic-beta": self.PROMPT_CACHE_BETA}
+                    api_params["system"] = self._build_cached_system(system_prompt)
+                else:
+                    api_params["system"] = system_prompt
+                
+                # Track thinking state
+                is_thinking = False
+                thinking_content = ""
+                thinking_start_time = None
+                current_block_type = None  # Track current block type
+                
+                # Use streaming API for real-time feedback
+                with self.client.messages.stream(**api_params) as stream:
+                    for event in stream:
+                        # Record TTFT on first event
+                        if not ttft_recorded:
+                            ttft_ms = (time.time() - task_start_time) * 1000
+                            ttft_recorded = True
+                            if self.status_server:
+                                await self.status_server.broadcast_performance(
+                                    message_id=message_id,
+                                    ttft_ms=ttft_ms,
+                                )
+                        
+                        # Handle different event types
+                        # Note: "text" events are deprecated, use content_block_delta with text_delta instead
+                        # The old "text" event handling was removed to avoid duplicate broadcasts
+                        
+                        if event.type == "content_block_start":
+                            if hasattr(event, 'content_block'):
+                                block_type = event.content_block.type
+                                current_block_type = block_type  # Track current block
+                                
+                                # Handle thinking block start
+                                if block_type == "thinking":
+                                    is_thinking = True
+                                    thinking_content = ""
+                                    thinking_start_time = time.time()
+                                    if self.status_server:
+                                        await self.status_server.broadcast({
+                                            "type": "thinking_start",
+                                            "message_id": message_id,
+                                        })
+                                
+                                # Handle tool use block start
+                                elif block_type == "tool_use":
+                                    current_tool_index = event.index
+                                    current_tool_args = ""
+                                    tool_uses.append({
+                                        "id": event.content_block.id,
+                                        "name": event.content_block.name,
+                                        "input": {},
+                                    })
+                                    # Stream tool start to frontend
+                                    if self.status_server:
+                                        await self.status_server.stream_tool_start(
+                                            message_id,
+                                            event.content_block.id,
+                                            event.content_block.name,
+                                        )
+                        
+                        elif event.type == "content_block_delta":
+                            if hasattr(event, 'delta'):
+                                delta_type = event.delta.type
+                                
+                                # Handle thinking delta
+                                if delta_type == "thinking_delta":
+                                    thinking_text = event.delta.thinking
+                                    thinking_content += thinking_text
+                                    if self.status_server and thinking_text:
+                                        await self.status_server.broadcast({
+                                            "type": "thinking_delta",
+                                            "message_id": message_id,
+                                            "thinking": thinking_text,
+                                        })
+                                
+                                # Handle text delta
+                                elif delta_type == "text_delta":
+                                    text_delta = event.delta.text
+                                    text_content += text_delta
+                                    if self.status_server and text_delta:
+                                        await self.status_server.broadcast({
+                                            "type": "content",
+                                            "message_id": message_id,
+                                            "content": text_delta,
+                                        })
+                                
+                                # Handle input JSON delta (tool args)
+                                elif delta_type == "input_json_delta":
+                                    current_tool_args += event.delta.partial_json
+                        
+                        elif event.type == "input_json":
+                            # Accumulate tool arguments (streaming JSON) - fallback
+                            current_tool_args += event.partial_json
+                        
+                        elif event.type == "content_block_stop":
+                            # End thinking block (use current_block_type for robustness)
+                            if current_block_type == "thinking" or is_thinking:
+                                duration_ms = int((time.time() - thinking_start_time) * 1000) if thinking_start_time else None
+                                if self.status_server:
+                                    await self.status_server.broadcast({
+                                        "type": "thinking_end",
+                                        "message_id": message_id,
+                                        "duration_ms": duration_ms,
+                                    })
+                                is_thinking = False
+                                thinking_start_time = None
+                            
+                            current_block_type = None  # Reset block type
+                            
+                            # Finalize tool args if we were building a tool call
+                            if current_tool_index >= 0 and current_tool_args:
+                                try:
+                                    tool_uses[-1]["input"] = json.loads(current_tool_args)
+                                except json.JSONDecodeError:
+                                    logger.warning(f"Failed to parse tool args: {current_tool_args[:100]}...")
+                                current_tool_args = ""
+                                current_tool_index = -1
+                    
+                    # Get final message for stop_reason
+                    response = stream.get_final_message()
+                
+                # Signal end of streaming content
                 if text_content and self.status_server:
-                    await self.status_server.stream_content(message_id, text_content)
+                    await self.status_server.broadcast({
+                        "type": "content_end",
+                        "message_id": message_id,
+                    })
                 
                 # Check if we're done (no tool calls)
                 has_tool_use = len(tool_uses) > 0
@@ -759,7 +1020,7 @@ class ReActAgent:
                 # Execute tools with smart retry
                 tool_results = []
                 
-                for tool_use in tool_uses:
+                for tool_index, tool_use in enumerate(tool_uses):
                     tool_name = tool_use["name"]
                     tool_args = tool_use["input"]
                     tool_id = tool_use["id"]
@@ -768,6 +1029,15 @@ class ReActAgent:
                     if self.status_server:
                         await self.status_server.stream_tool_start(
                             message_id, tool_id, tool_name
+                        )
+                    
+                    # Visualization: tool start
+                    if VISUALIZATION_AVAILABLE and self.status_server:
+                        await visualize_tool_start(
+                            self.status_server, 
+                            tool_name, 
+                            tool_args, 
+                            step=len(tool_calls_made) + tool_index
                         )
                     
                     # Execute tool with smart retry
@@ -780,6 +1050,15 @@ class ReActAgent:
                             tool_id,
                             result=result.output if result.success else None,
                             error=result.error if not result.success else None,
+                        )
+                    
+                    # Visualization: tool end
+                    if VISUALIZATION_AVAILABLE and self.status_server:
+                        await visualize_tool_end(
+                            self.status_server,
+                            tool_name,
+                            result.success,
+                            step=len(tool_calls_made) + tool_index
                         )
                     
                     # Record tool call
@@ -829,6 +1108,9 @@ class ReActAgent:
                     break
                     
             except Exception as e:
+                # Visualization: task error
+                if VISUALIZATION_AVAILABLE and self.status_server:
+                    await visualize_task_error(self.status_server)
                 return AgentResult(
                     success=False,
                     response="",
@@ -890,6 +1172,10 @@ class ReActAgent:
             except Exception as e:
                 # Don't fail if memory extraction fails
                 logger.warning(f"Failed to schedule memory extraction: {e}")
+        
+        # Visualization: task complete
+        if VISUALIZATION_AVAILABLE and self.status_server:
+            await visualize_task_complete(self.status_server)
         
         # Return result
         return AgentResult(
@@ -986,26 +1272,30 @@ class ReActAgent:
                 # Step failed - attempt replan
                 logger.warning(f"Step {step_num} failed: {step_result.error}")
                 
-                action, result = await self.planner.replan(
+                # replan now returns 3 values: (action, result, error_type)
+                replan_result = await self.planner.replan(
                     state=state,
                     current_step=current_step,
                     error=step_result.error or "Unknown error",
                 )
+                action, result, error_type = replan_result
                 
-                if action == "continue" and isinstance(result, Plan):
+                logger.info(f"Replan result: action={action}, error_type={error_type}")
+                
+                if action == "continue" and Plan and isinstance(result, Plan):
                     # Continue with new plan
                     state.plan = result
                     logger.info(f"Replanned with {len(result)} remaining steps")
                 elif action == "respond":
                     # Task completed with partial result
-                    state.response = result
+                    state.response = str(result) if result else ""
                     break
                 else:
                     # Task failed
                     return AgentResult(
                         success=False,
                         response="",
-                        error=result if isinstance(result, str) else "Task failed",
+                        error=str(result) if result else "Task failed",
                         iterations=total_iterations,
                         tool_calls=all_tool_calls,
                     )

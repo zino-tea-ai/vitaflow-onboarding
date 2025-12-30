@@ -40,11 +40,17 @@ nul
 # Node
 node_modules/
 
-# Tests
-tests/
-*.test.py
-test_*.py
+# Test artifacts (keep test code, ignore outputs)
+tests/screenshots/
+tests/.pytest_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
 
 # Temp files
 *.tmp
 *.bak
+
+# Keep .github folder for CI
+!.github/
