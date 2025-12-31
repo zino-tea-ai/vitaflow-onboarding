@@ -88,7 +88,14 @@ class MemoryExtractor:
         if self._client is None:
             try:
                 import anthropic
-                api_key = os.environ.get("ANTHROPIC_API_KEY")
+                # Try api_keys.py first, then environment variable
+                api_key = None
+                try:
+                    import api_keys
+                    api_key = api_keys.ANTHROPIC_API_KEY
+                except (ImportError, AttributeError):
+                    api_key = os.environ.get("ANTHROPIC_API_KEY")
+                
                 if api_key:
                     self._client = anthropic.Anthropic(api_key=api_key)
                 else:

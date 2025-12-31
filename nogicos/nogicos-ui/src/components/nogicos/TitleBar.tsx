@@ -25,17 +25,17 @@ export function TitleBar({
   // Call Electron IPC via preload script
   const handleMinimize = () => {
     if (onMinimize) onMinimize();
-    else window.nogicos?.windowMinimize?.();
+    else window.electronAPI?.minimize?.();
   };
 
   const handleMaximize = () => {
     if (onMaximize) onMaximize();
-    else window.nogicos?.windowMaximize?.();
+    else window.electronAPI?.maximize?.();
   };
 
   const handleClose = () => {
     if (onClose) onClose();
-    else window.nogicos?.windowClose?.();
+    else window.electronAPI?.close?.();
   };
 
   // Get status indicator
@@ -43,16 +43,16 @@ export function TitleBar({
     if (isConnected) {
       return (
         <>
-          <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse-soft" />
-          <span className="text-xs text-muted-foreground">Ready</span>
+          <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+          <span className="text-xs text-neutral-500">Ready</span>
         </>
       );
     }
     if (isConnecting || isReconnecting) {
       return (
         <>
-          <RefreshCw className="w-3 h-3 text-amber-400 animate-spin" />
-          <span className="text-xs text-amber-400">
+          <RefreshCw className="w-3 h-3 text-neutral-400 animate-spin" />
+          <span className="text-xs text-neutral-400">
             {isReconnecting ? 'Reconnecting' : 'Connecting'}
           </span>
         </>
@@ -66,7 +66,7 @@ export function TitleBar({
           {onReconnect && (
             <button
               onClick={onReconnect}
-              className="ml-1 px-2 py-0.5 text-[10px] bg-white/10 hover:bg-white/15 rounded text-white/70 hover:text-white transition-colors"
+              className="ml-1 px-2 py-0.5 text-[10px] bg-neutral-800 hover:bg-neutral-700 rounded text-neutral-400 hover:text-white transition-colors"
             >
               Retry
             </button>
@@ -78,49 +78,42 @@ export function TitleBar({
   };
 
   return (
-    <header className="electron-titlebar h-11 flex items-center justify-between px-4 bg-background/50 border-b border-border/50 backdrop-blur-sm">
+    <header className="electron-titlebar h-11 flex items-center justify-between px-4 bg-black border-b border-neutral-900">
       {/* Logo & Title */}
       <div className="flex items-center gap-2.5">
         <div className={cn(
           "w-5 h-5 rounded-md flex items-center justify-center transition-colors",
           isConnected 
-            ? "bg-gradient-to-br from-primary/80 to-primary" 
-            : "bg-white/10"
+            ? "bg-white" 
+            : "bg-neutral-800"
         )}>
-          <span className="text-[10px] font-bold text-white">N</span>
+          <span className={cn(
+            "text-[10px] font-bold",
+            isConnected ? "text-black" : "text-neutral-500"
+          )}>N</span>
         </div>
-        <span className={cn(
-          "text-sm font-medium",
-          isConnected ? "text-muted-foreground" : "text-muted-foreground/60"
-        )}>
+        <span className="text-sm font-medium text-neutral-400">
           NogicOS
         </span>
-      </div>
-
-      {/* Status Indicator */}
-      <div className="flex items-center gap-2 absolute left-1/2 -translate-x-1/2">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary/50">
-          {getStatusIndicator()}
-        </div>
       </div>
 
       {/* Window Controls */}
       <div className="flex items-center gap-0.5">
         <button
           onClick={handleMinimize}
-          className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-900 hover:text-neutral-300 transition-colors"
         >
           <Minus className="w-3.5 h-3.5" />
         </button>
         <button
           onClick={handleMaximize}
-          className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-900 hover:text-neutral-300 transition-colors"
         >
           <Square className="w-3 h-3" />
         </button>
         <button
           onClick={handleClose}
-          className="w-8 h-8 flex items-center justify-center rounded-md text-muted-foreground hover:bg-red-500/90 hover:text-white transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-md text-neutral-500 hover:bg-red-500/90 hover:text-white transition-colors"
         >
           <X className="w-4 h-4" />
         </button>
@@ -129,15 +122,18 @@ export function TitleBar({
   );
 }
 
-// Type declaration for NogicOS preload API
+// Type declaration for Electron preload API
 declare global {
   interface Window {
-    nogicos?: {
-      windowMinimize: () => void;
-      windowMaximize: () => void;
-      windowClose: () => void;
-      windowIsMaximized: () => Promise<boolean>;
-      onWindowMaximizeChange: (callback: (isMaximized: boolean) => void) => void;
+    electronAPI?: {
+      minimize: () => void;
+      maximize: () => void;
+      close: () => void;
+      platform: string;
+      isElectron: boolean;
+      onNewSession: (callback: () => void) => () => void;
+      onToggleCommandPalette: (callback: () => void) => () => void;
+      toggleCommandPalette: () => void;
     };
   }
 }

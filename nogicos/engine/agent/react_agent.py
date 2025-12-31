@@ -23,12 +23,20 @@ import os
 import json
 import time
 import asyncio
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable, Awaitable
 from dataclasses import dataclass, field
 
 # Logging
 from engine.observability import get_logger
 logger = get_logger("react_agent")
+
+# Prometheus metrics (optional)
+try:
+    from monitoring.prometheus.metrics import get_metrics, AgentMetrics
+    PROMETHEUS_AVAILABLE = True
+except ImportError:
+    PROMETHEUS_AVAILABLE = False
+    get_metrics = None
 
 # Import tool registry
 from engine.tools.base import ToolRegistry, ToolCategory
@@ -76,6 +84,14 @@ from engine.agent.imports import (
     close_browser_session,
 )
 
+# Verification module (optional)
+try:
+    from engine.agent.verification import AnswerVerifier, verify_answer
+    VERIFICATION_AVAILABLE = True
+except ImportError:
+    VERIFICATION_AVAILABLE = False
+    AnswerVerifier = None
+
 
 @dataclass
 class AgentResult:
@@ -85,6 +101,15 @@ class AgentResult:
     error: Optional[str] = None
     iterations: int = 0
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ReflectionResult:
+    """Result from reflection check before answer submission"""
+    needs_revision: bool
+    feedback: str
+    confidence: float = 1.0
+    issues: List[str] = field(default_factory=list)
 
 
 # Base System Prompt template - tool list will be dynamically generated
@@ -347,6 +372,8 @@ class ReActAgent:
     
     # Prompt caching beta header
     PROMPT_CACHE_BETA = "prompt-caching-2024-07-31"
+    # Extended Thinking beta header (required for thinking parameter)
+    THINKING_BETA = "interleaved-thinking-2025-05-14"
     
     def __init__(
         self,
@@ -408,6 +435,41 @@ class ReActAgent:
         for tool in self.registry.get_all():
             self._tool_categories_cache[tool.name] = tool.category.value
         logger.debug(f"Refreshed tool categories: {len(self._tool_categories_cache)} tools")
+    
+    def _is_simple_chat(self, task: str) -> bool:
+        """
+        Detect if task is simple chat that doesn't need Extended Thinking.
+        
+        Simple chats include:
+        - Greetings (hi, hello, 你好, etc.)
+        - Short questions (<20 chars)
+        - Confirmations (yes, no, ok, etc.)
+        
+        Returns:
+            True if task is simple and should skip Extended Thinking
+        """
+        task_lower = task.lower().strip()
+        
+        # Greeting patterns
+        greetings = {'hi', 'hello', 'hey', '你好', '嗨', 'hola', 'bonjour', 'yo', 'sup'}
+        if task_lower in greetings or any(task_lower.startswith(g) for g in greetings):
+            return True
+        
+        # Very short messages (likely simple)
+        if len(task) < 15:
+            return True
+        
+        # Confirmation patterns
+        confirmations = {'yes', 'no', 'ok', 'okay', '好', '是', '否', 'sure', 'yep', 'nope'}
+        if task_lower in confirmations:
+            return True
+        
+        # Simple questions
+        simple_patterns = ['how are you', 'what time', "what's up", '怎么样', '你是谁']
+        if any(p in task_lower for p in simple_patterns):
+            return True
+        
+        return False
     
     async def cleanup_browser_session(self) -> None:
         """
@@ -481,7 +543,9 @@ class ReActAgent:
         
         return prompt
     
-    async def _build_system_prompt_with_memory(self, session_id: str, task: str) -> str:
+    async def _build_system_prompt_with_memory(
+        self, session_id: str, task: str, skip_memory: bool = False
+    ) -> str:
         """
         Build system prompt with long-term memory (async version).
         
@@ -490,6 +554,7 @@ class ReActAgent:
         Args:
             session_id: Session ID for memory scoping
             task: Current task for semantic search
+            skip_memory: If True, skip memory search for faster response (simple chats)
             
         Returns:
             System prompt with injected memory context
@@ -498,9 +563,9 @@ class ReActAgent:
         history = format_operation_history(session_id)
         prompt = self.base_system_prompt.replace("{operation_history}", history)
         
-        # Inject long-term memory if available
+        # Inject long-term memory if available (skip for simple chats to save ~3s)
         memory_context = ""
-        if self.memory_search and MEMORY_AVAILABLE:
+        if self.memory_search and MEMORY_AVAILABLE and not skip_memory:
             try:
                 # Search for relevant memories based on current task
                 memory_context = await self.memory_search.search_for_prompt(
@@ -512,6 +577,8 @@ class ReActAgent:
                     logger.debug(f"Injected {len(memory_context)} chars of memory context")
             except Exception as e:
                 logger.warning(f"Failed to load memory context: {e}")
+        elif skip_memory:
+            logger.debug("[Agent] Skipping memory search for simple chat")
         
         prompt = prompt.replace("{long_term_memory}", memory_context if memory_context else "")
         
@@ -725,11 +792,168 @@ class ReActAgent:
         logger.warning(f"Tool {tool_name} failed after {final_attempts} attempts: {error_type} - {last_error}")
         return result  # type: ignore
     
+    def _should_reflect(self, text_content: str, task: str) -> bool:
+        """
+        Determine if reflection is needed before submitting an answer.
+        
+        Reflection is triggered for:
+        - Tasks that expect specific answers (numbers, paths, counts)
+        - Tasks with answer() action pattern
+        - Non-trivial responses
+        
+        Args:
+            text_content: The agent's proposed response
+            task: The original task
+            
+        Returns:
+            True if reflection should be performed
+        """
+        if not text_content:
+            return False
+        
+        response_stripped = text_content.strip()
+        
+        # Skip reflection for simple acknowledgments
+        simple_responses = ["ok", "done", "finished", "完成", "好的", "已完成"]
+        if response_stripped.lower() in simple_responses:
+            return False
+        
+        # Skip very short non-numeric responses (but allow short numbers like "42")
+        if len(response_stripped) < 5 and not response_stripped.isdigit():
+            return False
+        
+        # Trigger reflection for tasks expecting specific answers
+        answer_indicators = [
+            "how many", "count", "number of", "total",
+            "what is", "find", "calculate", "determine",
+            "多少", "统计", "计算", "查找", "数量",
+            "integer", "answer", "result", "lines", "files"
+        ]
+        
+        task_lower = task.lower()
+        for indicator in answer_indicators:
+            if indicator in task_lower:
+                return True
+        
+        # Check if response looks like a specific answer (number, path, etc.)
+        if response_stripped.isdigit():
+            return True  # Numeric answer - worth verifying
+        
+        return False
+    
+    async def _reflect_before_submit(
+        self,
+        task: str,
+        answer: str,
+        tool_calls: List[Dict[str, Any]],
+    ) -> ReflectionResult:
+        """
+        Perform reflection before submitting an answer.
+        
+        Uses a lightweight LLM call to verify:
+        1. Answer format matches task requirements
+        2. Answer is derived from tool outputs
+        3. Action selection is correct (answer vs finish)
+        
+        Args:
+            task: Original task
+            answer: Proposed answer
+            tool_calls: List of tool calls made
+            
+        Returns:
+            ReflectionResult with revision needs and feedback
+        """
+        issues = []
+        
+        # Check 1: Numeric answer format
+        task_lower = task.lower()
+        expects_number = any(kw in task_lower for kw in [
+            "how many", "count", "number", "integer", "total",
+            "多少", "数量", "统计", "计算"
+        ])
+        
+        if expects_number:
+            # Extract potential number from answer
+            import re
+            numbers = re.findall(r'\d+', answer)
+            if not numbers:
+                issues.append("Task expects a numeric answer but response contains no numbers")
+            elif len(numbers) > 1:
+                # Multiple numbers - might be ambiguous
+                issues.append(f"Multiple numbers found in answer ({numbers}). Ensure the correct one is provided.")
+        
+        # Check 2: Answer derived from tool outputs
+        if tool_calls:
+            last_successful = [tc for tc in tool_calls if tc.get("success")]
+            if last_successful:
+                last_output = str(last_successful[-1].get("output", ""))
+                # Simple check: key parts of answer should appear in tool output
+                answer_core = answer.strip().split()[0] if answer.strip() else ""
+                if answer_core and answer_core not in last_output:
+                    issues.append(f"Answer '{answer_core}' not found in last tool output. Verify correctness.")
+        
+        # Check 3: Action selection (for AgentBench compatibility)
+        # If task asks for an answer, ensure we're using answer() format
+        if expects_number and "answer(" not in answer.lower() and not answer.strip().isdigit():
+            issues.append("Task expects a specific answer. Consider using answer(VALUE) format.")
+        
+        # Determine if revision is needed
+        needs_revision = len(issues) > 0
+        
+        if needs_revision:
+            feedback = "Before submitting, please verify:\n" + "\n".join(f"- {issue}" for issue in issues)
+            feedback += "\n\nReview your answer and tool outputs, then provide the correct response."
+            logger.info(f"[Reflection] Issues found: {issues}")
+        else:
+            feedback = ""
+            logger.debug("[Reflection] No issues found, proceeding with answer")
+        
+        return ReflectionResult(
+            needs_revision=needs_revision,
+            feedback=feedback,
+            confidence=0.5 if needs_revision else 0.9,
+            issues=issues,
+        )
+    
+    def _detect_loop(self, tool_calls: List[Dict[str, Any]], window: int = 3) -> bool:
+        """
+        Detect if the agent is stuck in a repetitive loop.
+        
+        Checks if the last N tool calls are identical (same tool + same args).
+        
+        Args:
+            tool_calls: List of tool calls made so far
+            window: Number of recent calls to check
+            
+        Returns:
+            True if a loop is detected
+        """
+        if len(tool_calls) < window:
+            return False
+        
+        recent = tool_calls[-window:]
+        
+        # Check if all recent calls are the same tool with same args
+        first = recent[0]
+        for call in recent[1:]:
+            if call["name"] != first["name"]:
+                return False
+            if call["args"] != first["args"]:
+                return False
+        
+        # All calls are identical - loop detected
+        logger.warning(f"[Loop Detection] Detected {window} identical calls to {first['name']}")
+        return True
+    
     async def run(
         self,
         task: str,
         session_id: str = "default",
         context: Optional[str] = None,
+        on_text_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_thinking_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_tool_start: Optional[Callable[[str, str], Awaitable[None]]] = None,
+        on_tool_end: Optional[Callable[[str, bool, str], Awaitable[None]]] = None,
     ) -> AgentResult:
         """
         Execute a task autonomously using ReAct loop with smart routing.
@@ -744,6 +968,10 @@ class ReActAgent:
             task: User's task/question
             session_id: Session ID for message grouping
             context: Optional additional context
+            on_text_delta: Callback for real-time text streaming (delta: str)
+            on_thinking_delta: Callback for thinking content streaming
+            on_tool_start: Callback when tool execution starts (tool_id, tool_name)
+            on_tool_end: Callback when tool execution ends (tool_id, success, result)
             
         Returns:
             AgentResult with success status and response
@@ -823,8 +1051,16 @@ class ReActAgent:
                             "complexity": plan.complexity.value,
                         })
         
+        # Early simple chat detection for optimization
+        is_simple_chat = self._is_simple_chat(task)
+        if is_simple_chat:
+            logger.info(f"[Agent] Simple chat detected early, will skip memory search")
+        
         # Build system prompt with session history and long-term memory (async)
-        system_prompt = await self._build_system_prompt_with_memory(session_id, task)
+        # Skip memory search for simple chats to save ~3s
+        system_prompt = await self._build_system_prompt_with_memory(
+            session_id, task, skip_memory=is_simple_chat
+        )
         
         # Inject plan into context if we have one
         user_content = task
@@ -847,6 +1083,11 @@ class ReActAgent:
         ttft_recorded = False
         ttft_ms = None
         
+        # Prometheus metrics
+        metrics = get_metrics() if PROMETHEUS_AVAILABLE else None
+        if metrics:
+            metrics.request_in_progress.inc()
+        
         # Check if cache is warm and use cached system prompt
         use_caching = self._is_cache_warm(session_id)
         if use_caching:
@@ -867,23 +1108,39 @@ class ReActAgent:
                 current_tool_index = -1
                 
                 # Build API call params
+                # Dynamically adjust model and Extended Thinking based on task complexity
+                is_simple = is_simple_chat  # Use early detection result
+                logger.info(f"[Agent] Task '{task[:30]}...' is_simple={is_simple}")
+                
+                # Extended Thinking requires Opus model (Sonnet doesn't support it)
+                # Always use Opus for consistent UX with thinking feedback
+                # Simple chats: smaller thinking budget + output for fast response
+                thinking_budget = 2048 if is_simple else 4096
+                max_tokens = 2048 if is_simple else 16384
+                
                 api_params = {
-                    "model": self.model,
-                    "max_tokens": 16384,  # Increased for thinking budget
-                    "tools": tools,
+                    "model": self.model,  # Always Opus for thinking support
+                    "max_tokens": max_tokens,
                     "messages": messages,
-                    # Enable Extended Thinking for Claude Opus 4.5
                     "thinking": {
                         "type": "enabled",
-                        "budget_tokens": 8192,  # Budget for reasoning
+                        "budget_tokens": thinking_budget,
                     },
                 }
+                # Only include tools if we have any (empty array causes API error)
+                if not is_simple and tools:
+                    api_params["tools"] = tools
+                logger.info(f"[Agent] {'Simple' if is_simple else 'Complex'} chat: {self.model}, thinking={thinking_budget}, max_tokens={max_tokens}, tools={len(tools) if not is_simple else 0}")
                 
+                # Extended Thinking requires beta header
+                # Combine with prompt caching header if using caching
+                beta_headers = [self.THINKING_BETA]
                 if use_caching:
-                    api_params["extra_headers"] = {"anthropic-beta": self.PROMPT_CACHE_BETA}
+                    beta_headers.append(self.PROMPT_CACHE_BETA)
                     api_params["system"] = self._build_cached_system(system_prompt)
                 else:
                     api_params["system"] = system_prompt
+                api_params["extra_headers"] = {"anthropic-beta": ",".join(beta_headers)}
                 
                 # Track thinking state
                 is_thinking = False
@@ -891,9 +1148,9 @@ class ReActAgent:
                 thinking_start_time = None
                 current_block_type = None  # Track current block type
                 
-                # Use streaming API for real-time feedback
-                with self.client.messages.stream(**api_params) as stream:
-                    for event in stream:
+                # Use ASYNC streaming API for true real-time feedback
+                async with self.async_client.messages.stream(**api_params) as stream:
+                    async for event in stream:
                         # Record TTFT on first event
                         if not ttft_recorded:
                             ttft_ms = (time.time() - task_start_time) * 1000
@@ -949,6 +1206,10 @@ class ReActAgent:
                                 if delta_type == "thinking_delta":
                                     thinking_text = event.delta.thinking
                                     thinking_content += thinking_text
+                                    # Call thinking callback (for ChatKit integration)
+                                    if on_thinking_delta and thinking_text:
+                                        await on_thinking_delta(thinking_text)
+                                    # Broadcast via WebSocket (for traditional UI)
                                     if self.status_server and thinking_text:
                                         await self.status_server.broadcast({
                                             "type": "thinking_delta",
@@ -960,6 +1221,11 @@ class ReActAgent:
                                 elif delta_type == "text_delta":
                                     text_delta = event.delta.text
                                     text_content += text_delta
+                                    # Call streaming callback (for ChatKit integration)
+                                    if on_text_delta and text_delta:
+                                        logger.debug(f"[Agent] Calling on_text_delta: {text_delta[:20]}...")
+                                        await on_text_delta(text_delta)
+                                    # Broadcast via WebSocket (for traditional UI)
                                     if self.status_server and text_delta:
                                         await self.status_server.broadcast({
                                             "type": "content",
@@ -971,9 +1237,10 @@ class ReActAgent:
                                 elif delta_type == "input_json_delta":
                                     current_tool_args += event.delta.partial_json
                         
-                        elif event.type == "input_json":
-                            # Accumulate tool arguments (streaming JSON) - fallback
-                            current_tool_args += event.partial_json
+                        # NOTE: Do NOT handle "input_json" event separately!
+                        # The SDK helper event "input_json" contains a cumulative snapshot,
+                        # while "input_json_delta" in content_block_delta provides incremental parts.
+                        # Handling both causes double-accumulation and corrupted JSON.
                         
                         elif event.type == "content_block_stop":
                             # End thinking block (use current_block_type for robustness)
@@ -999,8 +1266,8 @@ class ReActAgent:
                                 current_tool_args = ""
                                 current_tool_index = -1
                     
-                    # Get final message for stop_reason
-                    response = stream.get_final_message()
+                    # Get final message for stop_reason (async)
+                    response = await stream.get_final_message()
                 
                 # Signal end of streaming content
                 if text_content and self.status_server:
@@ -1026,6 +1293,8 @@ class ReActAgent:
                     tool_id = tool_use["id"]
                     
                     # Stream tool start
+                    if on_tool_start:
+                        await on_tool_start(tool_id, tool_name)
                     if self.status_server:
                         await self.status_server.stream_tool_start(
                             message_id, tool_id, tool_name
@@ -1044,6 +1313,12 @@ class ReActAgent:
                     result = await self._execute_with_retry(tool_name, tool_args)
                     
                     # Stream tool result
+                    if on_tool_end:
+                        await on_tool_end(
+                            tool_id, 
+                            result.success, 
+                            result.output if result.success else result.error or ""
+                        )
                     if self.status_server:
                         await self.status_server.stream_tool_result(
                             message_id,
@@ -1111,6 +1386,19 @@ class ReActAgent:
                 # Visualization: task error
                 if VISUALIZATION_AVAILABLE and self.status_server:
                     await visualize_task_error(self.status_server)
+                
+                # Record Prometheus metrics for error
+                if metrics:
+                    elapsed = time.time() - task_start_time
+                    metrics.request_in_progress.dec()
+                    metrics.record_request(
+                        task_type=task_type_str,
+                        success=False,
+                        duration_seconds=elapsed,
+                        iterations=iteration,
+                    )
+                    metrics.record_error(type(e).__name__)
+                
                 return AgentResult(
                     success=False,
                     response="",
@@ -1176,6 +1464,17 @@ class ReActAgent:
         # Visualization: task complete
         if VISUALIZATION_AVAILABLE and self.status_server:
             await visualize_task_complete(self.status_server)
+        
+        # Record Prometheus metrics
+        if metrics:
+            elapsed = time.time() - task_start_time
+            metrics.request_in_progress.dec()
+            metrics.record_request(
+                task_type=task_type_str,
+                success=True,
+                duration_seconds=elapsed,
+                iterations=iteration,
+            )
         
         # Return result
         return AgentResult(

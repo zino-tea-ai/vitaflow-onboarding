@@ -1,0 +1,27 @@
+/**
+ * Chat Components
+ * 
+ * Multiple chat interface styles:
+ * - Minimal: 极致克制，纯黑白灰 (Recommended)
+ * - System: 系统级 AI 工具界面
+ * - Premium: Linear/Raycast-grade refined interface
+ * - Cursor: Cursor IDE-style interface
+ */
+
+// Minimal Design (Recommended) - 极致克制
+export { MinimalChatArea } from './MinimalChatArea';
+
+// System Design - 系统级工具
+export { SystemChatArea } from './SystemChatArea';
+
+// Premium Design
+export { PremiumChatArea } from './PremiumChatArea';
+export { PremiumMessage } from './PremiumMessage';
+
+// Cursor-Style (Legacy)
+export { CursorChatArea } from './CursorChatArea';
+export { Message } from './Message';
+export { StreamingText } from './StreamingText';
+export { ThinkingBlock } from './ThinkingBlock';
+export { CodeBlock } from './CodeBlock';
+

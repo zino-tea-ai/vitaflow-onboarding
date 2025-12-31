@@ -50,8 +50,15 @@ class HealthChecker:
         try:
             from engine.agent.react_agent import ReActAgent
             
-            # Check API key
-            if not os.environ.get("ANTHROPIC_API_KEY"):
+            # Check API key (try api_keys.py first)
+            api_key = None
+            try:
+                import api_keys
+                api_key = api_keys.ANTHROPIC_API_KEY
+            except (ImportError, AttributeError):
+                api_key = os.environ.get("ANTHROPIC_API_KEY")
+            
+            if not api_key:
                 return HealthResult("agent", "degraded", error="No API key")
             
             return HealthResult("agent", "healthy", (time.time() - start) * 1000)

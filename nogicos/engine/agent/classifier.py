@@ -72,7 +72,8 @@ class TaskClassifier:
     BROWSER_KEYWORDS = {
         # Navigation
         "网页", "网站", "浏览器", "打开网", "访问", "链接",
-        "url", "http", "https", "www", "navigate", "browse",
+        "url", "http", "https", "www", "navigate", "browse", "open",
+        ".com", ".org", ".net", ".io", ".dev", ".ai",  # Domain extensions
         
         # Interaction
         "点击", "click", "按钮", "button", "输入框", "表单",
@@ -255,36 +256,36 @@ class TaskClassifier:
         if re.search(r'[A-Z]:\\', task) or task.startswith('~') or '/home/' in task_lower:
             score += 5.0
         
-        # File extension detection
-        if re.search(r'\.\w{2,4}(?:\s|$|,)', task):
-            score += 3.0
+        # File extension detection (exclude domain extensions)
+        domain_extensions = {'.com', '.org', '.net', '.io', '.dev', '.ai', '.edu', '.gov'}
+        ext_match = re.search(r'\.(\w{2,4})(?:\s|$|,)', task)
+        if ext_match:
+            ext = f".{ext_match.group(1).lower()}"
+            if ext not in domain_extensions:
+                score += 3.0
         
         return score, matched
     
     def _determine_type(self, browser_score: float, local_score: float) -> TaskType:
         """Determine task type based on scores"""
-        # Clear winner
-        if browser_score > local_score * 2:
-            return TaskType.BROWSER
-        if local_score > browser_score * 2:
-            return TaskType.LOCAL
-        
-        # Both have significant scores
-        if browser_score > 3 and local_score > 3:
+        # Both have scores -> likely MIXED (check this first)
+        if browser_score >= 1 and local_score >= 1:
             return TaskType.MIXED
         
-        # Moderate difference
-        if browser_score > local_score + 2:
+        # Clear winner (one is much higher than other)
+        if browser_score >= 2 and local_score == 0:
             return TaskType.BROWSER
-        if local_score > browser_score + 2:
+        if local_score >= 2 and browser_score == 0:
             return TaskType.LOCAL
         
-        # Very close or both low
-        if browser_score < 2 and local_score < 2:
-            return TaskType.UNKNOWN
+        # One has score, other doesn't
+        if browser_score > 0 and local_score == 0:
+            return TaskType.BROWSER
+        if local_score > 0 and browser_score == 0:
+            return TaskType.LOCAL
         
-        # Default to the higher one
-        return TaskType.BROWSER if browser_score > local_score else TaskType.LOCAL
+        # Both zero
+        return TaskType.UNKNOWN
     
     def _determine_complexity(self, task: str, task_lower: str) -> TaskComplexity:
         """Determine task complexity"""

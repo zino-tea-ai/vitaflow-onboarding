@@ -761,7 +761,14 @@ class SemanticMemoryStore:
         if self._embedding_client is None:
             try:
                 import openai
-                api_key = os.environ.get("OPENAI_API_KEY")
+                # Try api_keys.py first, then environment variable
+                api_key = None
+                try:
+                    import api_keys
+                    api_key = api_keys.OPENAI_API_KEY
+                except (ImportError, AttributeError):
+                    api_key = os.environ.get("OPENAI_API_KEY")
+                
                 if api_key:
                     self._embedding_client = openai.OpenAI(api_key=api_key)
                 else:

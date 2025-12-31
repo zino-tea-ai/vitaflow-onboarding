@@ -47,13 +47,26 @@ logger = get_logger("hive_server")
 
 # FastAPI imports
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import Response, StreamingResponse, JSONResponse
     from pydantic import BaseModel
     import uvicorn
 except ImportError:
     logger.error("FastAPI not installed. Run: pip install fastapi uvicorn")
     sys.exit(1)
+
+# ChatKit Server (optional - graceful degradation if not available)
+try:
+    from chatkit.server import StreamingResult
+    from engine.server.chatkit_server import create_chatkit_server, NogicOSChatServer
+    CHATKIT_AVAILABLE = True
+except ImportError:
+    CHATKIT_AVAILABLE = False
+    StreamingResult = None
+    create_chatkit_server = None
+    NogicOSChatServer = None
+    logger.warning("ChatKit SDK not available. Install with: pip install openai-chatkit")
 
 # V2 imports
 from engine.server.websocket import StatusServer
@@ -113,6 +126,8 @@ class NogicEngine:
     
     def __init__(self):
         self.status_server: Optional[StatusServer] = None
+        self.chatkit_server: Optional["NogicOSChatServer"] = None  # ChatKit 服务器
+        self.agent: Optional[ReActAgent] = None  # Reusable agent instance
         self._executing = False
         self._current_task: Optional[str] = None
         self._stats = {
@@ -127,6 +142,21 @@ class NogicEngine:
         self.status_server = StatusServer(port=8765)
         await self.status_server.start()
         logger.info("WebSocket server started on port 8765")
+        
+        # Initialize reusable ReAct Agent (avoids 1-2s init overhead per request)
+        logger.info("Initializing ReAct Agent...")
+        init_start = time.time()
+        self.agent = ReActAgent(
+            status_server=self.status_server,
+            max_iterations=20,
+        )
+        logger.info(f"ReAct Agent initialized in {time.time() - init_start:.2f}s")
+        
+        # 初始化 ChatKit 服务器
+        if CHATKIT_AVAILABLE and create_chatkit_server:
+            self.chatkit_server = create_chatkit_server(status_server=self.status_server)
+            if self.chatkit_server:
+                logger.info("ChatKit server initialized")
     
     async def stop_websocket(self):
         """Stop WebSocket server"""
@@ -646,6 +676,264 @@ async def memory_stats():
     except Exception as e:
         logger.error(f"Failed to get memory stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Vercel AI SDK Chat Endpoint
+# ============================================================================
+
+class ChatRequest(BaseModel):
+    """Vercel AI SDK chat request"""
+    messages: Optional[list] = None  # Traditional format
+    text: Optional[str] = None  # New sendMessage format
+    session_id: str = "default"
+    
+    class Config:
+        extra = "allow"  # Allow extra fields like temperature, etc.
+
+
+async def generate_ai_sdk_stream(task: str, session_id: str):
+    """
+    Generate SSE stream compatible with Vercel AI SDK 5.0 Data Stream Protocol.
+    
+    Stream format (SSE with JSON):
+    - Start: data: {"type":"start","messageId":"..."}
+    - Text: data: {"type":"text-start/delta/end","id":"...","delta":"..."}
+    - Reasoning: data: {"type":"reasoning-start/delta/end","id":"...","delta":"..."}
+    - Finish: data: {"type":"finish","finishReason":"stop"}
+    
+    Note: Requires x-vercel-ai-ui-message-stream: v1 header for custom backends.
+    """
+    import uuid
+    
+    # Reuse global agent instance (initialized once at server startup)
+    # This avoids 1-2s initialization overhead per request
+    agent = engine.agent if engine else ReActAgent(
+        status_server=None,
+        max_iterations=20,
+    )
+    
+    message_id = str(uuid.uuid4())
+    text_id = f"text_{uuid.uuid4().hex[:8]}"
+    reasoning_id = f"reasoning_{uuid.uuid4().hex[:8]}"
+    text_started = False
+    reasoning_started = False
+    
+    # Helper to format SSE
+    def sse(data: dict) -> str:
+        return f"data: {json.dumps(data)}\n\n"
+    
+    # Use queue to collect events from callbacks
+    event_queue: asyncio.Queue = asyncio.Queue()
+    agent_done = asyncio.Event()
+    
+    async def thinking_callback(delta: str):
+        nonlocal reasoning_started
+        if not reasoning_started:
+            await event_queue.put(sse({"type": "reasoning-start", "id": reasoning_id}))
+            reasoning_started = True
+        await event_queue.put(sse({"type": "reasoning-delta", "id": reasoning_id, "delta": delta}))
+    
+    async def text_callback(delta: str):
+        nonlocal text_started
+        if not text_started:
+            await event_queue.put(sse({"type": "text-start", "id": text_id}))
+            text_started = True
+        await event_queue.put(sse({"type": "text-delta", "id": text_id, "delta": delta}))
+    
+    async def tool_start_callback(tool_id: str, tool_name: str):
+        await event_queue.put(sse({"type": "tool-call-start", "toolCallId": tool_id, "toolName": tool_name}))
+    
+    async def tool_end_callback(tool_id: str, success: bool, result: str):
+        await event_queue.put(sse({"type": "tool-result", "toolCallId": tool_id, "result": result if success else f"Error: {result}"}))
+    
+    async def run_agent():
+        try:
+            result = await agent.run(
+                task=task,
+                session_id=session_id,
+                on_text_delta=text_callback,
+                on_thinking_delta=thinking_callback,
+                on_tool_start=tool_start_callback,
+                on_tool_end=tool_end_callback,
+            )
+            # Send text-end if text was started
+            if text_started:
+                await event_queue.put(sse({"type": "text-end", "id": text_id}))
+            # Send reasoning-end if reasoning was started
+            if reasoning_started:
+                await event_queue.put(sse({"type": "reasoning-end", "id": reasoning_id}))
+            # Send finish message
+            await event_queue.put(sse({
+                "type": "finish",
+                "finishReason": "stop" if result.success else "error",
+            }))
+        except Exception as e:
+            logger.error(f"Agent error: {e}")
+            await event_queue.put(sse({"type": "finish", "finishReason": "error"}))
+        finally:
+            agent_done.set()
+    
+    # Start agent in background
+    agent_task = asyncio.create_task(run_agent())
+    
+    # Send stream start
+    yield sse({"type": "start", "messageId": message_id})
+    
+    try:
+        while not agent_done.is_set() or not event_queue.empty():
+            try:
+                # Reduced timeout for faster response (was 0.1s, now 0.01s)
+                event = await asyncio.wait_for(event_queue.get(), timeout=0.01)
+                yield event
+            except asyncio.TimeoutError:
+                continue
+    finally:
+        if not agent_task.done():
+            agent_task.cancel()
+
+
+@app.post("/api/chat")
+async def chat_endpoint(request: Request):
+    """
+    Vercel AI SDK compatible chat endpoint.
+    
+    Accepts multiple formats:
+    1. New format: { text: "message" }
+    2. Traditional: { messages: [{ role: "user", content: "..." }] }
+    
+    Returns SSE stream with:
+    - Text deltas (type 0)
+    - Reasoning/thinking deltas (type g, h)
+    - Tool calls (type 9, a)
+    - Finish signal (type d)
+    
+    Frontend uses @ai-sdk/react useChat hook to consume this stream.
+    """
+    if not engine:
+        raise HTTPException(status_code=503, detail="Engine not ready")
+    
+    try:
+        body = await request.json()
+        logger.info(f"[Chat] Received request: {json.dumps(body, ensure_ascii=False)[:200]}...")
+    except Exception as e:
+        logger.error(f"[Chat] Failed to parse JSON: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+    
+    # Extract user message - support multiple formats
+    user_message = ""
+    session_id = body.get("session_id", "default")
+    
+    # Format 1: New Vercel AI SDK format { text: "..." }
+    if "text" in body and body["text"]:
+        user_message = body["text"]
+    
+    # Format 2: Messages array (traditional or new parts-based)
+    elif "messages" in body and body["messages"]:
+        for msg in reversed(body["messages"]):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                # New AI SDK format: parts array
+                if "parts" in msg and msg["parts"]:
+                    for part in msg["parts"]:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            user_message = part.get("text", "")
+                            break
+                    if user_message:
+                        break
+                
+                # Traditional format: content field
+                content = msg.get("content", "")
+                if isinstance(content, str) and content:
+                    user_message = content
+                    break
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            user_message = part.get("text", "")
+                            break
+                    if user_message:
+                        break
+    
+    if not user_message:
+        logger.warning(f"[Chat] No user message found in request: {body}")
+        raise HTTPException(status_code=400, detail="No user message found")
+    
+    logger.info(f"[Chat] Processing: {user_message[:100]}...")
+    
+    return StreamingResponse(
+        generate_ai_sdk_stream(user_message, session_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "x-vercel-ai-ui-message-stream": "v1",  # Required for AI SDK 5.0
+        }
+    )
+
+
+# ============================================================================
+# ChatKit Endpoint (OpenAI ChatKit Protocol)
+# ============================================================================
+
+@app.post("/chatkit")
+async def chatkit_endpoint(request: Request):
+    """
+    ChatKit 协议端点 - 支持 OpenAI ChatKit UI 框架。
+    
+    此端点实现完整的 ChatKit 服务器协议，支持：
+    - 流式响应
+    - Widget 渲染
+    - 客户端工具
+    - 会话管理
+    
+    前端使用 @openai/chatkit-react 连接此端点。
+    """
+    if not CHATKIT_AVAILABLE:
+        return JSONResponse(
+            status_code=501,
+            content={
+                "error": "ChatKit SDK not available",
+                "detail": "Install with: pip install openai-chatkit",
+            }
+        )
+    
+    if not engine or not engine.chatkit_server:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "ChatKit server not ready",
+                "detail": "Engine not initialized",
+            }
+        )
+    
+    try:
+        payload = await request.body()
+        result = await engine.chatkit_server.process(payload, {"request": request})
+        
+        if isinstance(result, StreamingResult):
+            # SSE 响应需要禁用缓冲才能实现真正的流式效果
+            return StreamingResponse(
+                result, 
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+                }
+            )
+        
+        if hasattr(result, "json"):
+            return Response(content=result.json, media_type="application/json")
+        
+        return JSONResponse(result)
+        
+    except Exception as e:
+        logger.error(f"ChatKit endpoint error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
 
 
 @app.get("/health")

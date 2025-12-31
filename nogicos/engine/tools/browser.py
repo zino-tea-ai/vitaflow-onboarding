@@ -139,6 +139,40 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error getting URL: {str(e)}"
     
     @registry.action(
+        description="Get the current page title.",
+        category=ToolCategory.BROWSER,
+        requires_context=["browser_session"]
+    )
+    async def browser_get_title(browser_session=None) -> str:
+        """Get current page title"""
+        if browser_session is None:
+            return "Error: No browser session available"
+        
+        try:
+            title = await browser_session.get_title()
+            return title if title else "(No title)"
+        except Exception as e:
+            logger.error(f"Get title failed: {e}")
+            return f"Error getting title: {str(e)}"
+    
+    @registry.action(
+        description="Get the text content of the current page.",
+        category=ToolCategory.BROWSER,
+        requires_context=["browser_session"]
+    )
+    async def browser_get_content(browser_session=None) -> str:
+        """Get page text content"""
+        if browser_session is None:
+            return "Error: No browser session available"
+        
+        try:
+            content = await browser_session.get_page_content()
+            return content[:5000] if len(content) > 5000 else content
+        except Exception as e:
+            logger.error(f"Get content failed: {e}")
+            return f"Error getting content: {str(e)}"
+    
+    @registry.action(
         description="Scroll the page. Direction can be 'up', 'down', 'top', or 'bottom'.",
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]

@@ -373,3 +373,7 @@ async def visualize_tool_end(server, tool_name: str, success: bool, step: int = 
         logger.warning(f"[Viz] Failed to visualize tool end: {e}")
 
 
+
+
+
+

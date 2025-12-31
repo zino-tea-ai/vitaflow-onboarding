@@ -2,6 +2,7 @@ export { TitleBar } from './TitleBar';
 export { Sidebar } from './Sidebar';
 export type { Session } from './Sidebar';
 export { ChatArea } from './ChatArea';
+export { ChatKitArea } from './ChatKitArea';
 export { MessageBubble } from './MessageBubble';
 export type { Message } from './MessageBubble';
 export { ToolCard } from './ToolCard';

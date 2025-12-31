@@ -1,0 +1,379 @@
+{
+  "timestamp": "2025-12-30T12:01:07.472611",
+  "version": "2.0.0",
+  "overall_score": 0.711,
+  "level": "L4 (Launch)",
+  "categories": {
+    "browser": {
+      "score": 0.917,
+      "passed": 4,
+      "total": 4,
+      "success_rate": 1.0
+    },
+    "local": {
+      "score": 0.9,
+      "passed": 6,
+      "total": 6,
+      "success_rate": 1.0
+    },
+    "mixed": {
+      "score": 0.251,
+      "passed": 0,
+      "total": 3,
+      "success_rate": 0.0
+    }
+  },
+  "metrics": {
+    "success_rate": 0.769,
+    "avg_steps": 2.77,
+    "avg_time_seconds": 11.85,
+    "total_tasks": 13,
+    "passed_tasks": 10
+  },
+  "tasks": [
+    {
+      "task_id": "B001",
+      "category": "browser",
+      "difficulty": "easy",
+      "task": "Navigate to https://example.com",
+      "success": true,
+      "score": 0.8999999999999999,
+      "steps_taken": 2,
+      "optimal_steps": 1,
+      "time_seconds": 6.361814022064209,
+      "timeout_seconds": 30,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "URL contains expected",
+        "details": {
+          "mode": "contains",
+          "url": "Done. Navigated to **Example Domain** (https://example.com)."
+        }
+      },
+      "error": null,
+      "agent_response": "Done. Navigated to **Example Domain** (https://example.com)."
+    },
+    {
+      "task_id": "B002",
+      "category": "browser",
+      "difficulty": "easy",
+      "task": "Go to https://www.google.com and tell me the page title",
+      "success": true,
+      "score": 0.8999999999999999,
+      "steps_taken": 2,
+      "optimal_steps": 1,
+      "time_seconds": 13.628956317901611,
+      "timeout_seconds": 30,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "All phrases found",
+        "details": {
+          "mode": "must_include",
+          "result_length": 29
+        }
+      },
+      "error": null,
+      "agent_response": "The page title is **Google**."
+    },
+    {
+      "task_id": "B003",
+      "category": "browser",
+      "difficulty": "medium",
+      "task": "Navigate to https://example.com and extract all text content from the page",
+      "success": true,
+      "score": 0.9333333333333332,
+      "steps_taken": 3,
+      "optimal_steps": 2,
+      "time_seconds": 13.142773866653442,
+      "timeout_seconds": 45,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "All phrases found",
+        "details": {
+          "mode": "must_include",
+          "result_length": 313
+        }
+      },
+      "error": null,
+      "agent_response": "Done! Here's the extracted content from **example.com**:\n\n---\n\n**Example Domain**\n\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\n\nLearn more\n\n---\n\nThe page is a simple placeholder domain maintained by IANA for use in illustrative documentation and examples."
+    },
+    {
+      "task_id": "B004",
+      "category": "browser",
+      "difficulty": "medium",
+      "task": "Go to https://news.ycombinator.com and get the title of the first story",
+      "success": true,
+      "score": 0.9333333333333332,
+      "steps_taken": 3,
+      "optimal_steps": 2,
+      "time_seconds": 15.376019954681396,
+      "timeout_seconds": 60,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "Regex matched",
+        "details": {
+          "mode": "regex",
+          "result_length": 100
+        }
+      },
+      "error": null,
+      "agent_response": "**Done.** The title of the first story on Hacker News is:\n\n**\"Google is dead. Where do we go now?\"**"
+    },
+    {
+      "task_id": "L001",
+      "category": "local",
+      "difficulty": "easy",
+      "task": "List all files in the current directory",
+      "success": true,
+      "score": 0.8999999999999999,
+      "steps_taken": 2,
+      "optimal_steps": 1,
+      "time_seconds": 9.220882177352905,
+      "timeout_seconds": 15,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "All phrases found",
+        "details": {
+          "mode": "must_include",
+          "result_length": 571
+        }
+      },
+      "error": null,
+      "agent_response": "当前目录内容：\n\n**📁 文件夹 (12个)**\n- `.git/` `.github/` `.pytest_cache/` `__pycache__/` — 系统/缓存\n- `client/` `engine/` `tests/` — 核心代码\n- `data/` `docs/` `logs/` `reference/` — 数据与文档\n- `nogicos-ui/` — UI 界面\n\n**📄 文件 (12个)**\n| 文件名 | 大小 |\n|--------|------|\n| hive_server.py | 21.1 KB |\n| PRODUCT_SPEC.md | 16.8 KB |\n| benchmark_results.json | 6.5 KB |\n| README.md | 4.8 KB |\n| ARCHITECTURE.md | 4.4 KB |\n| .cursorrules | 3.8 KB |\n| CHANGELOG.md | 2.1 KB |\n| api_keys.py | 1.2 KB |\n| api_keys.example.py | 944 B |\n| "
+    },
+    {
+      "task_id": "L002",
+      "category": "local",
+      "difficulty": "easy",
+      "task": "Read the content of README.md file",
+      "success": true,
+      "score": 0.8999999999999999,
+      "steps_taken": 2,
+      "optimal_steps": 1,
+      "time_seconds": 8.08925986289978,
+      "timeout_seconds": 15,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "All phrases found",
+        "details": {
+          "mode": "must_include",
+          "result_length": 708
+        }
+      },
+      "error": null,
+      "agent_response": "Here's the README.md content:\n\n**NogicOS** - \"Your AI Work Partner, living in your computer\"\n\nKey highlights:\n- **Purpose**: AI control center bridging internet and local environment - not just chat, but actual task execution\n- **Capabilities**: Web browsing, file management, shell commands, intelligent ReAct Agent\n\n**Architecture**: Electron client + Python backend connected via WebSocket/HTTP\n\n**Available Tools**:\n- Browser: navigate, click, type, scroll, screenshot, extract content\n- Local: f"
+    },
+    {
+      "task_id": "L003",
+      "category": "local",
+      "difficulty": "easy",
+      "task": "Create a new file called benchmark_test.txt on the Desktop with the content 'Hello Benchmark'",
+      "success": true,
+      "score": 0.8999999999999999,
+      "steps_taken": 2,
+      "optimal_steps": 1,
+      "time_seconds": 8.904515266418457,
+      "timeout_seconds": 20,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "All checks passed",
+        "details": {
+          "checks": [
+            {
+              "type": "exists",
+              "passed": true,
+              "message": "File exists"
+            },
+            {
+              "type": "content_match",
+              "passed": true,
+              "message": "Content matches"
+            }
+          ]
+        }
+      },
+      "error": null,
+      "agent_response": "已创建文件 `benchmark_test.txt` 在桌面，内容为 \"Hello Benchmark\"。"
+    },
+    {
+      "task_id": "L004",
+      "category": "local",
+      "difficulty": "medium",
+      "task": "Search for all Python files (*.py) in the engine directory",
+      "success": true,
+      "score": 0.8999999999999999,
+      "steps_taken": 2,
+      "optimal_steps": 1,
+      "time_seconds": 11.112690687179565,
+      "timeout_seconds": 30,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "All phrases found",
+        "details": {
+          "mode": "must_include",
+          "result_length": 612
+        }
+      },
+      "error": null,
+      "agent_response": "Found **33 Python files** in the `engine` directory:\n\n| Module | Files |\n|--------|-------|\n| **agent/** | classifier.py, planner.py, react_agent.py, imports.py |\n| **browser/** | session.py |\n| **health/** | __main__.py |\n| **knowledge/** | extractor.py, memory.py, models.py, search.py, store.py |\n| **middleware/** | filesystem.py, todo.py |\n| **server/** | websocket.py |\n| **stream/** | protocol.py |\n| **tools/** | base.py, browser.py, desktop.py, local.py, vision.py |\n| **visualization/** | t"
+    },
+    {
+      "task_id": "L005",
+      "category": "local",
+      "difficulty": "medium",
+      "task": "Run the command 'python --version' and tell me the Python version",
+      "success": true,
+      "score": 0.8999999999999999,
+      "steps_taken": 2,
+      "optimal_steps": 1,
+      "time_seconds": 8.527036428451538,
+      "timeout_seconds": 20,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "Regex matched",
+        "details": {
+          "mode": "regex",
+          "result_length": 23
+        }
+      },
+      "error": null,
+      "agent_response": "**Python 版本: 3.14.2** ✓"
+    },
+    {
+      "task_id": "L006",
+      "category": "local",
+      "difficulty": "medium",
+      "task": "Find all files containing 'TODO' in the tests directory",
+      "success": true,
+      "score": 0.8999999999999999,
+      "steps_taken": 2,
+      "optimal_steps": 1,
+      "time_seconds": 10.1755530834198,
+      "timeout_seconds": 30,
+      "evaluation": {
+        "score": 1.0,
+        "passed": true,
+        "message": "All phrases found",
+        "details": {
+          "mode": "must_include",
+          "result_length": 314
+        }
+      },
+      "error": null,
+      "agent_response": "Found **1 match** for 'TODO' in the tests directory:\n\n| File | Line | Content |\n|------|------|---------|\n| `tests\\benchmark\\test_cases.json` | 139 | `\"task\": \"Find all files containing 'TODO' in the tests directory\",` |\n\nInterestingly, the only occurrence is a reference to this exact task in a test cases file. 🔄"
+    },
+    {
+      "task_id": "M001",
+      "category": "mixed",
+      "difficulty": "medium",
+      "task": "Go to https://example.com and save the page title to a file called example_title.txt",
+      "success": false,
+      "score": 0.22,
+      "steps_taken": 5,
+      "optimal_steps": 3,
+      "time_seconds": 17.017699241638184,
+      "timeout_seconds": 60,
+      "evaluation": {
+        "score": 0.0,
+        "passed": false,
+        "message": "Failed 2/2 checks",
+        "details": {
+          "checks": [
+            {
+              "type": "exists",
+              "passed": false,
+              "message": "File not found"
+            },
+            {
+              "type": "not_empty",
+              "passed": false,
+              "message": "File not found"
+            }
+          ]
+        }
+      },
+      "error": null,
+      "agent_response": "Done! \n\n- Navigated to https://example.com\n- Page title: **Example Domain**\n- Saved to `C:/Users/WIN/Desktop/example_title.txt`"
+    },
+    {
+      "task_id": "M002",
+      "category": "mixed",
+      "difficulty": "medium",
+      "task": "Navigate to https://example.com, extract the main heading and paragraph, then save them to example_data.json as a JSON object with keys 'title' and 'content'",
+      "success": false,
+      "score": 0.23333333333333334,
+      "steps_taken": 6,
+      "optimal_steps": 4,
+      "time_seconds": 20.873899936676025,
+      "timeout_seconds": 90,
+      "evaluation": {
+        "score": 0.0,
+        "passed": false,
+        "message": "Failed 3/3 checks",
+        "details": {
+          "checks": [
+            {
+              "type": "exists",
+              "passed": false,
+              "message": "File not found"
+            },
+            {
+              "type": "json_valid",
+              "passed": false,
+              "message": "File not found"
+            },
+            {
+              "type": "json_has_key",
+              "passed": false,
+              "message": "File not found"
+            }
+          ]
+        }
+      },
+      "error": null,
+      "agent_response": "Done! Here's what I did:\n\n1. **Navigated** to https://example.com\n2. **Extracted** the heading: `Example Domain`\n3. **Extracted** the paragraph: `This domain is for use in documentation examples without needing permission. Avoid use in operations.`\n4. **Saved** to `C:/Users/WIN/Desktop/example_data.json`:\n\n```json\n{\n  \"title\": \"Example Domain\",\n  \"content\": \"This domain is for use in documentation examples without needing permission. Avoid use in operations.\"\n}\n```"
+    },
+    {
+      "task_id": "M003",
+      "category": "mixed",
+      "difficulty": "hard",
+      "task": "List all files on Desktop, then create a summary report in desktop_summary.txt that includes the count of files and folders",
+      "success": false,
+      "score": 0.30000000000000004,
+      "steps_taken": 3,
+      "optimal_steps": 3,
+      "time_seconds": 11.625418424606323,
+      "timeout_seconds": 90,
+      "evaluation": {
+        "score": 0.0,
+        "passed": false,
+        "message": "Failed 2/2 checks",
+        "details": {
+          "checks": [
+            {
+              "type": "exists",
+              "passed": false,
+              "message": "File not found"
+            },
+            {
+              "type": "not_empty",
+              "passed": false,
+              "message": "File not found"
+            }
+          ]
+        }
+      },
+      "error": null,
+      "agent_response": "Done! \n\n**桌面内容统计：**\n- 📁 文件夹: **3** 个\n- 📄 文件: **3** 个\n\n已创建报告 `desktop_summary.txt` 在桌面，包含完整的文件/文件夹列表和统计信息。"
+    }
+  ]
+}

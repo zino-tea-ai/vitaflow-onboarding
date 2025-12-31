@@ -3,7 +3,6 @@ import {
   MessageSquare, 
   Plus, 
   Search, 
-  Settings, 
   Trash2,
   MoreHorizontal,
   Clock
@@ -66,31 +65,31 @@ export function Sidebar({
   };
 
   return (
-    <aside className="w-64 flex flex-col bg-card/30 border-r border-border/50">
+    <aside className="w-64 flex flex-col bg-black border-r border-neutral-900">
       {/* Header */}
       <div className="p-3 space-y-3">
         {/* New Chat Button */}
         <Button 
           onClick={onNewSession}
-          className="w-full justify-start gap-2 glass-button h-10"
+          className="w-full justify-start gap-2 h-10 bg-transparent hover:bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-white"
           variant="ghost"
         >
           <Plus className="w-4 h-4" />
           <span>New Session</span>
-          <kbd className="ml-auto text-[10px] text-muted-foreground bg-secondary px-1.5 py-0.5 rounded">
+          <kbd className="ml-auto text-[10px] text-neutral-600 bg-neutral-900 px-1.5 py-0.5 rounded font-mono">
             ⌘K
           </kbd>
         </Button>
 
         {/* Search */}
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-600" />
           <input
             type="text"
             placeholder="Search sessions..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="glass-input pl-9 h-9"
+            className="w-full h-9 pl-9 pr-3 bg-neutral-950 border border-neutral-800 rounded-lg text-sm text-neutral-300 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-700"
           />
         </div>
       </div>
@@ -99,49 +98,50 @@ export function Sidebar({
       <ScrollArea className="flex-1 px-2">
         <div className="space-y-1 pb-2">
           {filteredSessions.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground text-sm">
+            <div className="text-center py-8 text-neutral-600 text-sm">
               {searchQuery ? 'No sessions found' : 'No sessions yet'}
             </div>
           ) : (
-            filteredSessions.map((session, index) => (
+            filteredSessions.map((session) => (
               <div
                 key={session.id}
-                className={cn(
-                  'group relative animate-slide-up',
-                  `delay-${Math.min(index + 1, 5)}`
-                )}
-                style={{ opacity: 0 }}
+                className="group relative"
               >
-                <button
+                <div
                   onClick={() => onSelectSession(session.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === 'Enter' && onSelectSession(session.id)}
                   className={cn(
-                    'w-full text-left px-3 py-2.5 rounded-xl transition-all',
-                    'hover:bg-secondary/80',
+                    'w-full text-left px-3 py-2 transition-all cursor-pointer border-l-2',
                     activeSessionId === session.id
-                      ? 'bg-primary/10 border-l-2 border-primary'
-                      : 'border-l-2 border-transparent'
+                      ? 'text-white border-white bg-neutral-900/50'
+                      : 'text-neutral-500 hover:text-neutral-300 border-transparent hover:border-neutral-700'
                   )}
                 >
-                  <div className="flex items-start gap-2.5">
-                    <MessageSquare className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
+                  <div className="flex items-center gap-2.5">
+                    <MessageSquare className="w-4 h-4 shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-medium text-foreground truncate">
+                      <span className="text-sm truncate block">
                           {session.title}
                         </span>
+                      <span className="text-[11px] text-neutral-600">
+                        {formatTime(session.timestamp)}
+                      </span>
+                    </div>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <button
-                              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-secondary/80 transition-opacity"
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-neutral-900 transition-opacity"
                               onClick={(e) => e.stopPropagation()}
                             >
-                              <MoreHorizontal className="w-3.5 h-3.5 text-muted-foreground" />
+                          <MoreHorizontal className="w-3.5 h-3.5 text-neutral-600" />
                             </button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-36">
+                      <DropdownMenuContent align="end" className="w-36 bg-neutral-950 border-neutral-800">
                             <DropdownMenuItem
                               onClick={() => onDeleteSession(session.id)}
-                              className="text-destructive focus:text-destructive"
+                          className="text-red-400 focus:text-red-400 focus:bg-neutral-900"
                             >
                               <Trash2 className="w-4 h-4 mr-2" />
                               Delete
@@ -149,32 +149,13 @@ export function Sidebar({
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
-                      <p className="text-xs text-muted-foreground truncate mt-0.5">
-                        {session.preview}
-                      </p>
-                      <div className="flex items-center gap-1 mt-1.5 text-[10px] text-muted-foreground/70">
-                        <Clock className="w-3 h-3" />
-                        {formatTime(session.timestamp)}
-                      </div>
                     </div>
-                  </div>
-                </button>
               </div>
             ))
           )}
         </div>
       </ScrollArea>
 
-      {/* Footer */}
-      <div className="p-3 border-t border-border/50">
-        <button
-          onClick={onOpenSettings}
-          className="sidebar-item w-full"
-        >
-          <Settings className="w-4 h-4" />
-          <span>Settings</span>
-        </button>
-      </div>
     </aside>
   );
 }

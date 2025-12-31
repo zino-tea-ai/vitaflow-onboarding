@@ -1,16 +1,34 @@
-import { useState, useCallback } from 'react';
-import { TitleBar, Sidebar, ChatArea, VisualizationPanel, defaultVisualizationState } from '@/components/nogicos';
+import { useState, useCallback, useEffect } from 'react';
+import { TitleBar, Sidebar, ChatArea, ChatKitArea, VisualizationPanel, defaultVisualizationState } from '@/components/nogicos';
 import type { Session, Message, ToolExecution, ThinkingState, VisualizationState, ActionLogEntry, GlowState } from '@/components/nogicos';
+import { MinimalChatArea, SystemChatArea, CursorChatArea, PremiumChatArea } from '@/components/chat';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import type { ConnectionState } from '@/hooks/useWebSocket';
+import { CommandPalette } from '@/components/command/CommandPalette';
+import { useElectron } from '@/hooks/useElectron';
 
 // Config
 const WS_URL = 'ws://localhost:8765';
 const API_URL = 'http://localhost:8080';
+const CHATKIT_API_URL = 'http://localhost:8080/chatkit';
+const VERCEL_AI_API_URL = 'http://localhost:8080/api/chat';
+
+// Chat 模式选择
+// - minimal: 极致克制，纯黑白灰 (Recommended)
+// - system: 系统级 AI 工具界面
+// - premium: Linear/Raycast 风格聊天界面
+// - cursor: Cursor IDE 风格聊天界面
+// - chatkit: OpenAI ChatKit UI
+// - legacy: 原始自定义聊天界面
+type ChatMode = 'minimal' | 'system' | 'premium' | 'cursor' | 'chatkit' | 'legacy';
+const CHAT_MODE: ChatMode = 'minimal';
 
 function App() {
+  // Electron API
+  const { isElectron, onNewSession } = useElectron();
+  
   // State
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -399,6 +417,17 @@ function App() {
     setTools([]);
   }, []);
 
+  // Listen for Electron new session event
+  useEffect(() => {
+    if (isElectron) {
+      const cleanup = onNewSession(() => {
+        handleNewSession();
+        toast.success('New session created');
+      });
+      return cleanup;
+    }
+  }, [isElectron, onNewSession, handleNewSession]);
+
   // Select session
   const handleSelectSession = useCallback((id: string) => {
     setActiveSessionId(id);
@@ -500,7 +529,32 @@ function App() {
         </div>
       )}
 
-      {/* Main Content - Three Column Layout */}
+      {/* Main Content */}
+      {CHAT_MODE === 'minimal' ? (
+        // Minimal 模式：极致克制（带侧边栏）
+        <div className="flex-1 flex min-h-0">
+          <Sidebar
+            sessions={sessions}
+            activeSessionId={activeSessionId || undefined}
+            onNewSession={handleNewSession}
+            onSelectSession={handleSelectSession}
+            onDeleteSession={handleDeleteSession}
+          />
+          <MinimalChatArea
+            apiUrl={VERCEL_AI_API_URL}
+            sessionId={activeSessionId || 'default'}
+          />
+        </div>
+      ) : CHAT_MODE === 'system' ? (
+        // System 模式：全屏布局（自带侧边栏）
+        <div className="flex-1 min-h-0">
+          <SystemChatArea
+            apiUrl={VERCEL_AI_API_URL}
+            sessionId={activeSessionId || 'default'}
+          />
+        </div>
+      ) : (
+        // 其他模式：三栏布局
       <div className="flex-1 flex min-h-0">
         {/* Sidebar */}
         <Sidebar
@@ -512,6 +566,53 @@ function App() {
         />
 
         {/* Chat Area */}
+          {CHAT_MODE === 'premium' ? (
+            <PremiumChatArea
+              apiUrl={VERCEL_AI_API_URL}
+              sessionId={activeSessionId || 'default'}
+            />
+          ) : CHAT_MODE === 'cursor' ? (
+            <CursorChatArea
+              apiUrl={VERCEL_AI_API_URL}
+              sessionId={activeSessionId || 'default'}
+            />
+          ) : CHAT_MODE === 'chatkit' ? (
+            <ChatKitArea
+              apiUrl={CHATKIT_API_URL}
+              onShowVisualization={() => {
+                setVizState(prev => ({ ...prev, glow: 'medium' }));
+              }}
+              onHighlight={(params) => {
+                setVizState(prev => ({
+                  ...prev,
+                  highlight: {
+                    x: params.x,
+                    y: params.y,
+                    width: params.width,
+                    height: params.height,
+                    label: params.label,
+                  },
+                }));
+              }}
+              onCursorMove={(params) => {
+                setVizState(prev => ({
+                  ...prev,
+                  cursor: {
+                    ...prev.cursor,
+                    position: { x: params.x, y: params.y },
+                    state: 'moving',
+                    visible: true,
+                  },
+                }));
+                setTimeout(() => {
+                  setVizState(prev => ({
+                    ...prev,
+                    cursor: { ...prev.cursor, state: 'idle' },
+                  }));
+                }, 800);
+              }}
+            />
+          ) : (
         <ChatArea
           messages={messages}
           tools={tools}
@@ -520,6 +621,7 @@ function App() {
           onSendMessage={handleSendMessage}
           onStopExecution={handleStopExecution}
         />
+          )}
 
         {/* Visualization Panel */}
         <VisualizationPanel
@@ -530,6 +632,17 @@ function App() {
           title="AI 可视化"
         />
       </div>
+      )}
+
+      {/* Command Palette (Ctrl+K) */}
+      <CommandPalette
+        onNewSession={handleNewSession}
+        onClearHistory={() => {
+          setMessages([]);
+          setTools([]);
+          toast.success('Chat history cleared');
+        }}
+      />
 
       {/* Toast Notifications */}
       <Toaster 

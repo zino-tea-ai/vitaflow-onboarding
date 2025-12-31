@@ -194,12 +194,30 @@ except ImportError:
 # Helper for Creating Anthropic Clients
 # =============================================================================
 
+def _get_api_key() -> Optional[str]:
+    """Get API key from api_keys.py or environment"""
+    # First try api_keys.py (local config takes priority)
+    try:
+        from api_keys import ANTHROPIC_API_KEY
+        if ANTHROPIC_API_KEY:
+            return ANTHROPIC_API_KEY
+    except (ImportError, AttributeError):
+        pass
+    
+    # Then try environment variable
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if key:
+        return key
+    
+    return None
+
+
 def create_anthropic_client(api_key: Optional[str] = None):
     """
     Create Anthropic sync client.
     
     Args:
-        api_key: Optional API key. Uses ANTHROPIC_API_KEY env var if not provided.
+        api_key: Optional API key. Uses ANTHROPIC_API_KEY env var or api_keys.py if not provided.
         
     Returns:
         Anthropic client or None if not available
@@ -207,7 +225,7 @@ def create_anthropic_client(api_key: Optional[str] = None):
     if not ANTHROPIC_AVAILABLE or Anthropic is None:
         return None
     
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    key = api_key or _get_api_key()
     if not key:
         return None
     
@@ -219,7 +237,7 @@ def create_async_anthropic_client(api_key: Optional[str] = None):
     Create Anthropic async client.
     
     Args:
-        api_key: Optional API key. Uses ANTHROPIC_API_KEY env var if not provided.
+        api_key: Optional API key. Uses ANTHROPIC_API_KEY env var or api_keys.py if not provided.
         
     Returns:
         AsyncAnthropic client or None if not available
@@ -227,7 +245,7 @@ def create_async_anthropic_client(api_key: Optional[str] = None):
     if not ANTHROPIC_AVAILABLE or AsyncAnthropic is None:
         return None
     
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    key = api_key or _get_api_key()
     if not key:
         return None
     
