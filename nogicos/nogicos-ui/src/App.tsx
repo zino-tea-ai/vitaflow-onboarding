@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { TitleBar, Sidebar, ChatArea, ChatKitArea, VisualizationPanel, defaultVisualizationState } from '@/components/nogicos';
 import type { Session, Message, ToolExecution, ThinkingState, VisualizationState, ActionLogEntry, GlowState } from '@/components/nogicos';
 import { MinimalChatArea, SystemChatArea, CursorChatArea, PremiumChatArea } from '@/components/chat';
@@ -8,6 +8,7 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import type { ConnectionState } from '@/hooks/useWebSocket';
 import { CommandPalette } from '@/components/command/CommandPalette';
 import { useElectron } from '@/hooks/useElectron';
+import { useSessionPersist } from '@/hooks/useSessionPersist';
 
 // Config
 const WS_URL = 'ws://localhost:8765';
@@ -29,6 +30,14 @@ function App() {
   // Electron API
   const { isElectron, onNewSession } = useElectron();
   
+  // Session Persistence
+  const {
+    sessions: persistedSessions,
+    loadSession,
+    saveSession,
+    deleteSession: deletePersistedSession,
+  } = useSessionPersist({ autoLoad: true });
+  
   // State
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -40,6 +49,52 @@ function App() {
     content: '',
   });
   
+  // Ref to track if initial load has happened
+  const initialLoadDone = useRef(false);
+  
+  // Refs for values needed in handleWsMessage (to avoid stale closures)
+  const activeSessionIdRef = useRef(activeSessionId);
+  const sessionsRef = useRef(sessions);
+  const messagesRef = useRef(messages);
+  
+  // Keep refs updated
+  useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // Sync persisted sessions to local state on initial load
+  useEffect(() => {
+    if (persistedSessions.length > 0 && !initialLoadDone.current) {
+      initialLoadDone.current = true;
+      // Convert persisted sessions to UI format
+      const uiSessions: Session[] = persistedSessions.map(s => ({
+        id: s.id,
+        title: s.title,
+        preview: s.preview,
+        timestamp: new Date(s.updated_at),
+      }));
+      setSessions(uiSessions);
+      
+      // Auto-select the most recent session
+      if (uiSessions.length > 0 && !activeSessionId) {
+        const mostRecent = uiSessions[0];
+        setActiveSessionId(mostRecent.id);
+        // Load messages for the most recent session
+        loadSession(mostRecent.id).then(detail => {
+          if (detail?.history) {
+            const loadedMessages: Message[] = detail.history.map((m, i) => ({
+              id: `loaded-${mostRecent.id}-${i}`,
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+              timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+            }));
+            setMessages(loadedMessages);
+          }
+        });
+      }
+    }
+  }, [persistedSessions, activeSessionId, loadSession]);
+
   // Visualization state
   const [vizState, setVizState] = useState<VisualizationState>(defaultVisualizationState);
   const [showVisualization] = useState(true);
@@ -188,10 +243,22 @@ function App() {
         setIsExecuting(false);
         // Clear thinking state
         setThinkingState({ isThinking: false, content: '' });
-        // Mark all streaming messages as complete
-        setMessages((prev) =>
-          prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m))
-        );
+        // Mark all streaming messages as complete and save session
+        setMessages((prev) => {
+          const updated = prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m));
+          // Save complete session after execution (use refs for latest values)
+          const currentSessionId = activeSessionIdRef.current;
+          if (currentSessionId) {
+            const historyToSave = updated.map(m => ({
+              role: m.role,
+              content: m.content,
+              timestamp: m.timestamp?.toISOString(),
+            }));
+            const session = sessionsRef.current.find(s => s.id === currentSessionId);
+            saveSession(currentSessionId, historyToSave, session?.title);
+          }
+          return updated;
+        });
         break;
 
       case 'action':
@@ -359,7 +426,7 @@ function App() {
           console.log('[WS] Unknown message type:', msg.type);
         }
     }
-  }, [addActionLog]);
+  }, [addActionLog, saveSession]);
 
   // Track if we've shown the connected toast
   const [hasShownConnectedToast, setHasShownConnectedToast] = useState(false);
@@ -429,13 +496,30 @@ function App() {
   }, [isElectron, onNewSession, handleNewSession]);
 
   // Select session
-  const handleSelectSession = useCallback((id: string) => {
+  const handleSelectSession = useCallback(async (id: string) => {
     setActiveSessionId(id);
-    // TODO: Load session messages from backend
-  }, []);
+    setMessages([]);
+    setTools([]);
+    
+    // Load session messages from backend
+    const detail = await loadSession(id);
+    if (detail?.history) {
+      const loadedMessages: Message[] = detail.history.map((m, i) => ({
+        id: `loaded-${id}-${i}`,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+      }));
+      setMessages(loadedMessages);
+    }
+  }, [loadSession]);
 
   // Delete session
-  const handleDeleteSession = useCallback((id: string) => {
+  const handleDeleteSession = useCallback(async (id: string) => {
+    // Delete from backend
+    await deletePersistedSession(id);
+    
+    // Delete from local state
     setSessions((prev) => prev.filter((s) => s.id !== id));
     if (activeSessionId === id) {
       setActiveSessionId(null);
@@ -443,7 +527,7 @@ function App() {
       setTools([]);
     }
     toast.success('Session deleted');
-  }, [activeSessionId]);
+  }, [activeSessionId, deletePersistedSession]);
 
   // Send message
   const handleSendMessage = useCallback(async (content: string) => {
@@ -451,8 +535,18 @@ function App() {
     setThinkingState({ isThinking: false, content: '' });
     
     // Create session if none exists
-    if (!activeSessionId) {
-      handleNewSession();
+    let currentSessionId = activeSessionId;
+    if (!currentSessionId) {
+      const id = `session-${Date.now()}`;
+      const newSession: Session = {
+        id,
+        title: content.slice(0, 30),
+        preview: content,
+        timestamp: new Date(),
+      };
+      setSessions((prev) => [newSession, ...prev]);
+      setActiveSessionId(id);
+      currentSessionId = id;
     }
 
     // Add user message
@@ -462,16 +556,26 @@ function App() {
       content,
       timestamp: new Date(),
     };
-    setMessages((prev) => [...prev, userMessage]);
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
 
     // Update session preview
+    const sessionTitle = content.slice(0, 30);
     setSessions((prev) =>
       prev.map((s) =>
-        s.id === activeSessionId
-          ? { ...s, title: content.slice(0, 30), preview: content, timestamp: new Date() }
+        s.id === currentSessionId
+          ? { ...s, title: sessionTitle, preview: content, timestamp: new Date() }
           : s
       )
     );
+
+    // Save session to backend (user message)
+    const historyToSave = newMessages.map(m => ({
+      role: m.role,
+      content: m.content,
+      timestamp: m.timestamp?.toISOString(),
+    }));
+    saveSession(currentSessionId, historyToSave, sessionTitle);
 
     // Execute task
     setIsExecuting(true);
@@ -481,7 +585,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           task: content,
-          session_id: activeSessionId || 'default',
+          session_id: currentSessionId,
         }),
       });
 
@@ -498,7 +602,7 @@ function App() {
     } finally {
       setIsExecuting(false);
     }
-  }, [activeSessionId, handleNewSession]);
+  }, [activeSessionId, messages, saveSession]);
 
   // Stop execution
   const handleStopExecution = useCallback(async () => {
