@@ -132,8 +132,8 @@ function createTray() {
 
 // ============== 注册全局快捷键 ==============
 function registerGlobalShortcuts() {
-  // Cmd/Ctrl+Space: 唤醒/隐藏窗口
-  const toggleRegistered = globalShortcut.register('CommandOrControl+Space', () => {
+  // Alt+N: 唤醒/隐藏窗口 (N for NogicOS, 避免与输入法切换 Ctrl+Space 冲突)
+  const toggleRegistered = globalShortcut.register('Alt+N', () => {
     if (mainWindow) {
       if (mainWindow.isVisible() && mainWindow.isFocused()) {
         mainWindow.hide();
@@ -145,9 +145,9 @@ function registerGlobalShortcuts() {
   });
 
   if (toggleRegistered) {
-    console.log('[NogicOS] Global shortcut registered: Cmd/Ctrl+Space');
+    console.log('[NogicOS] Global shortcut registered: Alt+N');
   } else {
-    console.log('[NogicOS] Failed to register Cmd/Ctrl+Space (might be in use)');
+    console.log('[NogicOS] Failed to register Alt+N (might be in use)');
   }
 
   // Cmd/Ctrl+Shift+N: 新建会话
