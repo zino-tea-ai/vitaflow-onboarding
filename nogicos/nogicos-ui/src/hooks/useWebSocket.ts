@@ -73,8 +73,8 @@ export function useWebSocket({
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         try {
           wsRef.current.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
-        } catch (e) {
-          console.warn('[WS] Failed to send heartbeat:', e);
+        } catch {
+          // Heartbeat failed silently
         }
       }
     }, heartbeatInterval);
@@ -120,8 +120,6 @@ export function useWebSocket({
         
         startHeartbeat();
         onConnect?.();
-        
-        console.log('[WS] Connected to', url);
       };
 
       ws.onclose = (event) => {
@@ -133,15 +131,12 @@ export function useWebSocket({
         setState('disconnected');
         onDisconnect?.();
         
-        console.log('[WS] Disconnected:', event.code, event.reason);
-        
         // Auto-reconnect with exponential backoff
         if (shouldReconnectRef.current && 
             reconnectAttemptsRef.current < maxReconnectAttempts) {
           setState('reconnecting');
           
           const delay = currentDelayRef.current;
-          console.log(`[WS] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current + 1})`);
           
           reconnectTimerRef.current = setTimeout(() => {
             reconnectAttemptsRef.current++;
@@ -154,8 +149,7 @@ export function useWebSocket({
         }
       };
 
-      ws.onerror = (event) => {
-        console.error('[WS] Error:', event);
+      ws.onerror = () => {
         // Don't close here - let onclose handle reconnection
       };
 
@@ -169,12 +163,11 @@ export function useWebSocket({
           }
           
           onMessage?.(data);
-        } catch (e) {
-          console.error('[WS] Failed to parse message:', e);
+        } catch {
+          // Failed to parse message
         }
       };
-    } catch (e) {
-      console.error('[WS] Failed to create WebSocket:', e);
+    } catch {
       setState('disconnected');
     }
   }, [url, reconnectDelay, maxReconnectDelay, maxReconnectAttempts, startHeartbeat, clearTimers, onConnect, onDisconnect, onMessage]);
@@ -184,11 +177,9 @@ export function useWebSocket({
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       try {
         wsRef.current.send(JSON.stringify(data));
-      } catch (e) {
-        console.error('[WS] Failed to send:', e);
+      } catch {
+        // Failed to send
       }
-    } else {
-      console.warn('[WS] Cannot send - not connected');
     }
   }, []);
 

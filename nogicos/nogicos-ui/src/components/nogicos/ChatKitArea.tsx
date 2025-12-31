@@ -113,8 +113,6 @@ export function ChatKitArea({
     // 客户端工具 - AI 可以触发前端动作
     // ========================================
     onClientTool: async (invocation) => {
-      console.log('[ChatKit] Client tool invoked:', invocation.name, invocation.params);
-      
       // 显示可视化面板
       if (invocation.name === 'show_visualization') {
         onShowVisualization?.();
@@ -162,13 +160,11 @@ export function ChatKitArea({
           
           return { success: true };
         } catch {
-          console.warn('[ChatKit] Failed to play sound');
           return { success: false };
         }
       }
       
       // 未知工具
-      console.warn('[ChatKit] Unknown client tool:', invocation.name);
       return { success: false };
     },
     

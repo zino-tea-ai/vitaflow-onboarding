@@ -125,18 +125,23 @@ def register_local_tools(registry: Optional[ToolRegistry] = None) -> ToolRegistr
         registry = get_registry()
     
     @registry.action(
-        description="""Read the content of a file.
+        description="""Read file content from local filesystem.
 
-Examples:
-- read_file("~/Documents/notes.txt") → Read entire file
-- read_file("config.json", limit=50) → Read first 50 lines only
-- read_file("C:/Users/WIN/Desktop/report.md") → Read file from absolute path
+WHEN TO USE:
+- Reading known file paths
+- Viewing configuration, source code, or data files
+- Checking file content before modification
+
+WHEN NOT TO USE:
+- Finding files by pattern → use glob_search
+- Searching content across files → use grep_search
+- Listing directory contents → use list_directory
 
 Parameters:
-- path: File path (relative or absolute, supports ~)
-- limit: Max lines to read (0 = no limit)
+- path: File path (relative/absolute, supports ~)
+- limit: Max lines (0 = unlimited, default: 0)
 
-Returns: File content as string, truncated if >50KB""",
+Returns: File content (truncated if >50KB)""",
         category=ToolCategory.LOCAL
     )
     async def read_file(path: str, limit: int = 0) -> str:
@@ -151,12 +156,13 @@ Returns: File content as string, truncated if >50KB""",
             with open(path, 'r', encoding='utf-8', errors='replace') as f:
                 if limit > 0:
                     lines = []
-                    for i, line in enumerate(f):
-                        if i >= limit:
+                    line_count = 0
+                    for line_count, line in enumerate(f):
+                        if line_count >= limit:
                             break
                         lines.append(line)
                     content = ''.join(lines)
-                    if i >= limit:
+                    if line_count >= limit:
                         content += f"\n... (showing first {limit} lines)"
                 else:
                     content = f.read()
@@ -173,19 +179,23 @@ Returns: File content as string, truncated if >50KB""",
             return f"Error reading file: {str(e)}"
     
     @registry.action(
-        description="""Write content to a file (creates or overwrites).
+        description="""Write content to file (creates or overwrites).
 
-Examples:
-- write_file("output.txt", "Hello World") → Create new file
-- write_file("~/notes.md", "# Title\nContent") → Write Markdown file
-- write_file("data.json", '{"key": "value"}') → Write JSON file
+WHEN TO USE:
+- Creating new files
+- Overwriting entire file content
+- Saving generated code, config, or data
+
+WHEN NOT TO USE:
+- Partial text replacement → use search_replace
+- Appending to file → use append_file
+- Editing existing code → prefer search_replace
 
 Parameters:
 - path: Target file path
 - content: Content to write
 
-Returns: Success message with byte count
-Note: Parent directories are created automatically""",
+Note: Creates parent directories automatically. Overwrites existing files.""",
         category=ToolCategory.LOCAL
     )
     async def write_file(path: str, content: str) -> str:
@@ -230,21 +240,25 @@ Note: Parent directories are created automatically""",
             return f"Error appending to file: {str(e)}"
     
     @registry.action(
-        description="""Execute a shell command and return output.
+        description="""Execute shell command and return output.
 
-Examples:
-- shell_execute("dir") → List directory (Windows)
-- shell_execute("ls -la") → List directory (Unix)
-- shell_execute("python --version") → Check Python version
-- shell_execute("pip list") → List installed packages
-- shell_execute("git status") → Check git status
+WHEN TO USE:
+- Installing packages (npm, pip, etc.)
+- Running scripts or build commands
+- Git operations
+- System commands without dedicated tools
+
+WHEN NOT TO USE:
+- Listing directories → use list_directory
+- Reading files → use read_file
+- Searching files → use glob_search or grep_search
 
 Parameters:
-- command: Shell command to run
-- timeout: Max seconds to wait (default: 30)
+- command: Shell command to execute
+- timeout: Max seconds (default: 30)
 
-Returns: STDOUT, STDERR, and exit code
-BLOCKED: rm -rf /, sudo, format, shutdown commands""",
+Returns: STDOUT, STDERR, exit code
+Security: Blocks rm -rf /, sudo, format, shutdown""",
         category=ToolCategory.LOCAL
     )
     async def shell_execute(command: str, timeout: int = 30) -> str:
@@ -298,19 +312,23 @@ BLOCKED: rm -rf /, sudo, format, shutdown commands""",
             return f"Error executing command: {str(e)}"
     
     @registry.action(
-        description="""Search for files matching a glob pattern.
+        description="""Find files by name pattern (glob).
 
-Examples:
-- glob_search("*.txt") → All .txt files in current dir
-- glob_search("**/*.py") → All Python files (recursive)
-- glob_search("**/*.{jpg,png}", "~/Pictures") → Images in Pictures
-- glob_search("test_*.py", "src/tests") → Test files in specific folder
+WHEN TO USE:
+- Finding files by extension (*.py, *.tsx)
+- Locating files by name pattern (test_*, config.*)
+- Listing specific file types in a directory
+
+WHEN NOT TO USE:
+- Searching file content → use grep_search
+- Semantic code search → use codebase_search
+- Listing all directory contents → use list_directory
 
 Parameters:
 - pattern: Glob pattern (*, **, ?, [abc])
 - root: Starting directory (default: current)
 
-Returns: List of matching file paths (max 100)""",
+Returns: Matching file paths (max 100)""",
         category=ToolCategory.LOCAL
     )
     async def glob_search(pattern: str, root: str = ".") -> str:
@@ -347,20 +365,24 @@ Returns: List of matching file paths (max 100)""",
             return f"Error searching files: {str(e)}"
     
     @registry.action(
-        description="""Search for text pattern in files (like grep).
+        description="""Search text/regex pattern in files (like grep/ripgrep).
 
-Examples:
-- grep_search("TODO") → Find TODO in all files
-- grep_search("def main", ".", "*.py") → Find main function in Python files
-- grep_search("error", "logs/") → Find errors in log directory
-- grep_search("import.*pandas", ".", "*.py") → Regex search
+WHEN TO USE:
+- Finding exact text or regex matches in code
+- Locating function/variable definitions
+- Searching logs or data files for patterns
+
+WHEN NOT TO USE:
+- Finding files by name → use glob_search
+- Semantic/meaning-based search → use codebase_search
+- Reading known file → use read_file
 
 Parameters:
-- pattern: Text or regex pattern to find
-- path: File or directory to search (default: current)
-- file_pattern: Filter files by glob (default: *)
+- pattern: Text or regex pattern
+- path: Search path (default: current directory)
+- file_pattern: Filter by glob (default: *)
 
-Returns: Matching lines with file:line: format (max 50)""",
+Returns: Matching lines as file:line:content (max 50)""",
         category=ToolCategory.LOCAL
     )
     async def grep_search(pattern: str, path: str = ".", file_pattern: str = "*") -> str:
@@ -414,19 +436,23 @@ Returns: Matching lines with file:line: format (max 50)""",
             return f"Error searching: {str(e)}"
     
     @registry.action(
-        description="""List files and directories in a path.
+        description="""List directory contents.
 
-Examples:
-- list_directory() → List current directory
-- list_directory(".") → Same as above
-- list_directory("~/Desktop") → List Desktop folder
-- list_directory("C:/Users/WIN/Documents") → List Documents
+WHEN TO USE:
+- Exploring unfamiliar directories
+- Checking what files exist before operations
+- Getting overview of folder structure
+
+WHEN NOT TO USE:
+- Finding specific file types → use glob_search
+- Reading file content → use read_file
+- Searching inside files → use grep_search
 
 Parameters:
-- path: Directory path (default: current directory)
+- path: Directory path (default: current)
 
-Returns: Formatted list with [DIR] and [FILE] markers and file sizes
-Use this FIRST when unsure what files exist in a location""",
+Returns: List with [DIR]/[FILE] markers and sizes
+TIP: Use this first when unsure what files exist""",
         category=ToolCategory.LOCAL
     )
     async def list_directory(path: str = ".") -> str:
@@ -460,18 +486,19 @@ Use this FIRST when unsure what files exist in a location""",
             return f"Error listing directory: {str(e)}"
     
     @registry.action(
-        description="""Create a new directory (with parents if needed).
+        description="""Create directory (with parent directories).
 
-Examples:
-- create_directory("new_folder") → Create in current dir
-- create_directory("~/Desktop/Project/src") → Create nested structure
-- create_directory("C:/Users/WIN/Documents/Archive/2024") → Full path
+WHEN TO USE:
+- Creating new folder structure
+- Setting up project directories
+- Preparing output locations
+
+Note: Safe if directory already exists (no error).
 
 Parameters:
 - path: Directory path to create
 
-Returns: Success message
-Note: Safe to call even if directory exists""",
+Returns: Success message""",
         category=ToolCategory.LOCAL
     )
     async def create_directory(path: str) -> str:
@@ -495,26 +522,94 @@ Note: Safe to call even if directory exists""",
         """Get current working directory"""
         return os.getcwd()
     
+    @registry.action(
+        description="""Perform exact string replacement in files.
+
+WHEN TO USE:
+- Renaming variables/functions across files
+- Fixing specific text patterns
+- Precise code modifications
+- Updating imports or references
+
+WHEN NOT TO USE:
+- Creating new files → use write_file
+- Overwriting entire file → use write_file
+- Complex regex transforms → use shell_execute with sed
+
+Parameters:
+- file_path: Target file
+- old_string: Text to find (must be unique)
+- new_string: Replacement text
+- replace_all: Replace all occurrences (default: False)
+
+Note: old_string must match exactly including whitespace.""",
+        category=ToolCategory.LOCAL
+    )
+    async def search_replace(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+        """Perform exact string replacement in file"""
+        try:
+            if not _is_path_allowed(file_path):
+                return f"Error: Access denied to path: {file_path}"
+            
+            if not os.path.exists(file_path):
+                return f"Error: File not found: {file_path}"
+            
+            if not os.path.isfile(file_path):
+                return f"Error: Not a file: {file_path}"
+            
+            # Read file content
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+            
+            # Check if old_string exists
+            count = content.count(old_string)
+            if count == 0:
+                return f"Error: '{old_string[:50]}...' not found in {file_path}"
+            
+            # If not replace_all and multiple matches, warn
+            if not replace_all and count > 1:
+                return f"Error: Found {count} occurrences of '{old_string[:50]}...'. Use replace_all=True or provide more unique string."
+            
+            # Perform replacement
+            if replace_all:
+                new_content = content.replace(old_string, new_string)
+                replaced_count = count
+            else:
+                new_content = content.replace(old_string, new_string, 1)
+                replaced_count = 1
+            
+            # Write back
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            
+            return f"Successfully replaced {replaced_count} occurrence(s) in {file_path}"
+            
+        except Exception as e:
+            logger.error(f"Search replace failed: {e}")
+            return f"Error performing replacement: {str(e)}"
+    
     # ========================================
     # NEW: Essential file operations
     # ========================================
     
     @registry.action(
-        description="""Move or rename a file/directory.
+        description="""Move or rename file/directory.
 
-Examples:
-- move_file("old.txt", "new.txt") → Rename file
-- move_file("file.txt", "folder/file.txt") → Move to folder
-- move_file("src_folder", "dst_folder") → Move entire folder
-- move_file("~/Desktop/doc.pdf", "~/Documents/doc.pdf") → Move between folders
+WHEN TO USE:
+- Renaming files or folders
+- Moving files between directories
+- Reorganizing project structure
+
+WHEN NOT TO USE:
+- Copying files → use copy_file
+- Deleting files → use delete_file
 
 Parameters:
-- source: Path to file/folder to move
+- source: Path to move from
 - destination: Target path
 
-Returns: Success message
-Note: Creates destination directory if needed
-PROTECTED: Won't move files in .git, code projects, or system folders""",
+Note: Creates destination directory if needed.
+PROTECTED: Won't move .git, code projects, system folders.""",
         category=ToolCategory.LOCAL
     )
     async def move_file(source: str, destination: str) -> str:
@@ -591,19 +686,22 @@ Note: Preserves file metadata, creates destination dir if needed""",
             return f"Error copying file: {str(e)}"
     
     @registry.action(
-        description="""Delete a file or directory.
+        description="""Delete file or directory.
 
-Examples:
-- delete_file("temp.txt") → Delete single file
-- delete_file("empty_folder") → Delete empty directory
-- delete_file("old_project", recursive=True) → Delete folder with contents
+WHEN TO USE:
+- Removing temporary files
+- Cleaning up old directories
+- Deleting generated outputs
+
+WHEN NOT TO USE:
+- Moving files → use move_file
+- Archiving → use move_file to backup location
 
 Parameters:
 - path: File or directory to delete
-- recursive: If True, delete non-empty directories
+- recursive: Delete non-empty directories (default: False)
 
-Returns: Success message
-PROTECTED: Won't delete .git, code projects, or system files""",
+PROTECTED: Won't delete .git, code projects, system files.""",
         category=ToolCategory.LOCAL
     )
     async def delete_file(path: str, recursive: bool = False) -> str:
@@ -669,6 +767,98 @@ PROTECTED: Won't delete .git, code projects, or system files""",
             
         except Exception as e:
             return f"Error checking path: {str(e)}"
+    
+    @registry.action(
+        description="""Read linter errors for files.
+
+WHEN TO USE:
+- After editing code files
+- Checking for syntax errors
+- Validating code quality
+- Before committing changes
+
+WHEN NOT TO USE:
+- Reading file content → use read_file
+- Running tests → use shell_execute
+
+Parameters:
+- paths: File paths to lint (Python: pylint, JS: eslint)
+- linter: Override linter (auto-detected by extension)
+
+Returns: List of errors with line numbers and messages""",
+        category=ToolCategory.LOCAL
+    )
+    async def read_lints(paths: List[str], linter: str = None) -> str:
+        """Read linter errors for specified files"""
+        try:
+            results = []
+            
+            for path in paths:
+                if not _is_path_allowed(path):
+                    results.append(f"Error: Access denied to {path}")
+                    continue
+                
+                if not os.path.exists(path):
+                    results.append(f"Error: File not found: {path}")
+                    continue
+                
+                ext = os.path.splitext(path)[1].lower()
+                
+                # Auto-detect linter
+                if linter:
+                    lint_cmd = linter
+                elif ext == '.py':
+                    lint_cmd = 'pylint'
+                elif ext in ['.js', '.ts', '.jsx', '.tsx']:
+                    lint_cmd = 'eslint'
+                else:
+                    results.append(f"No linter configured for {ext} files")
+                    continue
+                
+                # Run linter
+                try:
+                    if lint_cmd == 'pylint':
+                        cmd = f'python -m pylint --output-format=text --score=no "{path}"'
+                    elif lint_cmd == 'eslint':
+                        cmd = f'npx eslint --format=stylish "{path}"'
+                    else:
+                        cmd = f'{lint_cmd} "{path}"'
+                    
+                    process = await asyncio.create_subprocess_shell(
+                        cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=os.getcwd()
+                    )
+                    
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(),
+                        timeout=30
+                    )
+                    
+                    output = stdout.decode('utf-8', errors='replace')
+                    error = stderr.decode('utf-8', errors='replace')
+                    
+                    if output.strip():
+                        results.append(f"=== {path} ===\n{output.strip()}")
+                    elif process.returncode == 0:
+                        results.append(f"=== {path} ===\nNo linter errors found.")
+                    else:
+                        results.append(f"=== {path} ===\n{error.strip() if error else 'Linter returned errors'}")
+                        
+                except asyncio.TimeoutError:
+                    results.append(f"=== {path} ===\nLinter timed out")
+                except Exception as e:
+                    results.append(f"=== {path} ===\nLinter error: {str(e)}")
+            
+            if not results:
+                return "No files to lint"
+            
+            return '\n\n'.join(results)
+            
+        except Exception as e:
+            logger.error(f"Read lints failed: {e}")
+            return f"Error reading lints: {str(e)}"
     
     logger.info(f"Registered {len(registry.get_by_category(ToolCategory.LOCAL))} local tools")
     return registry

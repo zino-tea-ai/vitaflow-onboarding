@@ -22,6 +22,7 @@ logger = logging.getLogger("nogicos.memory")
 
 
 # Memory extraction prompt template
+# NOTE: Double braces {{ }} are used to escape JSON examples from Python str.format()
 EXTRACTION_PROMPT = """You are a memory extraction system. Your task is to analyze conversations and extract important information as structured memories.
 
 ## Instructions
@@ -41,10 +42,10 @@ Return a JSON array of memories. Each memory should have:
 
 ## Examples
 User: "I always organize my files by date, please do it that way"
-Output: [{"subject": "user", "predicate": "prefers", "object": "organizing files by date", "type": "instruction", "importance": "high"}]
+Output: [{{"subject": "user", "predicate": "prefers", "object": "organizing files by date", "type": "instruction", "importance": "high"}}]
 
 User: "I just finished the quarterly report"
-Output: [{"subject": "user", "predicate": "completed", "object": "quarterly report", "type": "event", "importance": "medium"}]
+Output: [{{"subject": "user", "predicate": "completed", "object": "quarterly report", "type": "event", "importance": "medium"}}]
 
 ## Conversation to Analyze
 {conversation}
@@ -212,20 +213,40 @@ class MemoryExtractor:
                 end = response.find("```", start)
                 response = response[start:end].strip()
             
+            # Handle empty array response
+            if response.strip() in ("[]", ""):
+                return []
+            
             # Parse JSON
             memories = json.loads(response)
             
             if isinstance(memories, list):
-                return memories
+                # Filter to only valid dicts with required fields
+                valid = []
+                for m in memories:
+                    if isinstance(m, dict) and all(k in m for k in ["subject", "predicate", "object"]):
+                        valid.append(m)
+                return valid
+            elif isinstance(memories, dict):
+                # Single memory returned as dict - validate it
+                if all(k in memories for k in ["subject", "predicate", "object"]):
+                    return [memories]
             
             return []
             
         except json.JSONDecodeError as e:
-            logger.warning(f"[Extractor] Failed to parse response: {e}")
+            logger.debug(f"[Extractor] Failed to parse response as JSON: {response[:100]}...")
+            return []
+        except Exception as e:
+            logger.debug(f"[Extractor] Unexpected error parsing response: {e}")
             return []
     
-    def _validate_memory(self, memory: Dict[str, Any]) -> bool:
+    def _validate_memory(self, memory: Any) -> bool:
         """Validate a memory dict has required fields"""
+        # Must be a dict
+        if not isinstance(memory, dict):
+            return False
+        
         required = ["subject", "predicate", "object"]
         
         for field in required:
@@ -312,21 +333,37 @@ class BackgroundMemoryProcessor:
                 existing_memories=existing,
             )
             
-            # Save each extracted memory
+            # Save each extracted memory (with defensive checks)
+            saved_count = 0
             for mem in extracted:
+                # Skip non-dict items (defensive)
+                if not isinstance(mem, dict):
+                    logger.debug(f"[Memory] Skipping non-dict item: {type(mem)}")
+                    continue
+                
+                # Ensure required fields exist
+                subject = mem.get("subject")
+                predicate = mem.get("predicate")
+                obj = mem.get("object")
+                
+                if not all([subject, predicate, obj]):
+                    logger.debug(f"[Memory] Skipping incomplete memory: {mem}")
+                    continue
+                
                 await self.memory_store.add_memory(
-                    subject=mem.get("subject", "user"),
-                    predicate=mem.get("predicate", "noted"),
-                    obj=mem.get("object", ""),
+                    subject=subject,
+                    predicate=predicate,
+                    obj=obj,
                     session_id=session_id,
                     memory_type=mem.get("type", "fact"),
                     importance=mem.get("importance", "medium"),
                     context=mem.get("context"),
                     source_task=source_task,
                 )
+                saved_count += 1
             
-            if extracted:
-                logger.info(f"[Memory] Saved {len(extracted)} memories for session {session_id}")
+            if saved_count > 0:
+                logger.info(f"[Memory] Saved {saved_count} memories for session {session_id}")
                 
         except Exception as e:
             logger.error(f"[Memory] Background extraction failed: {e}")

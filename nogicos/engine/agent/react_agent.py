@@ -92,6 +92,16 @@ except ImportError:
     VERIFICATION_AVAILABLE = False
     AnswerVerifier = None
 
+# Context injection module (Cursor-style context)
+try:
+    from engine.context import ContextInjector, ContextConfig, get_context_injector
+    CONTEXT_INJECTION_AVAILABLE = True
+except ImportError:
+    CONTEXT_INJECTION_AVAILABLE = False
+    ContextInjector = None
+    ContextConfig = None
+    get_context_injector = None
+
 
 @dataclass
 class AgentResult:
@@ -168,8 +178,14 @@ When user uses pronouns or references, resolve them using context:
 ### Recent Operations (for reference resolution)
 {{operation_history}}
 
-### Long-term Memory
+### Long-term Memory (User Preferences & Facts)
 {{long_term_memory}}
+
+**Memory Application Rules:**
+- When you see user preferences in memory (e.g., "prefers pnpm", "likes vim"), ALWAYS apply them
+- Example: If memory says "prefers pnpm over npm", use `pnpm install X` instead of `npm install X`
+- These preferences were explicitly saved by the user - following them is mandatory
+- If a task involves a domain where user has stored preference, use it without asking
 
 ## Safety Rules (simple version)
 
@@ -194,6 +210,17 @@ If a path is protected, skip it silently and continue with others. Don't ask per
 ❌ Listing capabilities when user gave a task
 
 ✅ Correct: User says "整理桌面" → You immediately list_directory and start organizing
+
+## Decision Guidelines (Cursor-style)
+
+**BE EFFICIENT** - These rules come from high-performing AI agents:
+
+1. **Direct answers**: After getting a result, answer immediately. Don't add extra verification steps.
+2. **Simple interpretation**: When task is ambiguous, choose the simpler approach.
+   - "files in directory" = direct children only (not recursive unless specified)
+   - "count files" = simple ls + count, not complex find commands
+3. **No over-verification**: Trust your first correct result. Don't add "let me double-check" steps.
+4. **Tight iteration**: Target completion in ≤8 tool calls. Each call should make progress.
 
 Now execute the user's request. Act first, explain briefly after."""
 
@@ -428,6 +455,12 @@ class ReActAgent:
         # Browser session state (lazy initialized for browser tasks)
         self._browser_session = None
         self._browser_session_active = False
+        
+        # Context injector (Cursor-style context injection)
+        self.context_injector = get_context_injector() if CONTEXT_INJECTION_AVAILABLE else None
+        
+        # Track first message per session (for full context injection)
+        self._session_first_message: Dict[str, bool] = {}
     
     def _refresh_tool_categories(self) -> None:
         """Refresh tool categories cache from registry"""
@@ -438,37 +471,57 @@ class ReActAgent:
     
     def _is_simple_chat(self, task: str) -> bool:
         """
-        Detect if task is simple chat that doesn't need Extended Thinking.
+        Detect if task is simple chat that doesn't need tools.
         
         Simple chats include:
         - Greetings (hi, hello, 你好, etc.)
-        - Short questions (<20 chars)
         - Confirmations (yes, no, ok, etc.)
+        - Basic questions about the AI
+        
+        NOT simple (needs tools):
+        - Tasks with action verbs (看、找、打开、列出, etc.)
+        - Any request that implies file/browser/system operations
         
         Returns:
-            True if task is simple and should skip Extended Thinking
+            True if task is simple chat (no tools needed)
         """
         task_lower = task.lower().strip()
         
-        # Greeting patterns
+        # Action verbs indicate tool usage is needed (NOT simple)
+        action_patterns = [
+            # Chinese action verbs
+            '看', '找', '打开', '列出', '运行', '创建', '删除', '移动', '复制',
+            '搜索', '查找', '整理', '修改', '编辑', '下载', '上传', '安装',
+            '桌面', '文件', '文件夹', '目录', '浏览器', '网页', '网站',
+            # English action verbs
+            'look', 'find', 'open', 'list', 'run', 'create', 'delete', 'move', 'copy',
+            'search', 'organize', 'modify', 'edit', 'download', 'upload', 'install',
+            'desktop', 'file', 'folder', 'directory', 'browser', 'website', 'page',
+            'show me', 'tell me about', 'what is in', 'what\'s in',
+        ]
+        if any(p in task_lower for p in action_patterns):
+            return False  # Needs tools
+        
+        # Greeting patterns (simple)
         greetings = {'hi', 'hello', 'hey', '你好', '嗨', 'hola', 'bonjour', 'yo', 'sup'}
         if task_lower in greetings or any(task_lower.startswith(g) for g in greetings):
             return True
         
-        # Very short messages (likely simple)
-        if len(task) < 15:
+        # Very short messages without action intent (simple)
+        if len(task) < 6:
             return True
         
-        # Confirmation patterns
+        # Confirmation patterns (simple)
         confirmations = {'yes', 'no', 'ok', 'okay', '好', '是', '否', 'sure', 'yep', 'nope'}
         if task_lower in confirmations:
             return True
         
-        # Simple questions
-        simple_patterns = ['how are you', 'what time', "what's up", '怎么样', '你是谁']
+        # Simple questions about the AI (simple)
+        simple_patterns = ['how are you', 'what time', "what's up", '怎么样', '你是谁', 'who are you']
         if any(p in task_lower for p in simple_patterns):
             return True
         
+        # Default: not simple (give tools)
         return False
     
     async def cleanup_browser_session(self) -> None:
@@ -1066,6 +1119,36 @@ class ReActAgent:
         user_content = task
         if context:
             user_content = f"{context}\n\n{task}"
+        
+        # Cursor-style context injection
+        if self.context_injector and CONTEXT_INJECTION_AVAILABLE:
+            try:
+                # Determine if this is first message in session
+                is_first_message = session_id not in self._session_first_message
+                
+                if is_first_message:
+                    # Full context for first message
+                    ctx_config = self.context_injector.create_first_message_context(
+                        workspace_path=os.getcwd(),
+                        session_id=session_id,
+                    )
+                    self._session_first_message[session_id] = True
+                else:
+                    # Lighter context for subsequent messages
+                    ctx_config = self.context_injector.create_subsequent_message_context(
+                        workspace_path=os.getcwd(),
+                        session_id=session_id,
+                    )
+                
+                # Inject context into user message
+                user_content = self.context_injector.inject(
+                    message=user_content,
+                    session_id=session_id,
+                    config=ctx_config,
+                )
+                logger.debug(f"[Context] Injected {'full' if is_first_message else 'light'} context for session {session_id}")
+            except Exception as e:
+                logger.warning(f"[Context] Failed to inject context: {e}")
         
         if plan and len(plan.steps) > 1:
             plan_text = "\n".join([f"{i+1}. {step}" for i, step in enumerate(plan.steps)])

@@ -27,7 +27,6 @@ let tray = null; // 必须全局变量，否则会被 GC
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
-  console.log('[NogicOS] Another instance is running, quitting...');
   app.quit();
 } else {
   app.on('second-instance', () => {
@@ -47,7 +46,7 @@ function loadWindowState() {
       return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
     }
   } catch (e) {
-    console.log('[NogicOS] Could not load window state:', e.message);
+    // Silently ignore load errors
   }
   return { width: 1400, height: 900 };
 }
@@ -59,7 +58,7 @@ function saveWindowState() {
     const isMaximized = mainWindow.isMaximized();
     fs.writeFileSync(CONFIG_PATH, JSON.stringify({ ...bounds, isMaximized }));
   } catch (e) {
-    console.log('[NogicOS] Could not save window state:', e.message);
+    // Silently ignore save errors
   }
 }
 
@@ -127,7 +126,6 @@ function createTray() {
     }
   });
 
-  console.log('[NogicOS] System tray created');
 }
 
 // ============== 注册全局快捷键 ==============
@@ -144,11 +142,7 @@ function registerGlobalShortcuts() {
     }
   });
 
-  if (toggleRegistered) {
-    console.log('[NogicOS] Global shortcut registered: Alt+N');
-  } else {
-    console.log('[NogicOS] Failed to register Alt+N (might be in use)');
-  }
+  // Alt+N registered (or failed if in use)
 
   // Cmd/Ctrl+Shift+N: 新建会话
   const newSessionRegistered = globalShortcut.register('CommandOrControl+Shift+N', () => {
@@ -157,9 +151,6 @@ function registerGlobalShortcuts() {
     mainWindow?.webContents.send('new-session');
   });
 
-  if (newSessionRegistered) {
-    console.log('[NogicOS] Global shortcut registered: Cmd/Ctrl+Shift+N');
-  }
 }
 
 // ============== 创建主窗口 ==============
@@ -200,7 +191,6 @@ async function createWindow() {
     const devServerRunning = await checkDevServer();
     
     if (devServerRunning) {
-      console.log('[NogicOS] Loading from dev server:', DEV_SERVER_URL);
       mainWindow.loadURL(DEV_SERVER_URL);
       
       // 开发模式：按 F12 手动打开 DevTools
@@ -210,7 +200,6 @@ async function createWindow() {
         }
       });
     } else {
-      console.log('[NogicOS] Dev server not running, loading from dist');
       loadFromDist();
     }
   } else {
@@ -222,7 +211,6 @@ async function createWindow() {
     if (!app.isQuitting) {
       event.preventDefault();
       mainWindow.hide();
-      console.log('[NogicOS] Window hidden to tray');
     }
   });
 
@@ -238,7 +226,6 @@ async function createWindow() {
 // 从构建文件加载
 function loadFromDist() {
   const distPath = path.join(__dirname, '..', 'nogicos-ui', 'dist', 'index.html');
-  console.log('[NogicOS] Loading from dist:', distPath);
   mainWindow.loadFile(distPath);
 }
 
@@ -275,7 +262,6 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   // 注销所有全局快捷键
   globalShortcut.unregisterAll();
-  console.log('[NogicOS] Global shortcuts unregistered');
 });
 
 app.on('before-quit', () => {
@@ -295,6 +281,3 @@ app.on('activate', () => {
 app.on('window-all-closed', () => {
   // 不退出，保持在托盘
 });
-
-console.log('[NogicOS] Desktop client starting...');
-console.log('[NogicOS] Mode:', IS_DEV ? 'development' : 'production');

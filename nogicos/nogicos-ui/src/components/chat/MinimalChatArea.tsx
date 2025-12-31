@@ -60,14 +60,22 @@ export function MinimalChatArea({
     },
   });
 
+  // DEBUG: Log messages structure
+  useEffect(() => {
+    if (messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      console.log('[MinimalChatArea] Last message:', {
+        role: lastMsg.role,
+        content: lastMsg.content?.slice(0, 100),
+        parts: lastMsg.parts,
+        partsLength: lastMsg.parts?.length,
+      });
+    }
+  }, [messages]);
+
   // Derive loading state from useChat status
   const isLoading = status === 'pending' || status === 'streaming';
   const isActuallyStreaming = status === 'streaming';
-
-  // Debug
-  useEffect(() => {
-    console.log('[Chat Status]', { status, isLoading, messagesLen: messages.length });
-  }, [status, isLoading, messages.length]);
 
   // Auto scroll - on new messages and during streaming
   useEffect(() => {

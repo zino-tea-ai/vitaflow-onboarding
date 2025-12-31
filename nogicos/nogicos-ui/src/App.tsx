@@ -422,9 +422,7 @@ function App() {
 
       default:
         // Ignore unknown types (pong handled by hook)
-        if (msg.type !== 'performance') {
-          console.log('[WS] Unknown message type:', msg.type);
-        }
+        break;
     }
   }, [addActionLog, saveSession]);
 

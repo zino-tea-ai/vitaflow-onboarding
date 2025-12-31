@@ -36,5 +36,3 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 触发命令面板
   toggleCommandPalette: () => ipcRenderer.send('toggle-command-palette'),
 });
-
-console.log('[NogicOS] Preload script loaded');

@@ -18,6 +18,7 @@ from .base import (
 )
 from .browser import register_browser_tools
 from .local import register_local_tools
+from .cursor_tools import register_cursor_tools
 
 # Desktop tools (Phase C) - optional, requires pyautogui
 try:
@@ -46,6 +47,7 @@ def create_full_registry() -> ToolRegistry:
     registry = ToolRegistry()
     register_browser_tools(registry)
     register_local_tools(registry)
+    register_cursor_tools(registry)
     
     # Register desktop tools if available (Phase C)
     if DESKTOP_TOOLS_AVAILABLE and register_desktop_tools:
@@ -67,5 +69,6 @@ __all__ = [
     'reset_registry',
     'register_browser_tools',
     'register_local_tools',
+    'register_cursor_tools',
     'create_full_registry',
 ]
