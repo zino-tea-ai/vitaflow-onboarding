@@ -446,25 +446,29 @@ function StreamingText({ text, isStreaming, onComplete }: StreamingTextProps) {
 // Tool Widget - displays tool invocations with status
 interface ToolWidgetProps {
   tool: {
+    type: string;  // 'tool-{toolName}' or 'dynamic-tool'
     toolCallId: string;
-    toolName: string;
-    state: 'pending' | 'running' | 'input-available' | 'output-available' | 'error';
+    toolName?: string;  // For dynamic-tool
+    state: string;  // 'input-streaming' | 'input-available' | 'output-available' | etc.
     input?: Record<string, any>;
     output?: any;
-    error?: string;
+    errorText?: string;
   };
 }
 
 const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
   const [expanded, setExpanded] = useState(false);
   
+  // Extract tool name from type (e.g., 'tool-list_directory' -> 'list_directory')
+  const toolName = tool.toolName || tool.type?.replace(/^tool-/, '') || 'unknown';
+  
   // Determine status based on state
   const isComplete = tool.state === 'output-available';
-  const isError = tool.state === 'error';
-  const isRunning = tool.state === 'running' || tool.state === 'input-available';
+  const isError = tool.state === 'error' || !!tool.errorText;
+  const isRunning = tool.state === 'input-streaming' || tool.state === 'input-available';
   
   // Format tool name for display
-  const displayName = tool.toolName
+  const displayName = toolName
     .replace(/_/g, ' ')
     .replace(/([A-Z])/g, ' $1')
     .trim()
@@ -512,7 +516,7 @@ const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
       </div>
       
       <AnimatePresence>
-        {expanded && (tool.input || tool.output || tool.error) && (
+        {expanded && (tool.input || tool.output || tool.errorText) && (
           <motion.div 
             className="tool-widget-details"
             initial={{ opacity: 0, height: 0 }}
@@ -532,10 +536,10 @@ const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
                 <pre className="tool-widget-code">{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
               </div>
             )}
-            {tool.error && (
+            {tool.errorText && (
               <div className="tool-widget-section">
                 <span className="tool-widget-label text-red-400">Error</span>
-                <pre className="tool-widget-code text-red-300">{tool.error}</pre>
+                <pre className="tool-widget-code text-red-300">{tool.errorText}</pre>
               </div>
             )}
           </motion.div>
@@ -566,14 +570,32 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
     [parts]
   );
 
-  // Extract tool invocations (AI SDK stores them as 'tool-invocation' parts)
+  // Extract tool invocations (AI SDK stores them as 'tool-{toolName}' or 'dynamic-tool' parts)
   const toolInvocations = useMemo(() => 
-    parts?.filter((p: any) => p.type === 'tool-invocation') || [],
+    parts?.filter((p: any) => 
+      p.type?.startsWith('tool-') || p.type === 'dynamic-tool'
+    ) || [],
     [parts]
   );
 
   const hasReasoning = reasoningText.length > 0;
   const hasTools = toolInvocations.length > 0;
+  
+  // Debug: log parts structure for tool invocations
+  useEffect(() => {
+    if (parts && parts.length > 0) {
+      const toolParts = parts.filter((p: any) => p.type?.startsWith('tool-') || p.type === 'dynamic-tool');
+      if (toolParts.length > 0) {
+        console.log('[ToolWidget] Tool parts:', toolParts.map((p: any) => ({
+          type: p.type,
+          state: p.state,
+          toolCallId: p.toolCallId,
+          hasInput: !!p.input,
+          hasOutput: !!p.output,
+        })));
+      }
+    }
+  }, [parts]);
   
   // Show planning when streaming but no content yet
   const showPlanning = isStreaming && !hasReasoning && !textContent;
