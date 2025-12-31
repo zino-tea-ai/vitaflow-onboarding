@@ -554,7 +554,6 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
   const [thinkingOpen, setThinkingOpen] = useState(true);
   const [thinkingComplete, setThinkingComplete] = useState(false);
   const [thinkingAnimationDone, setThinkingAnimationDone] = useState(false);
-  const [textAnimating, setTextAnimating] = useState(true);
   const [roleVisible, setRoleVisible] = useState(false);
   const thinkingStartTime = useRef<number | null>(null);
   const isUser = role === 'user';
@@ -619,9 +618,6 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
   
   // Text should wait for thinking animation to complete
   const showText = !hasReasoning || thinkingComplete;
-  
-  // Text needs animation if: streaming, or just started showing after thinking
-  const needsTextAnimation = isStreaming || textAnimating;
 
   // NogicOS label uses fixed timing for consistency
   const showRole = isUser ? true : roleVisible;
@@ -732,7 +728,7 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
           )}
         </AnimatePresence>
 
-        {/* Text content - waits for thinking to complete, then uses typewriter */}
+        {/* Text content - always use ReactMarkdown for proper formatting */}
         <AnimatePresence>
           {textContent && showText && (
             <motion.div 
@@ -741,58 +737,43 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
             >
-              {needsTextAnimation ? (
-                <p>
-                  <StreamingText 
-                    text={textContent} 
-                    isStreaming={isStreaming}
-                    onComplete={() => {
-                      if (hasReasoning) {
-                        setTimeout(() => setThinkingOpen(false), 500);
-                      }
-                      setTextAnimating(false);
-                    }}
-                  />
-                  {isStreaming && <span className="minimal-cursor" />}
-                </p>
-              ) : (
-                <ReactMarkdown 
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    h1: ({ children }) => <h1 className="text-xl font-semibold text-white mt-4 mb-2">{children}</h1>,
-                    h2: ({ children }) => <h2 className="text-lg font-semibold text-white mt-3 mb-2">{children}</h2>,
-                    h3: ({ children }) => <h3 className="text-base font-medium text-white mt-2 mb-1">{children}</h3>,
-                    p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
-                    ul: ({ children }) => <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>,
-                    ol: ({ children }) => <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>,
-                    li: ({ children }) => <li className="text-neutral-300">{children}</li>,
-                    strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
-                    em: ({ children }) => <em className="italic text-neutral-200">{children}</em>,
-                    code: ({ className, children }) => {
-                      const isBlock = className?.includes('language-');
-                      return isBlock ? (
-                        <pre className="bg-neutral-900 rounded-lg p-4 my-3 overflow-x-auto">
-                          <code className="text-sm font-mono text-neutral-200">{children}</code>
-                        </pre>
-                      ) : (
-                        <code className="bg-neutral-800 px-1.5 py-0.5 rounded text-sm font-mono text-neutral-200">{children}</code>
-                      );
-                    },
-                    pre: ({ children }) => <>{children}</>,
-                    a: ({ href, children }) => (
-                      <a href={href} className="text-white underline underline-offset-2 hover:text-neutral-300" target="_blank" rel="noopener noreferrer">
-                        {children}
-                      </a>
-                    ),
-                    blockquote: ({ children }) => (
-                      <blockquote className="border-l-2 border-neutral-700 pl-4 my-3 text-neutral-400 italic">{children}</blockquote>
-                    ),
-                    hr: () => <hr className="border-neutral-800 my-4" />,
-                  }}
-                >
-                  {textContent}
-                </ReactMarkdown>
-              )}
+              <ReactMarkdown 
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  h1: ({ children }) => <h1 className="text-xl font-semibold text-white mt-4 mb-2">{children}</h1>,
+                  h2: ({ children }) => <h2 className="text-lg font-semibold text-white mt-3 mb-2">{children}</h2>,
+                  h3: ({ children }) => <h3 className="text-base font-medium text-white mt-2 mb-1">{children}</h3>,
+                  p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
+                  ul: ({ children }) => <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>,
+                  ol: ({ children }) => <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>,
+                  li: ({ children }) => <li className="text-neutral-300">{children}</li>,
+                  strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
+                  em: ({ children }) => <em className="italic text-neutral-200">{children}</em>,
+                  code: ({ className, children }) => {
+                    const isBlock = className?.includes('language-');
+                    return isBlock ? (
+                      <pre className="bg-neutral-900 rounded-lg p-4 my-3 overflow-x-auto">
+                        <code className="text-sm font-mono text-neutral-200">{children}</code>
+                      </pre>
+                    ) : (
+                      <code className="bg-neutral-800 px-1.5 py-0.5 rounded text-sm font-mono text-neutral-200">{children}</code>
+                    );
+                  },
+                  pre: ({ children }) => <>{children}</>,
+                  a: ({ href, children }) => (
+                    <a href={href} className="text-white underline underline-offset-2 hover:text-neutral-300" target="_blank" rel="noopener noreferrer">
+                      {children}
+                    </a>
+                  ),
+                  blockquote: ({ children }) => (
+                    <blockquote className="border-l-2 border-neutral-700 pl-4 my-3 text-neutral-400 italic">{children}</blockquote>
+                  ),
+                  hr: () => <hr className="border-neutral-800 my-4" />,
+                }}
+              >
+                {textContent}
+              </ReactMarkdown>
+              {isStreaming && <span className="minimal-cursor" />}
             </motion.div>
           )}
         </AnimatePresence>

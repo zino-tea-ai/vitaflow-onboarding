@@ -1,19 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-NogicOS Infinite AI Tester
-无限循环测试，直到 AI 认为产品稳定
+NogicOS Infinite AI Tester with Auto-Fix
+无限循环测试 + 自动修复，直到 AI 认为产品稳定
 
 核心流程:
 1. AI 生成测试用例
 2. 执行测试
 3. AI 分析结果
-4. 如果有问题，记录并继续
+4. 如果有问题:
+   a. AI 定位问题代码
+   b. AI 生成修复方案
+   c. 安全应用修复（带备份）
+   d. 验证修复是否有效
 5. 连续 N 轮无问题 = 产品稳定
 
 Usage:
     python -m tests.infinite_ai_tester
     python -m tests.infinite_ai_tester --max-rounds 100
     python -m tests.infinite_ai_tester --stability-threshold 5
+    python -m tests.infinite_ai_tester --no-fix  # 只测试不修复
 """
 
 import sys
@@ -57,6 +62,22 @@ class Issue:
     test_prompt: str = ""
     traceback: str = ""
     suggestion: str = ""
+    file_path: str = ""  # 问题所在文件
+    line_number: int = 0  # 问题所在行号
+
+
+@dataclass
+class CodeFix:
+    """代码修复方案"""
+    issue_type: str
+    file_path: str
+    old_code: str
+    new_code: str
+    explanation: str
+    confidence: float = 0.0  # AI 的置信度 0-1
+    backup_path: str = ""
+    applied: bool = False
+    verified: bool = False
 
 
 @dataclass
@@ -87,7 +108,7 @@ class RoundSummary:
 
 
 class InfiniteAITester:
-    """AI 驱动的无限测试循环"""
+    """AI 驱动的无限测试循环（带自动修复）"""
     
     def __init__(
         self,
@@ -95,6 +116,8 @@ class InfiniteAITester:
         stability_threshold: int = 3,  # 连续 N 轮无问题 = 稳定
         tests_per_round: int = 10,
         timeout_per_test: int = 60,
+        auto_fix: bool = True,  # 是否自动修复
+        max_fix_attempts: int = 3,  # 每个问题最大修复尝试次数
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -102,6 +125,8 @@ class InfiniteAITester:
         self.stability_threshold = stability_threshold
         self.tests_per_round = tests_per_round
         self.timeout_per_test = timeout_per_test
+        self.auto_fix = auto_fix
+        self.max_fix_attempts = max_fix_attempts
         
         self.agent = None
         self.llm_client = None
@@ -114,6 +139,14 @@ class InfiniteAITester:
         self.consecutive_stable_rounds = 0
         self.all_issues: List[Issue] = []
         self.round_summaries: List[RoundSummary] = []
+        
+        # 修复追踪
+        self.fixes_applied: List[CodeFix] = []
+        self.fixes_failed: List[CodeFix] = []
+        self.fix_attempts: Dict[str, int] = {}  # issue_type -> 尝试次数
+        
+        # 项目根目录（用于定位代码文件）
+        self.project_root = Path(__file__).parent.parent
         
         # Session tracking
         self.session_id = f"infinite_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -162,7 +195,7 @@ class InfiniteAITester:
             print(f"[✗] Failed to init agent: {e}")
             raise
     
-    def call_llm(self, prompt: str, system: str = "") -> str:
+    def call_llm(self, prompt: str, system: str = "", max_tokens: int = 4000) -> str:
         """调用 LLM"""
         client = self.init_llm()
         
@@ -170,12 +203,355 @@ class InfiniteAITester:
         
         response = client.messages.create(
             model=self.model_name,
-            max_tokens=4000,
+            max_tokens=max_tokens,
             system=system if system else "你是 NogicOS 的 QA 测试专家。",
             messages=messages,
         )
         
         return response.content[0].text
+    
+    def read_file_content(self, file_path: str) -> Optional[str]:
+        """安全读取文件内容"""
+        try:
+            full_path = self.project_root / file_path
+            if not full_path.exists():
+                # 尝试直接路径
+                full_path = Path(file_path)
+            if full_path.exists():
+                return full_path.read_text(encoding="utf-8")
+        except Exception as e:
+            print(f"      [!] Cannot read {file_path}: {e}")
+        return None
+    
+    def locate_issue_in_code(self, issue: Issue, test_result: TestResult) -> Optional[Dict]:
+        """使用 AI 定位问题代码位置"""
+        
+        # 从 traceback 提取文件信息
+        traceback_text = issue.traceback or test_result.error or ""
+        
+        # 构建代码上下文
+        relevant_files = []
+        if "engine/" in traceback_text:
+            # 提取涉及的文件
+            import re
+            file_matches = re.findall(r'File "([^"]+)"', traceback_text)
+            for f in file_matches:
+                if "engine" in f or "nogicos" in f:
+                    relevant_files.append(f)
+        
+        # 默认可能的问题文件
+        if not relevant_files:
+            relevant_files = [
+                "engine/agent/react_agent.py",
+                "engine/tools/browser.py",
+                "engine/tools/local.py",
+            ]
+        
+        # 读取相关文件内容
+        file_contents = {}
+        for f in relevant_files[:3]:  # 最多 3 个文件
+            content = self.read_file_content(f)
+            if content:
+                # 限制长度
+                if len(content) > 5000:
+                    content = content[:5000] + "\n... (truncated)"
+                file_contents[f] = content
+        
+        if not file_contents:
+            return None
+        
+        prompt = f"""分析以下错误并精确定位问题代码位置。
+
+## 错误信息
+类型: {issue.type}
+描述: {issue.description}
+触发输入: {issue.test_prompt}
+
+## Traceback
+```
+{traceback_text[:2000]}
+```
+
+## 相关代码文件
+"""
+        for filepath, content in file_contents.items():
+            prompt += f"\n### {filepath}\n```python\n{content}\n```\n"
+        
+        prompt += """
+## 请定位问题
+以 JSON 格式返回:
+```json
+{
+  "file_path": "具体文件路径",
+  "line_start": 起始行号,
+  "line_end": 结束行号,
+  "problematic_code": "有问题的代码片段",
+  "root_cause": "问题根本原因",
+  "confidence": 0.0-1.0 的置信度
+}
+```
+"""
+        
+        try:
+            response = self.call_llm(prompt, system="你是代码调试专家，擅长从错误日志定位问题。")
+            
+            # 提取 JSON
+            if "```json" in response:
+                start = response.find("```json") + 7
+                end = response.find("```", start)
+                json_str = response[start:end].strip()
+            else:
+                json_str = response
+            
+            return json.loads(json_str)
+            
+        except Exception as e:
+            print(f"      [!] Failed to locate issue: {e}")
+            return None
+    
+    def generate_fix(self, issue: Issue, location: Dict) -> Optional[CodeFix]:
+        """使用 AI 生成修复代码"""
+        
+        file_path = location.get("file_path", "")
+        if not file_path:
+            return None
+        
+        # 读取完整文件内容
+        file_content = self.read_file_content(file_path)
+        if not file_content:
+            return None
+        
+        prompt = f"""根据以下问题分析，生成修复代码。
+
+## 问题
+类型: {issue.type}
+描述: {issue.description}
+根因: {location.get('root_cause', 'Unknown')}
+
+## 问题代码位置
+文件: {file_path}
+行号: {location.get('line_start', '?')} - {location.get('line_end', '?')}
+问题代码:
+```python
+{location.get('problematic_code', '')}
+```
+
+## 完整文件内容
+```python
+{file_content[:8000]}
+```
+
+## 修复要求
+1. 只修改必要的部分
+2. 保持代码风格一致
+3. 添加必要的错误处理
+4. 不要破坏现有功能
+
+## 返回格式
+以 JSON 格式返回修复方案:
+```json
+{{
+  "old_code": "需要被替换的原代码（完整匹配）",
+  "new_code": "替换后的新代码",
+  "explanation": "修复说明",
+  "confidence": 0.0-1.0
+}}
+```
+
+注意: old_code 必须完全匹配文件中的代码，包括缩进和空格。
+"""
+        
+        try:
+            response = self.call_llm(
+                prompt, 
+                system="你是 Python 专家，擅长修复代码 bug。生成的代码必须可以直接应用。",
+                max_tokens=6000
+            )
+            
+            # 提取 JSON
+            if "```json" in response:
+                start = response.find("```json") + 7
+                end = response.find("```", start)
+                json_str = response[start:end].strip()
+            else:
+                json_str = response
+            
+            fix_data = json.loads(json_str)
+            
+            return CodeFix(
+                issue_type=issue.type,
+                file_path=file_path,
+                old_code=fix_data.get("old_code", ""),
+                new_code=fix_data.get("new_code", ""),
+                explanation=fix_data.get("explanation", ""),
+                confidence=float(fix_data.get("confidence", 0.5)),
+            )
+            
+        except Exception as e:
+            print(f"      [!] Failed to generate fix: {e}")
+            return None
+    
+    def apply_fix_safely(self, fix: CodeFix) -> bool:
+        """安全应用修复（带备份）"""
+        
+        if not fix.old_code or not fix.new_code:
+            print("      [!] Empty fix code")
+            return False
+        
+        try:
+            file_path = self.project_root / fix.file_path
+            if not file_path.exists():
+                file_path = Path(fix.file_path)
+            
+            if not file_path.exists():
+                print(f"      [!] File not found: {fix.file_path}")
+                return False
+            
+            # 读取原文件
+            original_content = file_path.read_text(encoding="utf-8")
+            
+            # 检查 old_code 是否存在
+            if fix.old_code not in original_content:
+                print(f"      [!] Old code not found in file")
+                # 尝试模糊匹配（去除空白差异）
+                normalized_old = " ".join(fix.old_code.split())
+                normalized_content = " ".join(original_content.split())
+                if normalized_old not in normalized_content:
+                    return False
+                print(f"      [*] Trying fuzzy match...")
+            
+            # 创建备份
+            backup_dir = self.output_dir / "backups"
+            backup_dir.mkdir(exist_ok=True)
+            backup_name = f"{file_path.stem}_{datetime.now().strftime('%H%M%S')}{file_path.suffix}.bak"
+            backup_path = backup_dir / backup_name
+            backup_path.write_text(original_content, encoding="utf-8")
+            fix.backup_path = str(backup_path)
+            
+            # 应用修复
+            new_content = original_content.replace(fix.old_code, fix.new_code, 1)
+            
+            if new_content == original_content:
+                print(f"      [!] No changes made")
+                return False
+            
+            # 写入修复
+            file_path.write_text(new_content, encoding="utf-8")
+            fix.applied = True
+            
+            print(f"      [✓] Fix applied to {fix.file_path}")
+            print(f"          Backup: {backup_path}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"      [!] Failed to apply fix: {e}")
+            return False
+    
+    def rollback_fix(self, fix: CodeFix) -> bool:
+        """回滚修复"""
+        if not fix.backup_path or not fix.applied:
+            return False
+        
+        try:
+            backup_path = Path(fix.backup_path)
+            if not backup_path.exists():
+                print(f"      [!] Backup not found: {fix.backup_path}")
+                return False
+            
+            file_path = self.project_root / fix.file_path
+            if not file_path.exists():
+                file_path = Path(fix.file_path)
+            
+            # 恢复备份
+            backup_content = backup_path.read_text(encoding="utf-8")
+            file_path.write_text(backup_content, encoding="utf-8")
+            
+            fix.applied = False
+            print(f"      [↩] Rolled back {fix.file_path}")
+            return True
+            
+        except Exception as e:
+            print(f"      [!] Rollback failed: {e}")
+            return False
+    
+    async def verify_fix(self, fix: CodeFix, original_test: Dict) -> bool:
+        """验证修复是否有效"""
+        print(f"      [*] Verifying fix...")
+        
+        # 重新运行原来失败的测试
+        result = await self.run_single_test(
+            original_test, 
+            test_id=9999,  # 验证测试 ID
+            round_num=0,
+        )
+        
+        # 检查是否还有相同类型的问题
+        same_issues = [i for i in result.issues if i.type == fix.issue_type]
+        
+        if not same_issues and result.status == TestStatus.PASS:
+            fix.verified = True
+            print(f"      [✓] Fix verified - test now passes!")
+            return True
+        else:
+            print(f"      [✗] Fix did not resolve the issue")
+            return False
+    
+    async def try_fix_issue(self, issue: Issue, test_result: TestResult, test_case: Dict) -> bool:
+        """尝试修复单个问题"""
+        
+        # 检查尝试次数
+        issue_key = f"{issue.type}:{issue.description[:50]}"
+        attempts = self.fix_attempts.get(issue_key, 0)
+        
+        if attempts >= self.max_fix_attempts:
+            print(f"      [!] Max fix attempts ({self.max_fix_attempts}) reached for this issue")
+            return False
+        
+        self.fix_attempts[issue_key] = attempts + 1
+        
+        print(f"      [1/4] Locating issue in code...")
+        location = self.locate_issue_in_code(issue, test_result)
+        
+        if not location:
+            print(f"      [!] Could not locate issue")
+            return False
+        
+        print(f"            Found: {location.get('file_path', '?')} line {location.get('line_start', '?')}")
+        
+        print(f"      [2/4] Generating fix...")
+        fix = self.generate_fix(issue, location)
+        
+        if not fix:
+            print(f"      [!] Could not generate fix")
+            return False
+        
+        print(f"            Confidence: {fix.confidence:.0%}")
+        
+        # 低置信度警告
+        if fix.confidence < 0.5:
+            print(f"      [!] Low confidence fix - proceeding with caution")
+        
+        print(f"      [3/4] Applying fix...")
+        if not self.apply_fix_safely(fix):
+            self.fixes_failed.append(fix)
+            return False
+        
+        print(f"      [4/4] Verifying fix...")
+        # 重新初始化 agent 以加载修复后的代码
+        self.agent = None
+        
+        if await self.verify_fix(fix, test_case):
+            self.fixes_applied.append(fix)
+            return True
+        else:
+            # 回滚
+            print(f"      [!] Fix failed verification - rolling back")
+            self.rollback_fix(fix)
+            self.fixes_failed.append(fix)
+            # 重新初始化 agent
+            self.agent = None
+            return False
     
     def generate_test_cases(self, round_num: int, previous_issues: List[Issue] = None) -> List[Dict]:
         """使用 AI 生成测试用例"""
@@ -523,14 +899,15 @@ NogicOS 是一个 AI 工作助手，核心能力：
         print(f"{'='*60}")
         
         # 1. 生成测试用例
-        print("\n[1/3] Generating test cases with AI...")
+        print("\n[1/4] Generating test cases with AI...")
         previous_issues = self.all_issues[-20:] if self.all_issues else None
         test_cases = self.generate_test_cases(round_num, previous_issues)
         print(f"      Generated {len(test_cases)} test cases")
         
         # 2. 执行测试
-        print(f"\n[2/3] Running tests...")
+        print(f"\n[2/4] Running tests...")
         results: List[TestResult] = []
+        issues_to_fix: List[tuple] = []  # (issue, test_result, test_case)
         
         for i, test_case in enumerate(test_cases):
             prompt_preview = test_case.get("prompt", "")[:40]
@@ -556,10 +933,31 @@ NogicOS 是一个 AI 工作助手，核心能力：
             if result.issues:
                 for issue in result.issues[:2]:
                     print(f"         - [{issue.severity.value}] {issue.type}")
+                    # 收集需要修复的高危问题
+                    if self.auto_fix and issue.severity in [Severity.CRITICAL, Severity.HIGH]:
+                        issues_to_fix.append((issue, result, test_case))
         
-        # 3. AI 分析
-        print(f"\n[3/3] AI analyzing results...")
-        summary = self.analyze_round_with_ai(round_num, results)
+        # 3. 自动修复（如果启用）
+        fixes_this_round = 0
+        if self.auto_fix and issues_to_fix:
+            print(f"\n[3/4] Auto-fixing {len(issues_to_fix)} high-severity issues...")
+            
+            for issue, test_result, test_case in issues_to_fix:
+                print(f"\n  Fixing: [{issue.severity.value}] {issue.type}")
+                print(f"          {issue.description[:60]}...")
+                
+                if await self.try_fix_issue(issue, test_result, test_case):
+                    fixes_this_round += 1
+                    print(f"          ✓ Fixed successfully!")
+                else:
+                    print(f"          ✗ Could not fix automatically")
+            
+            print(f"\n      Fixed {fixes_this_round}/{len(issues_to_fix)} issues this round")
+        else:
+            print(f"\n[3/4] No auto-fix needed (no high-severity issues or auto-fix disabled)")
+        
+        # 4. AI 分析
+        print(f"\n[4/4] AI analyzing results...")
         
         # 更新统计
         self.total_rounds += 1
