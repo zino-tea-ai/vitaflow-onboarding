@@ -8,7 +8,7 @@ import type { KeyboardEvent } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowUp, ChevronRight, Square } from 'lucide-react';
+import { ArrowUp, ChevronRight, Square, Terminal, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '@/lib/utils';
@@ -443,6 +443,109 @@ function StreamingText({ text, isStreaming, onComplete }: StreamingTextProps) {
 }
 
 
+// Tool Widget - displays tool invocations with status
+interface ToolWidgetProps {
+  tool: {
+    toolCallId: string;
+    toolName: string;
+    state: 'pending' | 'running' | 'input-available' | 'output-available' | 'error';
+    input?: Record<string, any>;
+    output?: any;
+    error?: string;
+  };
+}
+
+const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
+  const [expanded, setExpanded] = useState(false);
+  
+  // Determine status based on state
+  const isComplete = tool.state === 'output-available';
+  const isError = tool.state === 'error';
+  const isRunning = tool.state === 'running' || tool.state === 'input-available';
+  
+  // Format tool name for display
+  const displayName = tool.toolName
+    .replace(/_/g, ' ')
+    .replace(/([A-Z])/g, ' $1')
+    .trim()
+    .toLowerCase()
+    .replace(/^./, c => c.toUpperCase());
+  
+  // Format input for display
+  const inputSummary = tool.input 
+    ? Object.entries(tool.input)
+        .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+        .join(', ')
+    : '';
+
+  return (
+    <motion.div 
+      className="tool-widget"
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+    >
+      <div 
+        className="tool-widget-header"
+        onClick={() => setExpanded(e => !e)}
+      >
+        <div className="tool-widget-icon">
+          {isComplete ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          ) : isError ? (
+            <AlertCircle className="w-4 h-4 text-red-400" />
+          ) : isRunning ? (
+            <Loader2 className="w-4 h-4 text-neutral-400 animate-spin" />
+          ) : (
+            <Terminal className="w-4 h-4 text-neutral-500" />
+          )}
+        </div>
+        <div className="tool-widget-info">
+          <span className="tool-widget-name">{displayName}</span>
+          {inputSummary && (
+            <span className="tool-widget-args">{inputSummary.slice(0, 60)}{inputSummary.length > 60 ? '...' : ''}</span>
+          )}
+        </div>
+        <span className={`tool-widget-chevron ${expanded ? 'open' : ''}`}>
+          <ChevronRight className="w-3.5 h-3.5" />
+        </span>
+      </div>
+      
+      <AnimatePresence>
+        {expanded && (tool.input || tool.output || tool.error) && (
+          <motion.div 
+            className="tool-widget-details"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+          >
+            {tool.input && (
+              <div className="tool-widget-section">
+                <span className="tool-widget-label">Input</span>
+                <pre className="tool-widget-code">{JSON.stringify(tool.input, null, 2)}</pre>
+              </div>
+            )}
+            {tool.output && (
+              <div className="tool-widget-section">
+                <span className="tool-widget-label">Output</span>
+                <pre className="tool-widget-code">{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
+              </div>
+            )}
+            {tool.error && (
+              <div className="tool-widget-section">
+                <span className="tool-widget-label text-red-400">Error</span>
+                <pre className="tool-widget-code text-red-300">{tool.error}</pre>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+});
+
+
 const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isStreaming }: MinimalMessageProps) {
   const [thinkingOpen, setThinkingOpen] = useState(true);
   const [thinkingComplete, setThinkingComplete] = useState(false);
@@ -452,7 +555,7 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
   const thinkingStartTime = useRef<number | null>(null);
   const isUser = role === 'user';
 
-  // Extract text and reasoning from parts
+  // Extract text, reasoning, and tool invocations from parts
   const textContent = useMemo(() => 
     parts?.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('') || content || '',
     [parts, content]
@@ -463,7 +566,14 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
     [parts]
   );
 
+  // Extract tool invocations (AI SDK stores them as 'tool-invocation' parts)
+  const toolInvocations = useMemo(() => 
+    parts?.filter((p: any) => p.type === 'tool-invocation') || [],
+    [parts]
+  );
+
   const hasReasoning = reasoningText.length > 0;
+  const hasTools = toolInvocations.length > 0;
   
   // Show planning when streaming but no content yet
   const showPlanning = isStreaming && !hasReasoning && !textContent;
@@ -582,6 +692,22 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
               </AnimatePresence>
             </motion.div>
           ) : null}
+        </AnimatePresence>
+
+        {/* Tool invocations - show between thinking and text */}
+        <AnimatePresence>
+          {hasTools && (
+            <motion.div
+              className="minimal-tools"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+            >
+              {toolInvocations.map((tool: any, index: number) => (
+                <ToolWidget key={tool.toolCallId || index} tool={tool} />
+              ))}
+            </motion.div>
+          )}
         </AnimatePresence>
 
         {/* Text content - waits for thinking to complete, then uses typewriter */}

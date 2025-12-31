@@ -204,6 +204,111 @@
   line-height: 1.65;
 }
 
+/* === Tool Widget === */
+.minimal-tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--m-space-2);
+  margin: var(--m-space-3) 0;
+}
+
+.tool-widget {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 14px;
+}
+
+.tool-widget-header {
+  display: flex;
+  align-items: center;
+  gap: var(--m-space-3);
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.tool-widget-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tool-widget-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tool-widget-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tool-widget-name {
+  font-weight: 500;
+  color: var(--m-gray-200);
+  font-size: 13px;
+}
+
+.tool-widget-args {
+  font-size: 12px;
+  color: var(--m-gray-500);
+  font-family: var(--m-font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-widget-chevron {
+  flex-shrink: 0;
+  color: var(--m-gray-600);
+  transition: transform 0.2s ease;
+}
+
+.tool-widget-chevron.open {
+  transform: rotate(90deg);
+}
+
+.tool-widget-details {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+.tool-widget-section {
+  padding: 10px 14px;
+}
+
+.tool-widget-section + .tool-widget-section {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.tool-widget-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--m-gray-500);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.tool-widget-code {
+  font-family: var(--m-font-mono);
+  font-size: 12px;
+  color: var(--m-gray-400);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0;
+  background: transparent;
+}
+
 /* === Code Block === */
 .minimal-code {
   background: var(--m-gray-950);
