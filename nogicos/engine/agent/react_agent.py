@@ -1005,7 +1005,7 @@ class ReActAgent:
         context: Optional[str] = None,
         on_text_delta: Optional[Callable[[str], Awaitable[None]]] = None,
         on_thinking_delta: Optional[Callable[[str], Awaitable[None]]] = None,
-        on_tool_start: Optional[Callable[[str, str], Awaitable[None]]] = None,
+        on_tool_start: Optional[Callable[[str, str, Dict[str, Any]], Awaitable[None]]] = None,
         on_tool_end: Optional[Callable[[str, bool, str], Awaitable[None]]] = None,
     ) -> AgentResult:
         """
@@ -1375,9 +1375,9 @@ class ReActAgent:
                     tool_args = tool_use["input"]
                     tool_id = tool_use["id"]
                     
-                    # Stream tool start
+                    # Stream tool start with args
                     if on_tool_start:
-                        await on_tool_start(tool_id, tool_name)
+                        await on_tool_start(tool_id, tool_name, tool_args)
                     if self.status_server:
                         await self.status_server.stream_tool_start(
                             message_id, tool_id, tool_name

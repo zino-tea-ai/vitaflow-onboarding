@@ -741,11 +741,37 @@ async def generate_ai_sdk_stream(task: str, session_id: str):
             text_started = True
         await event_queue.put(sse({"type": "text-delta", "id": text_id, "delta": delta}))
     
-    async def tool_start_callback(tool_id: str, tool_name: str):
-        await event_queue.put(sse({"type": "tool-call-start", "toolCallId": tool_id, "toolName": tool_name}))
+    # Track tool names for output events
+    tool_names: dict = {}
+    
+    async def tool_start_callback(tool_id: str, tool_name: str, tool_args: dict):
+        tool_names[tool_id] = tool_name
+        # AI SDK Data Stream Protocol: tool-input-start -> tool-input-available -> (execution) -> tool-output-available
+        await event_queue.put(sse({
+            "type": "tool-input-start",
+            "toolCallId": tool_id,
+            "toolName": tool_name,
+        }))
+        await event_queue.put(sse({
+            "type": "tool-input-available",
+            "toolCallId": tool_id,
+            "toolName": tool_name,
+            "input": tool_args,
+        }))
     
     async def tool_end_callback(tool_id: str, success: bool, result: str):
-        await event_queue.put(sse({"type": "tool-result", "toolCallId": tool_id, "result": result if success else f"Error: {result}"}))
+        if success:
+            await event_queue.put(sse({
+                "type": "tool-output-available",
+                "toolCallId": tool_id,
+                "output": result,
+            }))
+        else:
+            await event_queue.put(sse({
+                "type": "tool-output-error",
+                "toolCallId": tool_id,
+                "errorText": result,
+            }))
     
     async def run_agent():
         try:
