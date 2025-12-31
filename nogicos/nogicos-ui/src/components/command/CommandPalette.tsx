@@ -2,13 +2,7 @@
 
 import * as React from "react"
 import { useEffect, useState, useCallback } from "react"
-import {
-  Settings,
-  Sparkles,
-  Trash2,
-  Moon,
-  Plus,
-} from "lucide-react"
+import { Settings, Sparkles, Trash2, Moon, Plus } from "lucide-react"
 import {
   CommandDialog,
   CommandEmpty,

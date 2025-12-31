@@ -10,12 +10,4 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  build: {
-    rollupOptions: {
-      input: {
-        main: path.resolve(__dirname, 'index.html'),
-        'animation-demo': path.resolve(__dirname, 'animation-demo.html'),
-      },
-    },
-  },
 });
