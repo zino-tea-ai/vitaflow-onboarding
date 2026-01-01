@@ -204,109 +204,85 @@
   line-height: 1.65;
 }
 
-/* === Tool Widget === */
+/* === Tool Chip (Cursor-style) === */
 .minimal-tools {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.tool-chip {
+  display: inline-flex;
   flex-direction: column;
-  gap: var(--m-space-2);
-  margin: var(--m-space-3) 0;
+  font-size: 13px;
+  max-width: 100%;
 }
 
-.tool-widget {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 10px;
-  overflow: hidden;
-  font-size: 14px;
-}
-
-.tool-widget-header {
-  display: flex;
+.tool-chip-main {
+  display: inline-flex;
   align-items: center;
-  gap: var(--m-space-3);
-  padding: 10px 14px;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
   cursor: pointer;
   transition: background 0.15s ease;
 }
 
-.tool-widget-header:hover {
-  background: rgba(255, 255, 255, 0.03);
+.tool-chip-main:hover {
+  background: rgba(255, 255, 255, 0.07);
 }
 
-.tool-widget-icon {
+.tool-chip-icon {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
 }
 
-.tool-widget-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.tool-widget-name {
-  font-weight: 500;
-  color: var(--m-gray-200);
-  font-size: 13px;
-}
-
-.tool-widget-args {
+.tool-chip-name {
+  color: var(--m-gray-400);
   font-size: 12px;
+}
+
+.tool-chip-arg {
   color: var(--m-gray-500);
   font-family: var(--m-font-mono);
+  font-size: 11px;
+  max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tool-widget-chevron {
-  flex-shrink: 0;
+.tool-chip-chevron {
   color: var(--m-gray-600);
-  transition: transform 0.2s ease;
+  transition: transform 0.15s ease;
+  margin-left: 2px;
 }
 
-.tool-widget-chevron.open {
+.tool-chip-chevron.open {
   transform: rotate(90deg);
 }
 
-.tool-widget-details {
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
+.tool-chip-output {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
   overflow: hidden;
 }
 
-.tool-widget-section {
-  padding: 10px 14px;
-}
-
-.tool-widget-section + .tool-widget-section {
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.tool-widget-label {
-  display: block;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--m-gray-500);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 6px;
-}
-
-.tool-widget-code {
+.tool-chip-output pre {
   font-family: var(--m-font-mono);
-  font-size: 12px;
-  color: var(--m-gray-400);
-  line-height: 1.5;
+  font-size: 11px;
+  color: var(--m-gray-500);
+  line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 200px;
+  max-height: 150px;
   overflow-y: auto;
   margin: 0;
-  background: transparent;
 }
 
 /* === Code Block === */

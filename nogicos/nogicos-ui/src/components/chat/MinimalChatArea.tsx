@@ -443,13 +443,13 @@ function StreamingText({ text, isStreaming, onComplete }: StreamingTextProps) {
 }
 
 
-// Tool Widget - displays tool invocations with status
+// Tool Widget - Cursor-style compact display
 interface ToolWidgetProps {
   tool: {
-    type: string;  // 'tool-{toolName}' or 'dynamic-tool'
+    type: string;
     toolCallId: string;
-    toolName?: string;  // For dynamic-tool
-    state: string;  // 'input-streaming' | 'input-available' | 'output-available' | etc.
+    toolName?: string;
+    state: string;
     input?: Record<string, any>;
     output?: any;
     errorText?: string;
@@ -459,89 +459,63 @@ interface ToolWidgetProps {
 const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
   const [expanded, setExpanded] = useState(false);
   
-  // Extract tool name from type (e.g., 'tool-list_directory' -> 'list_directory')
   const toolName = tool.toolName || tool.type?.replace(/^tool-/, '') || 'unknown';
-  
-  // Determine status based on state
   const isComplete = tool.state === 'output-available';
   const isError = tool.state === 'error' || !!tool.errorText;
   const isRunning = tool.state === 'input-streaming' || tool.state === 'input-available';
   
-  // Format tool name for display
-  const displayName = toolName
-    .replace(/_/g, ' ')
-    .replace(/([A-Z])/g, ' $1')
-    .trim()
-    .toLowerCase()
-    .replace(/^./, c => c.toUpperCase());
+  // Cursor-style: tool name as action verb
+  const displayName = toolName.replace(/_/g, ' ');
   
-  // Format input for display
-  const inputSummary = tool.input 
-    ? Object.entries(tool.input)
-        .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
-        .join(', ')
+  // Get main argument value (usually path or query)
+  const mainArg = tool.input 
+    ? Object.values(tool.input)[0]
+    : '';
+  const argPreview = typeof mainArg === 'string' 
+    ? mainArg.length > 50 ? mainArg.slice(-50) : mainArg
     : '';
 
   return (
     <motion.div 
-      className="tool-widget"
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+      className="tool-chip"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
     >
       <div 
-        className="tool-widget-header"
-        onClick={() => setExpanded(e => !e)}
+        className="tool-chip-main"
+        onClick={() => tool.output && setExpanded(e => !e)}
       >
-        <div className="tool-widget-icon">
+        <span className="tool-chip-icon">
           {isComplete ? (
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
           ) : isError ? (
-            <AlertCircle className="w-4 h-4 text-red-400" />
+            <AlertCircle className="w-3.5 h-3.5 text-red-400" />
           ) : isRunning ? (
-            <Loader2 className="w-4 h-4 text-neutral-400 animate-spin" />
+            <Loader2 className="w-3.5 h-3.5 text-neutral-500 animate-spin" />
           ) : (
-            <Terminal className="w-4 h-4 text-neutral-500" />
+            <Terminal className="w-3.5 h-3.5 text-neutral-600" />
           )}
-        </div>
-        <div className="tool-widget-info">
-          <span className="tool-widget-name">{displayName}</span>
-          {inputSummary && (
-            <span className="tool-widget-args">{inputSummary.slice(0, 60)}{inputSummary.length > 60 ? '...' : ''}</span>
-          )}
-        </div>
-        <span className={`tool-widget-chevron ${expanded ? 'open' : ''}`}>
-          <ChevronRight className="w-3.5 h-3.5" />
         </span>
+        <span className="tool-chip-name">{displayName}</span>
+        {argPreview && <span className="tool-chip-arg">{argPreview}</span>}
+        {tool.output && (
+          <span className={`tool-chip-chevron ${expanded ? 'open' : ''}`}>
+            <ChevronRight className="w-3 h-3" />
+          </span>
+        )}
       </div>
       
       <AnimatePresence>
-        {expanded && (tool.input || tool.output || tool.errorText) && (
+        {expanded && tool.output && (
           <motion.div 
-            className="tool-widget-details"
+            className="tool-chip-output"
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+            transition={{ duration: 0.15 }}
           >
-            {tool.input && (
-              <div className="tool-widget-section">
-                <span className="tool-widget-label">Input</span>
-                <pre className="tool-widget-code">{JSON.stringify(tool.input, null, 2)}</pre>
-              </div>
-            )}
-            {tool.output && (
-              <div className="tool-widget-section">
-                <span className="tool-widget-label">Output</span>
-                <pre className="tool-widget-code">{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
-              </div>
-            )}
-            {tool.errorText && (
-              <div className="tool-widget-section">
-                <span className="tool-widget-label text-red-400">Error</span>
-                <pre className="tool-widget-code text-red-300">{tool.errorText}</pre>
-              </div>
-            )}
+            <pre>{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
           </motion.div>
         )}
       </AnimatePresence>
