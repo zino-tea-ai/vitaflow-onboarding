@@ -199,16 +199,19 @@ class InfiniteAITester:
         """调用 LLM"""
         client = self.init_llm()
         
-        messages = [{"role": "user", "content": prompt}]
-        
         response = client.messages.create(
             model=self.model_name,
             max_tokens=max_tokens,
             system=system if system else "你是 NogicOS 的 QA 测试专家。",
-            messages=messages,
+            messages=[{"role": "user", "content": prompt}],
         )
         
-        return response.content[0].text
+        # 提取文本响应
+        for block in response.content:
+            # 检查是否是 TextBlock 类型
+            if hasattr(block, "type") and getattr(block, "type", None) == "text":
+                return getattr(block, "text", "")
+        return ""
     
     def read_file_content(self, file_path: str) -> Optional[str]:
         """安全读取文件内容"""
@@ -553,7 +556,7 @@ class InfiniteAITester:
             self.agent = None
             return False
     
-    def generate_test_cases(self, round_num: int, previous_issues: List[Issue] = None) -> List[Dict]:
+    def generate_test_cases(self, round_num: int, previous_issues: Optional[List[Issue]] = None) -> List[Dict]:
         """使用 AI 生成测试用例"""
         
         # 构建 prompt
@@ -958,6 +961,7 @@ NogicOS 是一个 AI 工作助手，核心能力：
         
         # 4. AI 分析
         print(f"\n[4/4] AI analyzing results...")
+        summary = self.analyze_round_with_ai(round_num, results)
         
         # 更新统计
         self.total_rounds += 1
@@ -976,6 +980,9 @@ NogicOS 是一个 AI 工作助手，核心能力：
         print(f"\n--- Round {round_num} Summary ---")
         print(f"Passed: {summary.passed}/{summary.total_tests}")
         print(f"Issues: {len(summary.issues_found)}")
+        if self.auto_fix:
+            print(f"Fixes applied this round: {fixes_this_round}")
+            print(f"Total fixes applied: {len(self.fixes_applied)}")
         print(f"Stable: {'Yes' if summary.is_stable else 'No'}")
         print(f"Consecutive stable rounds: {self.consecutive_stable_rounds}/{self.stability_threshold}")
         if summary.ai_analysis:
@@ -1035,11 +1042,14 @@ NogicOS INFINITE AI TESTER - FINAL REPORT
 
 Session: {self.session_id}
 Duration: {elapsed/60:.1f} minutes
+Auto-Fix: {'Enabled' if self.auto_fix else 'Disabled'}
 
 ## Summary
 - Total Rounds: {self.total_rounds}
 - Total Tests: {self.total_tests}
-- Total Issues: {self.total_issues}
+- Total Issues Found: {self.total_issues}
+- Fixes Applied: {len(self.fixes_applied)}
+- Fixes Failed: {len(self.fixes_failed)}
 - Consecutive Stable Rounds: {self.consecutive_stable_rounds}
 - Final Status: {'✓ STABLE' if self.consecutive_stable_rounds >= self.stability_threshold else '✗ UNSTABLE'}
 
@@ -1060,6 +1070,20 @@ Duration: {elapsed/60:.1f} minutes
             for issue_type, count in sorted(issue_types.items(), key=lambda x: -x[1]):
                 report += f"  {issue_type}: {count}\n"
         
+        # 修复详情
+        if self.fixes_applied:
+            report += "\n## Fixes Applied\n"
+            for i, fix in enumerate(self.fixes_applied, 1):
+                report += f"  {i}. [{fix.issue_type}] {fix.file_path}\n"
+                report += f"     {fix.explanation[:80]}...\n"
+                report += f"     Verified: {'Yes' if fix.verified else 'No'}\n"
+        
+        if self.fixes_failed:
+            report += "\n## Fixes Failed\n"
+            for i, fix in enumerate(self.fixes_failed, 1):
+                report += f"  {i}. [{fix.issue_type}] {fix.file_path}\n"
+                report += f"     {fix.explanation[:80]}...\n" if fix.explanation else ""
+        
         report += f"""
 ## Conclusion
 {'Product is STABLE! ✓' if self.consecutive_stable_rounds >= self.stability_threshold else 'Product needs more work.'}
@@ -1078,11 +1102,12 @@ Results saved to: {self.output_dir}
             True if product reached stability, False otherwise
         """
         print("\n" + "="*60)
-        print("NogicOS INFINITE AI TESTER")
+        print("NogicOS INFINITE AI TESTER" + (" + AUTO-FIX" if self.auto_fix else ""))
         print("="*60)
         print(f"Stability threshold: {self.stability_threshold} consecutive stable rounds")
         print(f"Tests per round: {self.tests_per_round}")
         print(f"Max rounds: {max_rounds}")
+        print(f"Auto-fix: {'Enabled (max {0} attempts per issue)'.format(self.max_fix_attempts) if self.auto_fix else 'Disabled'}")
         print(f"Output: {self.output_dir}")
         print("="*60)
         
@@ -1137,6 +1162,25 @@ Results saved to: {self.output_dir}
                     "total_issues": self.total_issues,
                     "consecutive_stable_rounds": self.consecutive_stable_rounds,
                     "is_stable": self.consecutive_stable_rounds >= self.stability_threshold,
+                    "auto_fix_enabled": self.auto_fix,
+                    "fixes_applied": [
+                        {
+                            "issue_type": f.issue_type,
+                            "file_path": f.file_path,
+                            "explanation": f.explanation,
+                            "verified": f.verified,
+                            "backup_path": f.backup_path,
+                        }
+                        for f in self.fixes_applied
+                    ],
+                    "fixes_failed": [
+                        {
+                            "issue_type": f.issue_type,
+                            "file_path": f.file_path,
+                            "explanation": f.explanation,
+                        }
+                        for f in self.fixes_failed
+                    ],
                     "all_issues": [
                         {
                             "type": i.type,
@@ -1152,12 +1196,14 @@ Results saved to: {self.output_dir}
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="NogicOS Infinite AI Tester")
+    parser = argparse.ArgumentParser(description="NogicOS Infinite AI Tester with Auto-Fix")
     parser.add_argument("--max-rounds", type=int, default=100, help="Maximum number of test rounds")
     parser.add_argument("--stability-threshold", type=int, default=3, help="Consecutive stable rounds needed")
     parser.add_argument("--tests-per-round", type=int, default=10, help="Number of tests per round")
     parser.add_argument("--timeout", type=int, default=60, help="Timeout per test in seconds")
     parser.add_argument("--output", type=str, default="tests/infinite_test_results", help="Output directory")
+    parser.add_argument("--no-fix", action="store_true", help="Disable auto-fix (test only)")
+    parser.add_argument("--max-fix-attempts", type=int, default=3, help="Max fix attempts per issue type")
     args = parser.parse_args()
     
     tester = InfiniteAITester(
@@ -1165,6 +1211,8 @@ async def main():
         stability_threshold=args.stability_threshold,
         tests_per_round=args.tests_per_round,
         timeout_per_test=args.timeout,
+        auto_fix=not args.no_fix,
+        max_fix_attempts=args.max_fix_attempts,
     )
     
     is_stable = await tester.run(max_rounds=args.max_rounds)

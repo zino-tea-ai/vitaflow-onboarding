@@ -769,6 +769,16 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
                     <blockquote className="border-l-2 border-neutral-700 pl-4 my-3 text-neutral-400 italic">{children}</blockquote>
                   ),
                   hr: () => <hr className="border-neutral-800 my-4" />,
+                  table: ({ children }) => (
+                    <div className="my-3 overflow-x-auto">
+                      <table className="w-full text-sm border-collapse">{children}</table>
+                    </div>
+                  ),
+                  thead: ({ children }) => <thead className="border-b border-neutral-700">{children}</thead>,
+                  tbody: ({ children }) => <tbody>{children}</tbody>,
+                  tr: ({ children }) => <tr className="border-b border-neutral-800 last:border-0">{children}</tr>,
+                  th: ({ children }) => <th className="text-left py-2 px-3 font-medium text-neutral-300">{children}</th>,
+                  td: ({ children }) => <td className="py-2 px-3 text-neutral-400">{children}</td>,
                 }}
               >
                 {textContent}

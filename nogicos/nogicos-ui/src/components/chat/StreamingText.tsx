@@ -62,10 +62,10 @@ export const StreamingText = memo(function StreamingText({
               </>
             );
           },
-          // Tables
+          // Tables - 固定列宽，解决中英文混排对齐问题
           table: ({ children }) => (
-            <div className="my-3 rounded-md overflow-hidden border border-[var(--chat-border)]">
-              <table className="w-full text-[13px]">
+            <div className="my-3 rounded-md overflow-hidden border border-[var(--chat-border)] overflow-x-auto">
+              <table className="w-full text-[13px] table-fixed border-collapse">
                 {children}
               </table>
             </div>
@@ -74,7 +74,7 @@ export const StreamingText = memo(function StreamingText({
             <thead className="bg-[var(--chat-bg-tertiary)]">{children}</thead>
           ),
           th: ({ children }) => (
-            <th className="px-3 py-2 text-left font-medium text-[var(--chat-text-secondary)] border-b border-[var(--chat-border)]">
+            <th className="px-4 py-2.5 text-left font-semibold text-[var(--chat-text-secondary)] border-b border-[var(--chat-border)] whitespace-nowrap">
               {children}
             </th>
           ),
@@ -85,7 +85,9 @@ export const StreamingText = memo(function StreamingText({
             </tr>
           ),
           td: ({ children }) => (
-            <td className="px-3 py-2 text-[var(--chat-text-primary)]">{children}</td>
+            <td className="px-4 py-2.5 text-[var(--chat-text-primary)] align-top">
+              {children}
+            </td>
           ),
           // Lists
           ul: ({ children }) => (
