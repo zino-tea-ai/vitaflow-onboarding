@@ -42,8 +42,10 @@ export function MinimalChatArea({
 }: MinimalChatAreaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
   const [localInput, setLocalInput] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
 
   const {
     messages,
@@ -64,20 +66,39 @@ export function MinimalChatArea({
   const isLoading = status === 'pending' || status === 'streaming';
   const isActuallyStreaming = status === 'streaming';
 
-  // Auto scroll - on new messages and during streaming
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  // Detect if user scrolled up (away from bottom)
+  const handleScroll = useCallback(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 100;
+    setUserScrolledUp(!isAtBottom);
+  }, []);
 
-  // Also scroll during streaming content updates
+  // Reset scroll lock when streaming ends or new message sent
   useEffect(() => {
-    if (isActuallyStreaming) {
+    if (!isActuallyStreaming) {
+      setUserScrolledUp(false);
+    }
+  }, [isActuallyStreaming]);
+
+  // Auto scroll - only if user hasn't scrolled up
+  useEffect(() => {
+    if (!userScrolledUp) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, userScrolledUp]);
+
+  // Also scroll during streaming (only if user at bottom)
+  useEffect(() => {
+    if (isActuallyStreaming && !userScrolledUp) {
       const scrollInterval = setInterval(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 300);
       return () => clearInterval(scrollInterval);
     }
-  }, [isActuallyStreaming]);
+  }, [isActuallyStreaming, userScrolledUp]);
 
   // Auto resize textarea with smooth transition
   useEffect(() => {
@@ -119,7 +140,11 @@ export function MinimalChatArea({
       <div className="minimal-grain-overlay" aria-hidden="true" />
       
       {/* Chat Area */}
-      <div className="minimal-chat">
+      <div 
+        className="minimal-chat"
+        ref={chatContainerRef}
+        onScroll={handleScroll}
+      >
         <div className="minimal-chat-inner">
           <AnimatePresence mode="wait">
             {isEmpty ? (
