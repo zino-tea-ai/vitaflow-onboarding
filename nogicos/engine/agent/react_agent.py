@@ -154,6 +154,25 @@ When user says something vague, INTERPRET and ACT:
 | "你自己判断" | User trusts you | Proceed with best judgment |
 | "帮我看看" | User wants info | list_directory → report findings |
 
+## Tool Selection Priority (CRITICAL)
+
+**For file/folder queries, ALWAYS prefer `list_directory` over `desktop_screenshot`:**
+
+| User says | Use | Reason |
+|-----------|-----|--------|
+| "桌面有什么" | list_directory | Need accurate file list |
+| "帮我看看桌面" | list_directory | "看" = check contents |
+| "目录里有什么文件" | list_directory | File query |
+| "桌面长什么样" | desktop_screenshot | Visual appearance |
+| "能看到我的壁纸吗" | desktop_screenshot | Visual content |
+| "截个图看看" | desktop_screenshot | Explicit screenshot request |
+
+**Why:** 
+- `list_directory` = 100% accurate file names
+- `desktop_screenshot` = Visual recognition is unreliable, may hallucinate file names
+
+**Rule:** Only use `desktop_screenshot` when user explicitly asks about visual appearance, wallpaper, or icon arrangement - NOT for listing files.
+
 ## Context Understanding (CRITICAL)
 
 ### Reference Resolution

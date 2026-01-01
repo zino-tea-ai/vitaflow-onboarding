@@ -214,7 +214,21 @@ def register_desktop_tools(registry):
             return f"Error pressing hotkey: {str(e)}"
     
     @registry.action(
-        description="Take screenshot of the desktop",
+        description="""Take screenshot of the desktop.
+
+⚠️ IMPORTANT: Visual recognition is NOT reliable for file names!
+- May hallucinate/misidentify files
+- Use list_directory for accurate file listing
+
+WHEN TO USE:
+- User asks about visual appearance/layout
+- User wants to see wallpaper/icons arrangement  
+- User explicitly says "截图" or "看一眼长什么样"
+
+DO NOT USE FOR:
+- Listing files (use list_directory instead)
+- Finding specific files
+- Any task requiring accurate file names""",
         category=ToolCategory.LOCAL,
     )
     async def desktop_screenshot(
