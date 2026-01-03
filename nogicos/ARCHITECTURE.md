@@ -66,11 +66,56 @@ User Task → Router → [Skill/Fast/Normal Path] → Result
                     (Learning Loop)
 ```
 
+## UI Architecture
+
+### Parallel Streaming
+
+NogicOS UI 支持多 session 并行 streaming，切换 session 不会中断 AI 回复：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      App.tsx                             │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │           activeSessions: Set<string>            │    │
+│  │  - session-1 (visible)                           │    │
+│  │  - session-2 (hidden, streaming in background)   │    │
+│  │  - session-3 (hidden)                            │    │
+│  └─────────────────────────────────────────────────┘    │
+│                         │                                │
+│    ┌────────────────────┼────────────────────┐          │
+│    ▼                    ▼                    ▼          │
+│  MinimalChatArea    MinimalChatArea    MinimalChatArea  │
+│  (display: flex)    (display: none)    (display: none)  │
+│  useChat instance   useChat instance   useChat instance │
+└─────────────────────────────────────────────────────────┘
+```
+
+**关键设计**：
+- 每个 session 渲染独立的 `MinimalChatArea` 组件
+- 使用 CSS `display: none/flex` 控制可见性
+- 每个组件有独立的 `useChat` 实例，streaming 互不影响
+- 切换只改变显示，不销毁组件
+
+### Session Persistence
+
+```
+Frontend State          Backend API              SQLite
+─────────────────      ─────────────           ─────────
+chatSessions (Map) ←→  /v2/sessions   ←→     sessions.db
+currentUnsavedSession  /v2/sessions/:id
+persistedSessions      
+```
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/execute` | POST | Execute AI task |
+| `/v2/chat` | POST | Vercel AI SDK streaming chat |
+| `/v2/sessions` | GET | List all sessions |
+| `/v2/sessions/:id` | GET | Get session detail |
+| `/v2/sessions/:id` | POST | Save session |
+| `/v2/sessions/:id` | DELETE | Delete session |
 | `/stats` | GET | Knowledge base statistics |
 | `/health` | GET | Health check |
 
