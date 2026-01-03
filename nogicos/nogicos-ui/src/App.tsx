@@ -506,15 +506,7 @@ function App() {
 
   // Select session
   const handleSelectSession = useCallback(async (id: string) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App:handleSelectSession:start',message:'selecting session',data:{id},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
-    
     const detail = await loadSession(id);
-    
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App:handleSelectSession:loaded',message:'loadSession result',data:{id,hasDetail:!!detail,historyLength:detail?.history?.length,historyPreview:detail?.history?.slice(0,2)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
     
     // Prepare messages for MinimalChatArea (include parts for reasoning/tools)
     let minimalMessages: Array<{ id: string; role: 'user' | 'assistant'; content: string; parts?: any[] }> = [];
@@ -527,10 +519,6 @@ function App() {
         ...(m.parts ? { parts: m.parts } : {}),
       }));
     }
-    
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App:handleSelectSession:prepared',message:'prepared minimalMessages',data:{count:minimalMessages.length,preview:minimalMessages.slice(0,2)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
     
     // Update state
     setMinimalInitialMessages(minimalMessages);
@@ -709,9 +697,6 @@ function App() {
               }
             }}
             onMessagesChange={(msgs) => {
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App:onMessagesChange',message:'saving messages',data:{sessionId:activeSessionId,msgCount:msgs.length,preview:msgs.slice(0,2)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H2'})}).catch(()=>{});
-              // #endregion
               // Save messages to backend
               const sessionId = activeSessionId;
               if (sessionId) {

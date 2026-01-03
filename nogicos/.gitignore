@@ -23,8 +23,9 @@ WORKFLOW.md
 CLAUDE.md
 .cursorrules
 
-# Data
+# Data (runtime generated)
 data/
+*.db
 
 # IDE
 .idea/
@@ -39,9 +40,13 @@ nul
 
 # Node
 node_modules/
+dist/
 
-# Test artifacts (keep test code, ignore outputs)
+# Test artifacts
 tests/screenshots/
+tests/self_healing_results/
+tests/self_test_results/
+tests/auto_test_results/
 tests/.pytest_cache/
 .pytest_cache/
 .coverage
@@ -51,8 +56,23 @@ coverage.xml
 # Temp files
 *.tmp
 *.bak
+*.old
+*.orig
+
+# Reference/Benchmark repos (development only)
+reference/
+benchmarks/
+novnc-client/
+
+# Agent test outputs
+my_project/
+new_project/
+python_app/
+test_folder/
+
+# Windows artifacts
+50
+{const{message
 
 # Keep .github folder for CI
 !.github/
-# Reference repos (downloaded for study)
-reference/

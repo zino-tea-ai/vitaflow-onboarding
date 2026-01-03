@@ -58,10 +58,6 @@ export function MinimalChatArea({
   onSessionUpdate,
   onMessagesChange,
 }: MinimalChatAreaProps) {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MinimalChatArea:render',message:'component render',data:{sessionId,initialMessagesCount:initialMessages.length,initialPreview:initialMessages.slice(0,2)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H3'})}).catch(()=>{});
-  // #endregion
-  
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -141,13 +137,7 @@ export function MinimalChatArea({
       parts: m.parts,
     }));
     
-    const combined = [...history, ...newMessages];
-    
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MinimalChatArea:messages',message:'combined messages',data:{historyCount:history.length,newCount:newMessages.length,totalCount:combined.length,hasPartsInHistory:history.some(m=>m.parts?.length>0),preview:combined.slice(0,2).map(m=>({id:m.id,role:m.role,content:m.content?.substring(0,30),hasParts:!!m.parts}))},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H3'})}).catch(()=>{});
-    // #endregion
-    
-    return combined;
+    return [...history, ...newMessages];
   }, [initialMessages, useChatMessages]);
   
   // Save messages when useChat messages change (streaming complete)
