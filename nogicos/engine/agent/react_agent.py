@@ -166,6 +166,16 @@ You are NOT a chatbot. You are an AGENT. The difference:
 2. **Act** → Use tools to accomplish it
 3. **Report** → Brief summary of what you did
 
+## Efficiency Principle
+
+**Complete tasks in as few iterations as possible.**
+
+- When calling tools, batch related operations together
+- Don't ask clarifying questions unless truly necessary
+- If you have enough context, ACT immediately
+- After executing tools, provide a complete response - don't iterate unnecessarily
+- If the task is complete, say so and stop
+
 ## Understanding User Intent
 
 When user says something vague, INTERPRET and ACT:
@@ -509,6 +519,10 @@ class ReActAgent:
         self._warm_caches: Dict[str, float] = {}  # session_id -> timestamp
         self._cache_ttl = 300  # Cache warm for 5 minutes
         
+        # Memory search result cache (avoid repeated semantic searches)
+        self._memory_cache: Dict[str, Dict] = {}  # task_hash -> {result, timestamp}
+        self._memory_cache_ttl = 300  # Memory cache valid for 5 minutes
+        
         # Tool category cache (dynamically populated from registry)
         self._tool_categories_cache: Dict[str, str] = {}
         self._refresh_tool_categories()
@@ -667,6 +681,7 @@ class ReActAgent:
         Build system prompt with long-term memory (async version).
         
         Retrieves semantically relevant memories based on the current task.
+        Uses caching to avoid repeated semantic searches for similar tasks.
         
         Args:
             session_id: Session ID for memory scoping
@@ -676,6 +691,8 @@ class ReActAgent:
         Returns:
             System prompt with injected memory context
         """
+        import hashlib
+        
         # Start with base prompt + operation history
         history = format_operation_history(session_id)
         prompt = self.base_system_prompt.replace("{operation_history}", history)
@@ -684,14 +701,45 @@ class ReActAgent:
         memory_context = ""
         if self.memory_search and MEMORY_AVAILABLE and not skip_memory:
             try:
-                # Search for relevant memories based on current task
-                memory_context = await self.memory_search.search_for_prompt(
-                    query=task,
-                    session_id=session_id,
-                    max_tokens=400,  # Limit to ~400 tokens for memory
-                )
-                if memory_context:
-                    logger.debug(f"Injected {len(memory_context)} chars of memory context")
+                # Create cache key from task + session_id
+                cache_key = hashlib.md5(f"{session_id}:{task}".encode()).hexdigest()
+                current_time = time.time()
+                
+                # Check cache first
+                if cache_key in self._memory_cache:
+                    cached = self._memory_cache[cache_key]
+                    if current_time - cached["timestamp"] < self._memory_cache_ttl:
+                        memory_context = cached["result"]
+                        logger.debug(f"[Agent] Memory cache hit for task '{task[:30]}...'")
+                    else:
+                        # Cache expired, remove it
+                        del self._memory_cache[cache_key]
+                
+                # If not in cache, perform search
+                if not memory_context:
+                    memory_context = await self.memory_search.search_for_prompt(
+                        query=task,
+                        session_id=session_id,
+                        max_tokens=400,  # Limit to ~400 tokens for memory
+                    )
+                    # Cache the result
+                    self._memory_cache[cache_key] = {
+                        "result": memory_context or "",
+                        "timestamp": current_time,
+                    }
+                    if memory_context:
+                        logger.debug(f"[Agent] Memory search: {len(memory_context)} chars cached")
+                    
+                    # Clean up old cache entries (keep cache size manageable)
+                    if len(self._memory_cache) > 100:
+                        # Remove oldest entries
+                        sorted_keys = sorted(
+                            self._memory_cache.keys(),
+                            key=lambda k: self._memory_cache[k]["timestamp"]
+                        )
+                        for key in sorted_keys[:50]:  # Remove oldest 50
+                            del self._memory_cache[key]
+                            
             except Exception as e:
                 logger.warning(f"Failed to load memory context: {e}")
         elif skip_memory:
@@ -788,6 +836,33 @@ class ReActAgent:
             "text": system_prompt,
             "cache_control": {"type": "ephemeral"}
         }]
+    
+    def _build_cached_tools(self, tools: list) -> list:
+        """
+        Build tools list with cache_control for Anthropic API.
+        
+        Adds cache_control to the last tool in the list, which tells
+        Anthropic to cache all tools up to and including that point.
+        
+        This significantly reduces input tokens on repeated calls since
+        tool definitions are typically static.
+        
+        Args:
+            tools: List of tools in Anthropic format
+            
+        Returns:
+            Tools list with cache_control on last element
+        """
+        if not tools:
+            return tools
+        
+        # Deep copy to avoid modifying original
+        cached_tools = [dict(t) for t in tools]
+        
+        # Add cache_control to last tool (caches all tools before it too)
+        cached_tools[-1]["cache_control"] = {"type": "ephemeral"}
+        
+        return cached_tools
     
     def _classify_error(self, error: str) -> tuple[str, bool, str]:
         """
@@ -1373,10 +1448,15 @@ class ReActAgent:
         if metrics:
             metrics.request_in_progress.inc()
         
-        # Check if cache is warm and use cached system prompt
-        use_caching = self._is_cache_warm(session_id)
-        if use_caching:
-            logger.info(f"Using warm cache for session {session_id}")
+        # Always enable prompt caching for better performance
+        # Anthropic's caching is automatic: first call caches, subsequent calls use cache
+        # No need to pre-warm; just always send cache_control headers
+        use_caching = True
+        
+        # Track if this session had warm cache (for debugging)
+        had_warm_cache = self._is_cache_warm(session_id)
+        if had_warm_cache:
+            logger.debug(f"Session {session_id} had pre-warmed cache")
         
         # Visualization: task start
         if VISUALIZATION_AVAILABLE and self.status_server:
@@ -1414,8 +1494,12 @@ class ReActAgent:
                 }
                 # Only include tools if we have any (empty array causes API error)
                 if not is_simple and tools:
-                    api_params["tools"] = tools
-                logger.info(f"[Agent] {'Simple' if is_simple else 'Complex'} chat: {self.model}, thinking={thinking_budget}, max_tokens={max_tokens}, tools={len(tools) if not is_simple else 0}")
+                    # Use cached tools when caching is enabled for better performance
+                    if use_caching:
+                        api_params["tools"] = self._build_cached_tools(tools)
+                    else:
+                        api_params["tools"] = tools
+                logger.info(f"[Agent] {'Simple' if is_simple else 'Complex'} chat: {self.model}, thinking={thinking_budget}, max_tokens={max_tokens}, tools={len(tools) if not is_simple else 0}, caching={use_caching}")
                 
                 # Extended Thinking requires beta header
                 # Combine with prompt caching header if using caching
@@ -1570,87 +1654,181 @@ class ReActAgent:
                     break
                 
                 # Execute tools with smart retry
+                # Use parallel execution for independent tools (non-browser tools)
                 tool_results = []
                 
-                for tool_index, tool_use in enumerate(tool_uses):
-                    tool_name = tool_use["name"]
-                    tool_args = tool_use["input"]
-                    tool_id = tool_use["id"]
+                # Check if we can parallelize - browser tools must be sequential
+                browser_tool_names = {"browser_navigate", "browser_click", "browser_type", 
+                                      "browser_extract", "browser_screenshot", "browser_scroll",
+                                      "browser_back", "browser_wait", "browser_send_keys"}
+                has_browser_tools = any(tu["name"] in browser_tool_names for tu in tool_uses)
+                can_parallelize = len(tool_uses) > 1 and not has_browser_tools
+                
+                if can_parallelize:
+                    # Parallel execution for non-browser tools
+                    logger.info(f"[Agent] Executing {len(tool_uses)} tools in parallel")
                     
-                    # Stream tool start with args
-                    if on_tool_start:
-                        await on_tool_start(tool_id, tool_name, tool_args)
-                    if self.status_server:
-                        await self.status_server.stream_tool_start(
-                            message_id, tool_id, tool_name
-                        )
+                    async def execute_tool_wrapper(tool_index, tool_use):
+                        """Wrapper for parallel execution with callbacks"""
+                        tool_name = tool_use["name"]
+                        tool_args = tool_use["input"]
+                        tool_id = tool_use["id"]
+                        
+                        # Stream tool start
+                        if on_tool_start:
+                            await on_tool_start(tool_id, tool_name, tool_args)
+                        if self.status_server:
+                            await self.status_server.stream_tool_start(
+                                message_id, tool_id, tool_name
+                            )
+                        
+                        # Execute with timeout
+                        try:
+                            result = await asyncio.wait_for(
+                                self._execute_with_retry(tool_name, tool_args),
+                                timeout=10.0  # 10 second timeout per tool
+                            )
+                        except asyncio.TimeoutError:
+                            from engine.tools.base import ToolResult
+                            result = ToolResult(success=False, output="", error="Tool execution timed out (10s)")
+                        
+                        # Stream tool result
+                        if on_tool_end:
+                            await on_tool_end(
+                                tool_id,
+                                result.success,
+                                result.output if result.success else result.error or ""
+                            )
+                        if self.status_server:
+                            await self.status_server.stream_tool_result(
+                                message_id, tool_id,
+                                result=result.output if result.success else None,
+                                error=result.error if not result.success else None,
+                            )
+                        
+                        return tool_index, tool_use, result
                     
-                    # Visualization: tool start
-                    if VISUALIZATION_AVAILABLE and self.status_server:
-                        await visualize_tool_start(
-                            self.status_server, 
-                            tool_name, 
-                            tool_args, 
-                            step=len(tool_calls_made) + tool_index
-                        )
+                    # Execute all tools in parallel
+                    tasks = [execute_tool_wrapper(i, tu) for i, tu in enumerate(tool_uses)]
+                    parallel_results = await asyncio.gather(*tasks, return_exceptions=True)
                     
-                    # Execute tool with smart retry
-                    result = await self._execute_with_retry(tool_name, tool_args)
-                    
-                    # Stream tool result
-                    if on_tool_end:
-                        await on_tool_end(
-                            tool_id, 
-                            result.success, 
-                            result.output if result.success else result.error or ""
-                        )
-                    if self.status_server:
-                        await self.status_server.stream_tool_result(
-                            message_id,
-                            tool_id,
-                            result=result.output if result.success else None,
-                            error=result.error if not result.success else None,
-                        )
-                    
-                    # Visualization: tool end
-                    if VISUALIZATION_AVAILABLE and self.status_server:
-                        await visualize_tool_end(
-                            self.status_server,
-                            tool_name,
-                            result.success,
-                            step=len(tool_calls_made) + tool_index
-                        )
-                    
-                    # Record tool call
-                    tool_calls_made.append({
-                        "name": tool_name,
-                        "args": tool_args,
-                        "success": result.success,
-                        "output": result.output if result.success else result.error,
-                        "retried": getattr(result, 'retried', False),
-                    })
-                    
-                    # Add to session history (for "undo" functionality)
-                    # Only record file-modifying operations
-                    if tool_name in ["move_file", "create_directory", "delete_file", "write_file", "copy_file"]:
-                        add_to_session_history(session_id, {
-                            "tool": tool_name,
+                    # Process results in original order
+                    for item in sorted(parallel_results, key=lambda x: x[0] if isinstance(x, tuple) else float('inf')):
+                        if isinstance(item, Exception):
+                            logger.error(f"Parallel tool execution error: {item}")
+                            continue
+                        
+                        tool_index, tool_use, result = item
+                        tool_name = tool_use["name"]
+                        tool_args = tool_use["input"]
+                        tool_id = tool_use["id"]
+                        
+                        # Record tool call
+                        tool_calls_made.append({
+                            "name": tool_name,
                             "args": tool_args,
                             "success": result.success,
-                            "timestamp": time.time(),
+                            "output": result.output if result.success else result.error,
+                            "retried": getattr(result, 'retried', False),
                         })
-                    
-                    # Format result for Claude
-                    if result.success:
-                        result_content = str(result.output)
-                    else:
-                        result_content = f"Error: {result.error}"
-                    
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_id,
-                        "content": result_content,
-                    })
+                        
+                        # Add to session history
+                        if tool_name in ["move_file", "create_directory", "delete_file", "write_file", "copy_file"]:
+                            add_to_session_history(session_id, {
+                                "tool": tool_name,
+                                "args": tool_args,
+                                "success": result.success,
+                                "timestamp": time.time(),
+                            })
+                        
+                        # Format result for Claude
+                        result_content = str(result.output) if result.success else f"Error: {result.error}"
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": result_content,
+                        })
+                else:
+                    # Sequential execution (for browser tools or single tool)
+                    for tool_index, tool_use in enumerate(tool_uses):
+                        tool_name = tool_use["name"]
+                        tool_args = tool_use["input"]
+                        tool_id = tool_use["id"]
+                        
+                        # Stream tool start with args
+                        if on_tool_start:
+                            await on_tool_start(tool_id, tool_name, tool_args)
+                        if self.status_server:
+                            await self.status_server.stream_tool_start(
+                                message_id, tool_id, tool_name
+                            )
+                        
+                        # Visualization: tool start
+                        if VISUALIZATION_AVAILABLE and self.status_server:
+                            await visualize_tool_start(
+                                self.status_server, 
+                                tool_name, 
+                                tool_args, 
+                                step=len(tool_calls_made) + tool_index
+                            )
+                        
+                        # Execute tool with smart retry
+                        result = await self._execute_with_retry(tool_name, tool_args)
+                        
+                        # Stream tool result
+                        if on_tool_end:
+                            await on_tool_end(
+                                tool_id, 
+                                result.success, 
+                                result.output if result.success else result.error or ""
+                            )
+                        if self.status_server:
+                            await self.status_server.stream_tool_result(
+                                message_id,
+                                tool_id,
+                                result=result.output if result.success else None,
+                                error=result.error if not result.success else None,
+                            )
+                        
+                        # Visualization: tool end
+                        if VISUALIZATION_AVAILABLE and self.status_server:
+                            await visualize_tool_end(
+                                self.status_server,
+                                tool_name,
+                                result.success,
+                                step=len(tool_calls_made) + tool_index
+                            )
+                        
+                        # Record tool call
+                        tool_calls_made.append({
+                            "name": tool_name,
+                            "args": tool_args,
+                            "success": result.success,
+                            "output": result.output if result.success else result.error,
+                            "retried": getattr(result, 'retried', False),
+                        })
+                        
+                        # Add to session history (for "undo" functionality)
+                        # Only record file-modifying operations
+                        if tool_name in ["move_file", "create_directory", "delete_file", "write_file", "copy_file"]:
+                            add_to_session_history(session_id, {
+                                "tool": tool_name,
+                                "args": tool_args,
+                                "success": result.success,
+                                "timestamp": time.time(),
+                            })
+                        
+                        # Format result for Claude
+                        if result.success:
+                            result_content = str(result.output)
+                        else:
+                            result_content = f"Error: {result.error}"
+                        
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": result_content,
+                        })
                 
                 # Add assistant message and tool results to history
                 messages.append({

@@ -39,10 +39,11 @@ Mission → Scan → Think → Act → Observe
 ## 📁 当前项目
 
 ### NogicOS（主线）
-- AI 浏览器，核心叙事："用的人越多，所有人越快"
-- 进度：87.5%，M8 YC 提交待开始
+- **定位**："The AI that works where you work" - 在你工作的地方工作的 AI
+- **差异化**：第一个能同时看到浏览器、文件和桌面的 AI（完整上下文）
+- **护城河**：越用越快（30秒 → 1秒），集体学习
 - 截止：2025/1/10
-- 关键文件：`nogicos/PROGRESS.md`
+- 关键文件：`nogicos/PITCH_CONTEXT.md`
 
 ### VitaFlow
 - iOS AI 卡路里追踪 App，Hard Paywall，Q1 上线

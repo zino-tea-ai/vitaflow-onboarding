@@ -1,6 +1,10 @@
 /**
  * NogicOS Minimal Chat Area
- * Simplified state management - history handled by parent, useChat for new messages only
+ * 
+ * Architecture:
+ * - App.tsx controls the source of truth for messages (stored per session)
+ * - MinimalChatArea is a controlled component that displays messages and handles input
+ * - useChat handles the streaming communication, but we sync its state with parent
  */
 
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
@@ -29,34 +33,38 @@ const springs = {
   snappy: { type: 'spring' as const, stiffness: 400, damping: 30 },
   smooth: { type: 'spring' as const, stiffness: 200, damping: 20 },
   micro: { type: 'spring' as const, stiffness: 500, damping: 35 },
-  expand: { type: 'spring' as const, stiffness: 300, damping: 25 },
 } as const;
 
-// Message type for internal use
-interface ChatMessage {
+// Message type
+export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   parts?: any[];
-  isStreaming?: boolean;
+  isHistory?: boolean;  // True for loaded messages (skip animations)
 }
 
 interface MinimalChatAreaProps {
   apiUrl?: string;
-  sessionId?: string;
+  sessionId: string;
   className?: string;
-  initialMessages?: Array<{ id: string; role: 'user' | 'assistant'; content: string; parts?: any[] }>;
+  style?: React.CSSProperties;
+  // History loaded from backend
+  initialMessages?: ChatMessage[];
+  // Called when messages change (for saving)
+  onMessagesChange?: (messages: ChatMessage[]) => void;
+  // Called when session title/preview should update
   onSessionUpdate?: (title: string, preview: string) => void;
-  onMessagesChange?: (messages: Array<{ role: string; content: string; parts?: any[] }>) => void;
 }
 
 export function MinimalChatArea({
   apiUrl = 'http://localhost:8080/api/chat',
-  sessionId = 'default',
+  sessionId,
   className,
+  style,
   initialMessages = [],
-  onSessionUpdate,
   onMessagesChange,
+  onSessionUpdate,
 }: MinimalChatAreaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -103,9 +111,15 @@ export function MinimalChatArea({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Use sessionId as useChat ID - each session has its own chat state
-  const chatInstance = useChat({
-    id: sessionId,  // Each session gets its own useChat state
+  // useChat - using session ID as key
+  const {
+    messages: chatMessages,
+    sendMessage,
+    stop,
+    status,
+    setMessages,
+  } = useChat({
+    id: `chat-${sessionId}`,  // Unique per session
     transport: new DefaultChatTransport({
       api: apiUrl,
       body: { session_id: sessionId },
@@ -115,72 +129,151 @@ export function MinimalChatArea({
     },
   });
   
-  const { messages: useChatMessages, sendMessage, stop, status } = chatInstance;
-  
-  // Combine initialMessages (history) with useChatMessages (new in this session)
-  // Only include useChatMessages if they're for the current session
-  const messages: ChatMessage[] = useMemo(() => {
-    // History includes parts for reasoning/tools
-    const history = initialMessages.map(m => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      parts: m.parts,  // Include parts for reasoning display
-    }));
-    
-    // useChatMessages contains the new messages sent in this component
-    // Map them to our format
-    const newMessages = useChatMessages.map(m => ({
-      id: m.id,
-      role: m.role as 'user' | 'assistant',
-      content: typeof m.content === 'string' ? m.content : '',
-      parts: m.parts,
-    }));
-    
-    return [...history, ...newMessages];
-  }, [initialMessages, useChatMessages]);
-  
-  // Save messages when useChat messages change (streaming complete)
-  const prevSaveRef = useRef({ sessionId: '', msgCount: 0 });
-  useEffect(() => {
-    const isReady = status === 'ready';
-    const hasNewMessages = useChatMessages.length > 0;
-    const isNewSave = 
-      sessionId !== prevSaveRef.current.sessionId || 
-      useChatMessages.length !== prevSaveRef.current.msgCount;
-    
-    if (isReady && hasNewMessages && isNewSave && onMessagesChange) {
-      prevSaveRef.current = { sessionId, msgCount: useChatMessages.length };
-      
-      // Convert all messages to save format - include parts for reasoning/tools
-      const allMessages = messages.map(m => {
-        let content = m.content || '';
-        // Extract content from parts if needed
-        if (!content && m.parts) {
-          content = m.parts
-            .filter((p: any) => p.type === 'text')
-            .map((p: any) => p.text || '')
-            .join('');
-        }
-        // Include parts if they contain reasoning or tool calls
-        const hasReasoning = m.parts?.some((p: any) => p.type === 'reasoning');
-        const hasTools = m.parts?.some((p: any) => p.type?.startsWith('tool-'));
-        
-        return { 
-          role: m.role, 
-          content,
-          // Save parts only if they contain reasoning/tools (to preserve thought process)
-          ...(hasReasoning || hasTools ? { parts: m.parts } : {}),
-        };
-      });
-      
-      onMessagesChange(allMessages);
-    }
-  }, [status, useChatMessages, messages, sessionId, onMessagesChange]);
-
   // Derive loading state
-  const isLoading = status === 'pending' || status === 'streaming';
+  const isLoading = status === 'submitted' || status === 'streaming';
   const isActuallyStreaming = status === 'streaming';
+
+  // Refs for tracking
+  const prevMessageCountRef = useRef(0);
+  
+  // Track session changes and load messages
+  const prevSessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    // When session changes, load the new session's messages
+    if (prevSessionIdRef.current !== sessionId) {
+      prevSessionIdRef.current = sessionId;
+      prevMessageCountRef.current = 0;  // Reset save counter
+      
+      // Load initial messages for new session
+      if (initialMessages.length > 0) {
+        const formatted = initialMessages.map(m => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          parts: m.parts,
+        }));
+        setMessages(formatted as any);
+      } else {
+        setMessages([]);
+      }
+    }
+  }, [sessionId, initialMessages, setMessages]);
+  
+  // Also load on initial mount if we have messages
+  const hasLoadedInitial = useRef(false);
+  useEffect(() => {
+    if (!hasLoadedInitial.current && initialMessages.length > 0) {
+      hasLoadedInitial.current = true;
+      const formatted = initialMessages.map(m => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        parts: m.parts,
+      }));
+      setMessages(formatted as any);
+    }
+  }, [initialMessages, setMessages]);
+
+  // Combine messages: prefer chatMessages if they exist, otherwise use initialMessages
+  const messages = useMemo(() => {
+    // If we have chat messages from useChat, use them
+    if (chatMessages.length > 0) {
+      return chatMessages.map(m => ({
+        ...m,
+        isHistory: m.id.startsWith('loaded-'),
+      }));
+    }
+    // Otherwise use initial messages
+    return initialMessages.map(m => ({
+      ...m,
+      isHistory: true,
+    }));
+  }, [chatMessages, initialMessages]);
+
+  // Save messages when they change (debounced) - use ref to avoid dependency issues
+  const saveTimeoutRef = useRef<NodeJS.Timeout>();
+  const onMessagesChangeRef = useRef(onMessagesChange);
+  const chatMessagesRef = useRef(chatMessages);
+  useEffect(() => { onMessagesChangeRef.current = onMessagesChange; }, [onMessagesChange]);
+  useEffect(() => { chatMessagesRef.current = chatMessages; }, [chatMessages]);
+  
+  // Helper to prepare messages for saving
+  const prepareMessagesForSave = useCallback((msgs: typeof chatMessages) => {
+    return msgs.map(m => {
+      // Extract content from parts if needed
+      let content = m.content || '';
+      if (!content && m.parts) {
+        content = m.parts
+          .filter((p: any) => p.type === 'text')
+          .map((p: any) => p.text || '')
+          .join('');
+      }
+      return {
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        content,
+        parts: m.parts,
+      };
+    });
+  }, []);
+
+  // Save immediately before session switch
+  useEffect(() => {
+    const prevId = prevSessionIdRef.current;
+    if (prevId && prevId !== sessionId && chatMessagesRef.current.length > 0) {
+      // Session is changing - save current messages immediately
+      if (onMessagesChangeRef.current) {
+        const toSave = prepareMessagesForSave(chatMessagesRef.current);
+        if (toSave.length > 0) {
+          onMessagesChangeRef.current(toSave);
+        }
+      }
+    }
+    prevSessionIdRef.current = sessionId;
+  }, [sessionId, prepareMessagesForSave]);
+  
+  useEffect(() => {
+    // Save when message count changes - don't wait for status to be 'ready'
+    // This ensures sidebar updates immediately when user sends a message
+    if (chatMessages.length > 0 && chatMessages.length !== prevMessageCountRef.current) {
+      prevMessageCountRef.current = chatMessages.length;
+      
+      // Clear previous timeout
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+      // Debounce save
+      saveTimeoutRef.current = setTimeout(() => {
+        if (onMessagesChangeRef.current) {
+          const toSave = prepareMessagesForSave(chatMessages)
+            // Filter out empty assistant messages (streaming not complete) for regular saves
+            .filter(m => m.role === 'user' || (m.content && m.content.trim().length > 0));
+          
+          // Only save if we have valid messages
+          if (toSave.length > 0) {
+            onMessagesChangeRef.current(toSave);
+          }
+        }
+      }, 500);
+    }
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [chatMessages, status, prepareMessagesForSave]);
+
+  // Update session title when first message is sent
+  useEffect(() => {
+    if (onSessionUpdate && chatMessages.length > 0) {
+      const firstUserMsg = chatMessages.find(m => m.role === 'user');
+      if (firstUserMsg) {
+        const title = (firstUserMsg.content || '').slice(0, 30) || 'New Session';
+        const preview = (firstUserMsg.content || '').slice(0, 100) || '';
+        onSessionUpdate(title, preview);
+      }
+    }
+  }, [chatMessages, onSessionUpdate]);
 
   // Scroll handling
   const handleScroll = useCallback(() => {
@@ -203,16 +296,20 @@ export function MinimalChatArea({
     }
   }, [isActuallyStreaming]);
 
-  // Auto scroll
+  // Auto scroll - only for new messages, not when loading history
   useEffect(() => {
     if (userScrolledUp) return;
+    
+    // Don't auto-scroll if all messages are history (loaded from backend)
+    const hasNewMessages = messages.some(m => !m.isHistory && !m.id.startsWith('loaded-'));
+    if (!hasNewMessages && messages.length > 0) return;
     
     if (justSentMessage) {
       setTimeout(() => {
         lastUserMessageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         setJustSentMessage(false);
       }, 100);
-    } else {
+    } else if (hasNewMessages) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, userScrolledUp, justSentMessage]);
@@ -242,23 +339,19 @@ export function MinimalChatArea({
   const onSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (localInput.trim() && !isLoading) {
+      const messageText = localInput.trim();
+      
+      setUserScrolledUp(false);
+      setJustSentMessage(true);
+      setLocalInput('');
+      
       try {
-        const messageText = localInput.trim();
-        
-        // Notify parent to update session
-        if (onSessionUpdate) {
-          onSessionUpdate(messageText.slice(0, 30), messageText);
-        }
-        
-        setUserScrolledUp(false);
-        setJustSentMessage(true);
         await sendMessage({ text: messageText });
-        setLocalInput('');
       } catch (err) {
         console.error('[MinimalChatArea] Error:', err);
       }
     }
-  }, [localInput, isLoading, sendMessage, onSessionUpdate]);
+  }, [localInput, isLoading, sendMessage]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -270,7 +363,7 @@ export function MinimalChatArea({
   const isEmpty = messages.length === 0;
 
   return (
-    <div className={cn('minimal-main', className)}>
+    <div className={cn('minimal-main', className)} style={style}>
       <div className="minimal-grain-overlay" aria-hidden="true" />
       
       <div 
@@ -294,24 +387,24 @@ export function MinimalChatArea({
                     const isLastUserMessage = message.role === 'user' && 
                       messages.slice(index + 1).every(m => m.role !== 'user');
                     
-                    // Skip animation for loaded history messages
-                    const isHistoryMessage = message.id?.startsWith('loaded-');
+                    // Skip animation for historical messages
+                    const skipAnimation = message.isHistory || message.id.startsWith('loaded-');
                     
                     return (
                       <motion.div
-                        key={message.id || `msg-${index}`}
+                        key={message.id}
                         ref={isLastUserMessage ? lastUserMessageRef : undefined}
-                        initial={isHistoryMessage ? false : { opacity: 0, y: 15, filter: 'blur(4px)' }}
+                        initial={skipAnimation ? false : { opacity: 0, y: 15, filter: 'blur(4px)' }}
                         animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-                        transition={isHistoryMessage ? { duration: 0 } : { duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
-                        style={{ willChange: isHistoryMessage ? undefined : 'transform, opacity, filter' }}
+                        transition={skipAnimation ? { duration: 0 } : { duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
+                        style={{ willChange: skipAnimation ? undefined : 'transform, opacity, filter' }}
                       >
                         <MinimalMessage
                           role={message.role}
                           content={message.content}
                           parts={message.parts}
                           isStreaming={isActuallyStreaming && index === messages.length - 1 && message.role === 'assistant'}
-                          skipAnimation={isHistoryMessage}
+                          skipAnimation={skipAnimation}
                         />
                       </motion.div>
                     );
@@ -570,7 +663,7 @@ interface MinimalMessageProps {
   content?: string;
   parts?: any[];
   isStreaming?: boolean;
-  skipAnimation?: boolean;  // Skip animations for loaded history messages
+  skipAnimation?: boolean;
 }
 
 function StreamingText({ text, isStreaming, onComplete }: { text: string; isStreaming: boolean; onComplete?: () => void }) {
@@ -692,7 +785,6 @@ const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
 
 const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isStreaming, skipAnimation }: MinimalMessageProps) {
   const [thinkingOpen, setThinkingOpen] = useState(true);
-  // For history messages, skip all animation states
   const [thinkingComplete, setThinkingComplete] = useState(skipAnimation ? true : false);
   const [thinkingAnimationDone, setThinkingAnimationDone] = useState(skipAnimation ? true : false);
   const [roleVisible, setRoleVisible] = useState(skipAnimation ? true : false);
@@ -719,13 +811,13 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
   const showPlanning = isStreaming && !hasReasoning && !textContent;
   
   useEffect(() => {
-    if (isUser) {
+    if (isUser || skipAnimation) {
       setRoleVisible(true);
     } else if (!showPlanning && !roleVisible) {
       const timer = setTimeout(() => setRoleVisible(true), 450);
       return () => clearTimeout(timer);
     }
-  }, [isUser, showPlanning, roleVisible]);
+  }, [isUser, showPlanning, roleVisible, skipAnimation]);
   
   useEffect(() => {
     if (hasReasoning && thinkingStartTime.current === null) {
@@ -787,7 +879,7 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
                     exit={{ opacity: 0, height: 0 }}
                     transition={{ duration: 0.4, ease: [0.4, 0, 0.2, 1] }}
                   >
-                    {thinkingAnimationDone ? (
+                    {thinkingAnimationDone || skipAnimation ? (
                       <span className="whitespace-pre-wrap">{reasoningText}</span>
                     ) : (
                       <StreamingText 
@@ -814,9 +906,9 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
           {hasTools && (
             <motion.div
               className="minimal-tools"
-              initial={{ opacity: 0, y: 8 }}
+              initial={skipAnimation ? false : { opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+              transition={skipAnimation ? { duration: 0 } : { duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
             >
               {toolInvocations.map((tool: any, index: number) => (
                 <ToolWidget key={tool.toolCallId || index} tool={tool} />

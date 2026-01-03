@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { TitleBar, Sidebar, ChatArea, ChatKitArea, VisualizationPanel, defaultVisualizationState } from '@/components/nogicos';
 import type { Session, Message, ToolExecution, ThinkingState, VisualizationState, ActionLogEntry, GlowState } from '@/components/nogicos';
 import { MinimalChatArea, SystemChatArea, CursorChatArea, PremiumChatArea } from '@/components/chat';
+import type { ChatMessage } from '@/components/chat/MinimalChatArea';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -30,19 +31,43 @@ function App() {
   // Electron API
   const { isElectron, onNewSession } = useElectron();
   
-  // Session Persistence
+  // Session Persistence - use persistedSessions directly
   const {
     sessions: persistedSessions,
     loadSession,
     saveSession,
     deleteSession: deletePersistedSession,
+    refreshSessions,
   } = useSessionPersist({ autoLoad: true });
   
-  // State
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // State - define these FIRST
+  // Always have a session ID ready (create one if needed)
+  const initialSessionId = useRef(`session-${Date.now()}`).current;
+  const [activeSessionId, setActiveSessionId] = useState<string>(initialSessionId);
+  
+  // Track current unsaved session (for display in sidebar)
+  const [currentUnsavedSession, setCurrentUnsavedSession] = useState<Session | null>(null);
+  
+  // Track all active sessions (for parallel streaming)
+  // Each session in this set will have its own MinimalChatArea instance rendered
+  const [activeSessions, setActiveSessions] = useState<Set<string>>(() => new Set([initialSessionId]));
+  
+  // Convert to UI format and include unsaved session
+  const persistedUISession: Session[] = persistedSessions.map(s => ({
+    id: s.id,
+    title: s.title,
+    preview: s.preview,
+    timestamp: new Date(s.updated_at),
+  }));
+  
+  // Merge: unsaved session first (if it's not already in persisted), then persisted sessions
+  const sessions: Session[] = currentUnsavedSession && !persistedUISession.find(s => s.id === currentUnsavedSession.id)
+    ? [currentUnsavedSession, ...persistedUISession]
+    : persistedUISession;
+  
   const [messages, setMessages] = useState<Message[]>([]);
-  const [minimalInitialMessages, setMinimalInitialMessages] = useState<Array<{ id: string; role: 'user' | 'assistant'; content: string; parts?: any[] }>>([]);
+  // Store all sessions' messages in a map
+  const [chatSessions, setChatSessions] = useState<Record<string, ChatMessage[]>>({});
   const [tools, setTools] = useState<ToolExecution[]>([]);
   const [isExecuting, setIsExecuting] = useState(false);
   const [thinkingState, setThinkingState] = useState<ThinkingState>({
@@ -54,7 +79,7 @@ function App() {
   const initialLoadDone = useRef(false);
   
   // Refs for values needed in handleWsMessage (to avoid stale closures)
-  const activeSessionIdRef = useRef(activeSessionId);
+  const activeSessionIdRef = useRef<string>(activeSessionId);
   const sessionsRef = useRef(sessions);
   const messagesRef = useRef(messages);
   
@@ -63,47 +88,27 @@ function App() {
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
-  // Sync persisted sessions to local state on initial load
+  // Auto-select most recent session on initial load (if there are saved sessions)
   useEffect(() => {
-    if (persistedSessions.length > 0 && !initialLoadDone.current) {
+    if (sessions.length > 0 && !initialLoadDone.current) {
       initialLoadDone.current = true;
-      // Convert persisted sessions to UI format
-      const uiSessions: Session[] = persistedSessions.map(s => ({
-        id: s.id,
-        title: s.title,
-        preview: s.preview,
-        timestamp: new Date(s.updated_at),
-      }));
-      setSessions(uiSessions);
-      
-      // Auto-select the most recent session
-      if (uiSessions.length > 0 && !activeSessionId) {
-        const mostRecent = uiSessions[0];
-        setActiveSessionId(mostRecent.id);
-        // Load messages for the most recent session
-        loadSession(mostRecent.id).then(detail => {
-          if (detail?.history) {
-            const loadedMessages: Message[] = detail.history.map((m, i) => ({
-              id: `loaded-${mostRecent.id}-${i}`,
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-              timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
-            }));
-            setMessages(loadedMessages);
-            
-            // Also set for MinimalChatArea (include parts for reasoning)
-            const minimalMessages = detail.history.map((m: any, i) => ({
-              id: `loaded-${mostRecent.id}-${i}`,
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-              ...(m.parts ? { parts: m.parts } : {}),
-            }));
-            setMinimalInitialMessages(minimalMessages);
-          }
-        });
-      }
+      const mostRecent = sessions[0];
+      setActiveSessionId(mostRecent.id);
+      // Load messages for the most recent session
+      loadSession(mostRecent.id).then(detail => {
+        if (detail?.history) {
+          const chatMessages: ChatMessage[] = detail.history.map((m: any, i) => ({
+            id: `loaded-${mostRecent.id}-${i}`,
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            ...(m.parts ? { parts: m.parts } : {}),
+            isHistory: true,
+          }));
+          setChatSessions(prev => ({ ...prev, [mostRecent.id]: chatMessages }));
+        }
+      });
     }
-  }, [persistedSessions, activeSessionId, loadSession]);
+  }, [sessions, loadSession]);
 
   // Visualization state
   const [vizState, setVizState] = useState<VisualizationState>(defaultVisualizationState);
@@ -480,16 +485,18 @@ function App() {
   // Create new session
   const handleNewSession = useCallback(() => {
     const id = `session-${Date.now()}`;
+    // Create unsaved session for display
     const newSession: Session = {
       id,
       title: 'New Session',
       preview: 'Start a new conversation',
       timestamp: new Date(),
     };
-    setSessions((prev) => [newSession, ...prev]);
+    setCurrentUnsavedSession(newSession);
     setActiveSessionId(id);
+    setActiveSessions(prev => new Set([...prev, id])); // Add to active sessions for parallel rendering
     setMessages([]);
-    setMinimalInitialMessages([]);  // Clear for new session
+    setChatSessions(prev => ({ ...prev, [id]: [] }));  // Initialize empty for new session
     setTools([]);
   }, []);
 
@@ -504,24 +511,41 @@ function App() {
     }
   }, [isElectron, onNewSession, handleNewSession]);
 
+  // Ref for chatSessions to avoid dependency issues
+  const chatSessionsRef = useRef(chatSessions);
+  useEffect(() => { chatSessionsRef.current = chatSessions; }, [chatSessions]);
+
   // Select session
   const handleSelectSession = useCallback(async (id: string) => {
+    // Add to active sessions (for parallel rendering)
+    setActiveSessions(prev => new Set([...prev, id]));
+    
+    // Check if we already have this session's messages in memory (and it's not empty)
+    const cached = chatSessionsRef.current[id];
+    if (cached && cached.length > 0) {
+      setActiveSessionId(id);
+      setMessages([]);
+      setTools([]);
+      return;
+    }
+    
+    // Otherwise, load from backend
     const detail = await loadSession(id);
     
-    // Prepare messages for MinimalChatArea (include parts for reasoning/tools)
-    let minimalMessages: Array<{ id: string; role: 'user' | 'assistant'; content: string; parts?: any[] }> = [];
+    // Prepare messages
+    let chatMessages: ChatMessage[] = [];
     if (detail?.history && detail.history.length > 0) {
-      minimalMessages = detail.history.map((m: any, i) => ({
+      chatMessages = detail.history.map((m: any, i) => ({
         id: `loaded-${id}-${i}`,
         role: m.role as 'user' | 'assistant',
         content: m.content,
-        // Preserve parts if they exist (contains reasoning/tools)
         ...(m.parts ? { parts: m.parts } : {}),
+        isHistory: true,
       }));
     }
     
     // Update state
-    setMinimalInitialMessages(minimalMessages);
+    setChatSessions(prev => ({ ...prev, [id]: chatMessages }));
     setActiveSessionId(id);
     setMessages([]);
     setTools([]);
@@ -540,18 +564,67 @@ function App() {
 
   // Delete session
   const handleDeleteSession = useCallback(async (id: string) => {
-    // Delete from backend
+    // Delete from backend (this updates persistedSessions automatically)
     await deletePersistedSession(id);
     
-    // Delete from local state
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-    if (activeSessionId === id) {
-      setActiveSessionId(null);
+    // Clear local state if deleted current session - create new session
+    if (activeSessionIdRef.current === id) {
+      const newId = `session-${Date.now()}`;
+      setActiveSessionId(newId);
       setMessages([]);
       setTools([]);
+      setChatSessions(prev => ({ ...prev, [newId]: [] }));
     }
     toast.success('Session deleted');
-  }, [activeSessionId, deletePersistedSession]);
+  }, [deletePersistedSession]);
+
+  // Handle session title/preview update from chat
+  // NOTE: DO NOT create new session here - it will trigger key change and remount
+  const handleSessionUpdate = useCallback((_title: string, _preview: string) => {
+    // Session updates are handled by saveSession which updates persistedSessions
+    // Session creation happens in handleMessagesChange
+  }, []);
+
+  // Handle messages change from chat - save to backend and update cache
+  const handleMessagesChange = useCallback((msgs: ChatMessage[]) => {
+    const sessionId = activeSessionIdRef.current;
+    if (sessionId && msgs.length > 0) {
+      // Update cache (use functional update to avoid needing chatSessions in deps)
+      setChatSessions(prev => {
+        // Only update if messages actually changed
+        const current = prev[sessionId];
+        if (current && current.length === msgs.length) {
+          return prev; // No change needed
+        }
+        return { ...prev, [sessionId]: msgs };
+      });
+      
+      // Get title from first user message
+      const firstUserMsg = msgs.find(m => m.role === 'user');
+      const title = firstUserMsg?.content?.slice(0, 30) || 'New Session';
+      
+      // Save to backend (this will add to persistedSessions)
+      const toSave = msgs.map(m => ({
+        role: m.role,
+        content: m.content,
+        parts: m.parts,
+      }));
+      saveSession(sessionId, toSave as any, title);
+      
+      // Don't clear unsaved session here - let the effect below handle it
+      // to avoid the flash of disappearing sidebar item
+    }
+  }, [saveSession]);
+  
+  // Clear unsaved session only after it appears in persistedSessions
+  useEffect(() => {
+    if (currentUnsavedSession) {
+      const isNowPersisted = persistedSessions.some(s => s.id === currentUnsavedSession.id);
+      if (isNowPersisted) {
+        setCurrentUnsavedSession(null);
+      }
+    }
+  }, [persistedSessions, currentUnsavedSession]);
 
   // Send message
   const handleSendMessage = useCallback(async (content: string) => {
@@ -562,13 +635,6 @@ function App() {
     let currentSessionId = activeSessionId;
     if (!currentSessionId) {
       const id = `session-${Date.now()}`;
-      const newSession: Session = {
-        id,
-        title: content.slice(0, 30),
-        preview: content,
-        timestamp: new Date(),
-      };
-      setSessions((prev) => [newSession, ...prev]);
       setActiveSessionId(id);
       currentSessionId = id;
     }
@@ -583,17 +649,8 @@ function App() {
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
 
-    // Update session preview
+    // Save session to backend (this will update persistedSessions)
     const sessionTitle = content.slice(0, 30);
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === currentSessionId
-          ? { ...s, title: sessionTitle, preview: content, timestamp: new Date() }
-          : s
-      )
-    );
-
-    // Save session to backend (user message)
     const historyToSave = newMessages.map(m => ({
       role: m.role,
       content: m.content,
@@ -660,6 +717,7 @@ function App() {
       {/* Main Content */}
       {CHAT_MODE === 'minimal' ? (
         // Minimal 模式：极致克制（带侧边栏）
+        // Render ALL active sessions simultaneously for parallel streaming
         <div className="flex-1 flex min-h-0">
           <Sidebar
             sessions={sessions}
@@ -668,43 +726,18 @@ function App() {
             onSelectSession={handleSelectSession}
             onDeleteSession={handleDeleteSession}
           />
-          <MinimalChatArea
-            apiUrl={VERCEL_AI_API_URL}
-            sessionId={activeSessionId || 'default'}
-            initialMessages={minimalInitialMessages}
-            onSessionUpdate={(title, preview) => {
-              // Create session if none exists
-              let sessionId = activeSessionId;
-              if (!sessionId) {
-                sessionId = `session-${Date.now()}`;
-                const newSession: Session = {
-                  id: sessionId,
-                  title,
-                  preview,
-                  timestamp: new Date(),
-                };
-                setSessions((prev) => [newSession, ...prev]);
-                setActiveSessionId(sessionId);
-              } else {
-                // Update existing session
-                setSessions((prev) =>
-                  prev.map((s) =>
-                    s.id === sessionId
-                      ? { ...s, title, preview, timestamp: new Date() }
-                      : s
-                  )
-                );
-              }
-            }}
-            onMessagesChange={(msgs) => {
-              // Save messages to backend
-              const sessionId = activeSessionId;
-              if (sessionId) {
-                const session = sessions.find(s => s.id === sessionId);
-                saveSession(sessionId, msgs as any, session?.title);
-              }
-            }}
-          />
+          {/* Render all active sessions - only the active one is visible */}
+          {Array.from(activeSessions).map(sessionId => (
+            <MinimalChatArea
+              key={sessionId}
+              apiUrl={VERCEL_AI_API_URL}
+              sessionId={sessionId}
+              initialMessages={chatSessions[sessionId] || []}
+              onSessionUpdate={handleSessionUpdate}
+              onMessagesChange={handleMessagesChange}
+              style={{ display: sessionId === activeSessionId ? 'flex' : 'none' }}
+            />
+          ))}
         </div>
       ) : CHAT_MODE === 'system' ? (
         // System 模式：全屏布局（自带侧边栏）
