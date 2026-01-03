@@ -86,6 +86,8 @@ class ExecuteRequest(BaseModel):
     message: Optional[str] = None   # Legacy field name (alias)
     session_id: str = "default"
     max_steps: int = 20
+    mode: str = "agent"             # Agent mode: "agent", "ask", "plan"
+    confirmed_plan: Optional[dict] = None  # Confirmed plan for Plan mode execution
     
     @property
     def task_content(self) -> str:
@@ -165,7 +167,7 @@ class NogicEngine:
             logger.info("WebSocket server stopped")
     
     async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
-        """Execute task using ReAct Agent"""
+        """Execute task using ReAct Agent with mode support"""
         if self._executing:
             raise HTTPException(status_code=429, detail="Another task is executing")
         
@@ -174,6 +176,37 @@ class NogicEngine:
         self._current_task = task_content[:100]
         start_time = time.time()
         
+        # Parse mode
+        from engine.agent.modes import AgentMode
+        try:
+            mode = AgentMode(request.mode)
+        except ValueError:
+            mode = AgentMode.AGENT
+        
+        logger.info(f"[Engine] Executing in {mode.value} mode: {task_content[:50]}...")
+        
+        # Parse confirmed plan if provided (for Plan mode execution)
+        confirmed_plan = None
+        if request.confirmed_plan and mode == AgentMode.AGENT:
+            # User confirmed a plan, execute it
+            from engine.agent.planner import Plan, PlanStep
+            try:
+                plan_data = request.confirmed_plan
+                steps = [s.get("description", "") for s in plan_data.get("steps", [])]
+                confirmed_plan = Plan(
+                    steps=steps,
+                    detailed_steps=[
+                        PlanStep(
+                            description=s.get("description", ""),
+                            suggested_tool=s.get("tool"),
+                        )
+                        for s in plan_data.get("steps", [])
+                    ],
+                )
+                logger.info(f"[Engine] Executing confirmed plan with {len(steps)} steps")
+            except Exception as e:
+                logger.warning(f"[Engine] Failed to parse confirmed plan: {e}")
+        
         try:
             # Create ReAct Agent
             agent = ReActAgent(
@@ -181,11 +214,35 @@ class NogicEngine:
                 max_iterations=request.max_steps,
             )
             
-            # Execute with planning for complex tasks
-            result = await agent.run_with_planning(
-                task=task_content,
-                session_id=request.session_id,
-            )
+            # Execute based on mode
+            if confirmed_plan:
+                # Execute confirmed plan
+                result = await agent.run(
+                    task=task_content,
+                    session_id=request.session_id,
+                    mode=AgentMode.AGENT,
+                    confirmed_plan=confirmed_plan,
+                )
+            elif mode == AgentMode.PLAN:
+                # Plan mode: generate plan without executing
+                result = await agent.run(
+                    task=task_content,
+                    session_id=request.session_id,
+                    mode=mode,
+                )
+            elif mode == AgentMode.ASK:
+                # Ask mode: read-only exploration
+                result = await agent.run(
+                    task=task_content,
+                    session_id=request.session_id,
+                    mode=mode,
+                )
+            else:
+                # Agent mode: full execution
+                result = await agent.run_with_planning(
+                    task=task_content,
+                    session_id=request.session_id,
+                )
             
             elapsed = time.time() - start_time
             
@@ -350,6 +407,101 @@ async def list_v2_tools():
         "count": len(tools),
         "tools": tools,
     }
+
+
+class QuickSearchRequest(BaseModel):
+    """Quick search request - bypasses Agent for speed"""
+    query: str
+    max_results: int = 5
+
+
+@app.post("/v2/quick-search")
+async def quick_search(request: QuickSearchRequest):
+    """
+    快速搜索 - 直接调用 Tavily API，跳过 Agent 流程
+    
+    速度: 1-3 秒 (vs Agent 的 20-30 秒)
+    用途: 简单搜索查询
+    """
+    import aiohttp
+    import time
+    
+    start = time.time()
+    
+    # Get API key
+    api_key = os.environ.get("TAVILY_API_KEY")
+    if not api_key:
+        try:
+            from api_keys import TAVILY_API_KEY
+            api_key = TAVILY_API_KEY
+        except ImportError:
+            pass
+    
+    if not api_key:
+        raise HTTPException(status_code=500, detail="TAVILY_API_KEY not configured")
+    
+    # Direct Tavily API call
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": api_key,
+                "query": request.query,
+                "max_results": request.max_results,
+                "include_answer": True,
+                "include_raw_content": False,
+            }
+        ) as resp:
+            if resp.status != 200:
+                raise HTTPException(status_code=resp.status, detail="Tavily API error")
+            data = await resp.json()
+    
+    elapsed = time.time() - start
+    
+    return {
+        "success": True,
+        "query": request.query,
+        "answer": data.get("answer", ""),
+        "results": [
+            {
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "snippet": r.get("content", "")[:200],
+            }
+            for r in data.get("results", [])
+        ],
+        "time_seconds": round(elapsed, 2),
+    }
+
+
+# =============================================================================
+# Smart Search - Cursor 风格 (Query优化 + 搜索 + 结果整合)
+# =============================================================================
+
+class SmartSearchRequest(BaseModel):
+    """Smart search request - Cursor style"""
+    query: str
+    max_results: int = 5
+    force_search: bool = False  # 跳过判断，强制搜索
+
+
+@app.post("/v2/smart-search")
+async def smart_search_endpoint(request: SmartSearchRequest):
+    """
+    智能搜索 - Cursor 风格
+    
+    特性:
+    1. 调用精确度 - 自动判断是否需要搜索
+    2. Query 优化 - LLM 优化搜索词
+    3. 结果整合 - LLM 整合并引用来源
+    
+    参数:
+    - force_search: True 跳过判断强制搜索
+    """
+    from engine.tools.smart_search import smart_search
+    
+    result = await smart_search(request.query, request.max_results, request.force_search)
+    return result
 
 
 class WarmCacheRequest(BaseModel):
@@ -692,7 +844,7 @@ class ChatRequest(BaseModel):
         extra = "allow"  # Allow extra fields like temperature, etc.
 
 
-async def generate_ai_sdk_stream(task: str, session_id: str):
+async def generate_ai_sdk_stream(task: str, session_id: str, conversation_history: list = None):
     """
     Generate SSE stream compatible with Vercel AI SDK 5.0 Data Stream Protocol.
     
@@ -703,6 +855,11 @@ async def generate_ai_sdk_stream(task: str, session_id: str):
     - Finish: data: {"type":"finish","finishReason":"stop"}
     
     Note: Requires x-vercel-ai-ui-message-stream: v1 header for custom backends.
+    
+    Args:
+        task: Current user message
+        session_id: Session identifier
+        conversation_history: Previous messages for context (optional)
     """
     import uuid
     
@@ -775,9 +932,36 @@ async def generate_ai_sdk_stream(task: str, session_id: str):
     
     async def run_agent():
         try:
+            # Build context from conversation history
+            context = None
+            if conversation_history:
+                # Format previous messages as context
+                context_parts = []
+                for msg in conversation_history[:-1]:  # Exclude current message
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        # Handle parts-based format
+                        content = " ".join(
+                            p.get("text", "") for p in content 
+                            if isinstance(p, dict) and p.get("type") == "text"
+                        )
+                    if role == "user":
+                        context_parts.append(f"用户: {content}")
+                    elif role == "assistant":
+                        # Truncate long assistant responses
+                        if len(content) > 500:
+                            content = content[:500] + "..."
+                        context_parts.append(f"助手: {content}")
+                
+                if context_parts:
+                    context = "## 之前的对话:\n" + "\n".join(context_parts[-6:])  # Keep last 3 turns (6 messages)
+                    logger.info(f"[Chat] Injecting {len(context_parts)} previous messages as context")
+            
             result = await agent.run(
                 task=task,
                 session_id=session_id,
+                context=context,  # Pass conversation history as context
                 on_text_delta=text_callback,
                 on_thinking_delta=thinking_callback,
                 on_tool_start=tool_start_callback,
@@ -846,8 +1030,9 @@ async def chat_endpoint(request: Request):
         logger.error(f"[Chat] Failed to parse JSON: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
     
-    # Extract user message - support multiple formats
+    # Extract user message and conversation history
     user_message = ""
+    conversation_history = []
     session_id = body.get("session_id", "default")
     
     # Format 1: New Vercel AI SDK format { text: "..." }
@@ -856,6 +1041,10 @@ async def chat_endpoint(request: Request):
     
     # Format 2: Messages array (traditional or new parts-based)
     elif "messages" in body and body["messages"]:
+        # Keep full conversation history for context
+        conversation_history = body["messages"]
+        
+        # Extract latest user message
         for msg in reversed(body["messages"]):
             if isinstance(msg, dict) and msg.get("role") == "user":
                 # New AI SDK format: parts array
@@ -884,10 +1073,14 @@ async def chat_endpoint(request: Request):
         logger.warning(f"[Chat] No user message found in request: {body}")
         raise HTTPException(status_code=400, detail="No user message found")
     
-    logger.info(f"[Chat] Processing: {user_message[:100]}...")
+    # Log context info
+    if conversation_history:
+        logger.info(f"[Chat] Processing: {user_message[:100]}... (with {len(conversation_history)} history messages)")
+    else:
+        logger.info(f"[Chat] Processing: {user_message[:100]}...")
     
     return StreamingResponse(
-        generate_ai_sdk_stream(user_message, session_id),
+        generate_ai_sdk_stream(user_message, session_id, conversation_history),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",

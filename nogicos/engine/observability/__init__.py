@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 NogicOS Observability - Logging and tracing
+
+Includes:
+- Basic logging (get_logger, setup_logging)
+- Module tracing (ModuleTracer)
+- LangSmith integration (langsmith_tracer)
 """
 
 import logging
@@ -13,6 +18,15 @@ from typing import Optional
 # Log directory
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
+
+# LangSmith tracing (lazy import to avoid circular deps)
+def get_langsmith_tracer():
+    """Get LangSmith tracer module (lazy import)."""
+    try:
+        from engine.observability import langsmith_tracer
+        return langsmith_tracer
+    except ImportError:
+        return None
 
 
 _logging_initialized = False

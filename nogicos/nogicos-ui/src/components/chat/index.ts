@@ -25,3 +25,7 @@ export { StreamingText } from './StreamingText';
 export { ThinkingBlock } from './ThinkingBlock';
 export { CodeBlock } from './CodeBlock';
 
+// Mode System (Cursor-style Agent/Ask/Plan)
+export { ModeSelector, ModeIndicator, type AgentMode } from './ModeSelector';
+export { PlanEditor, type EditablePlan, type PlanStep } from './PlanEditor';
+

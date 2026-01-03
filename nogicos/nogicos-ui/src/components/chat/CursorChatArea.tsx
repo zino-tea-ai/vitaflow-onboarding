@@ -7,6 +7,8 @@ import { Send, Paperclip, Mic, StopCircle, Sparkles } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Message } from './Message';
+import { ModeSelector, ModeIndicator, type AgentMode } from './ModeSelector';
+import { PlanEditor, type EditablePlan } from './PlanEditor';
 import { cn } from '@/lib/utils';
 import './styles/cursor-theme.css';
 
@@ -36,6 +38,11 @@ export function CursorChatArea({
   const [localInput, setLocalInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  
+  // Mode state (Agent/Ask/Plan)
+  const [mode, setMode] = useState<AgentMode>('agent');
+  const [pendingPlan, setPendingPlan] = useState<EditablePlan | null>(null);
+  const [isExecutingPlan, setIsExecutingPlan] = useState(false);
 
   // Vercel AI SDK useChat hook with DefaultChatTransport
   const {
@@ -47,6 +54,7 @@ export function CursorChatArea({
       api: apiUrl,
       body: {
         session_id: sessionId,
+        mode: mode,  // Include mode in request
       },
     }),
   });
@@ -84,9 +92,15 @@ export function CursorChatArea({
     if (localInput.trim() && !isLoading) {
       setIsLoading(true);
       setError(null);
+      setPendingPlan(null);  // Clear any pending plan
+      
       try {
         await sendMessage({ text: localInput.trim() });
         setLocalInput('');
+        
+        // TODO: Handle plan mode response - parse plan from response
+        // For now, the backend sends plan_generated via WebSocket
+        
       } catch (err) {
         console.error('[CursorChatArea] Error:', err);
         setError(err instanceof Error ? err : new Error('Unknown error'));
@@ -95,6 +109,39 @@ export function CursorChatArea({
       }
     }
   }, [localInput, isLoading, sendMessage]);
+
+  // Handle plan confirmation
+  const handlePlanConfirm = useCallback(async () => {
+    if (!pendingPlan) return;
+    
+    setIsExecutingPlan(true);
+    try {
+      // Send request with confirmed plan
+      // This would need to be a separate API call or WebSocket message
+      console.log('[CursorChatArea] Executing confirmed plan:', pendingPlan);
+      
+      // TODO: Implement actual plan execution via API
+      // await fetch(`${apiUrl.replace('/chat', '/execute')}`, {
+      //   method: 'POST',
+      //   body: JSON.stringify({ mode: 'agent', confirmed_plan: pendingPlan }),
+      // });
+      
+      setPendingPlan(null);
+    } catch (err) {
+      console.error('[CursorChatArea] Plan execution error:', err);
+      setError(err instanceof Error ? err : new Error('Failed to execute plan'));
+    } finally {
+      setIsExecutingPlan(false);
+    }
+  }, [pendingPlan]);
+
+  const handlePlanCancel = useCallback(() => {
+    setPendingPlan(null);
+  }, []);
+
+  const handlePlanEdit = useCallback((editedPlan: EditablePlan) => {
+    setPendingPlan(editedPlan);
+  }, []);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -178,6 +225,26 @@ export function CursorChatArea({
         </div>
       </ScrollArea>
 
+      {/* Plan Editor (when in Plan mode and have pending plan) */}
+      <AnimatePresence>
+        {pendingPlan && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="px-6 py-4 border-t border-white/[0.06]"
+          >
+            <PlanEditor
+              plan={pendingPlan}
+              onEdit={handlePlanEdit}
+              onConfirm={handlePlanConfirm}
+              onCancel={handlePlanCancel}
+              isExecuting={isExecutingPlan}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Input Area */}
       <div className="border-t border-[var(--chat-border-light)] bg-black/40 backdrop-blur-xl">
         <div className="max-w-3xl mx-auto p-4">
@@ -188,6 +255,13 @@ export function CursorChatArea({
               className="relative rounded-2xl bg-white/[0.04] border border-[var(--chat-border-light)] p-3 shadow-lg shadow-black/20"
             >
               <div className="flex items-end gap-3">
+                {/* Mode Selector */}
+                <ModeSelector
+                  mode={mode}
+                  onModeChange={setMode}
+                  disabled={isLoading}
+                />
+                
                 {/* Attachment Button */}
                 <Button
                   type="button"
@@ -264,11 +338,11 @@ export function CursorChatArea({
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-[var(--chat-border-light)]">
                 <span className="text-[11px] text-[var(--chat-text-muted)] font-medium">
                   Press <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-[10px] mx-0.5">Enter</kbd> to send, 
-                  <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-[10px] mx-0.5 ml-1">Shift+Enter</kbd> for new line
+                  <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-[10px] mx-0.5 ml-1">⌘.</kbd> switch mode
                 </span>
                 <span className="text-[11px] text-[var(--chat-text-muted)] font-medium flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/80 animate-pulse" />
-                  NogicOS Agent
+                  <ModeIndicator mode={mode} />
                 </span>
               </div>
             </motion.div>

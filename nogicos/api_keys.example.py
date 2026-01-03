@@ -14,6 +14,10 @@ ANTHROPIC_API_KEY = ""
 # OpenAI API Key
 OPENAI_API_KEY = ""
 
+# LangSmith API Key (Observability & Tracing)
+# Get your key at: https://smith.langchain.com/settings
+LANGSMITH_API_KEY = ""
+
 
 def setup_env():
     """Set API keys as environment variables"""
@@ -25,6 +29,10 @@ def setup_env():
         os.environ["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
     if OPENAI_API_KEY:
         os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+    if LANGSMITH_API_KEY:
+        os.environ["LANGSMITH_API_KEY"] = LANGSMITH_API_KEY
+        os.environ["LANGSMITH_TRACING"] = "true"
+        os.environ["LANGSMITH_PROJECT"] = "nogicos"
     
     print("[NogicOS] API Keys configured")
 

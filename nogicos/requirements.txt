@@ -46,3 +46,7 @@ deepeval>=2.0.0
 mlflow>=2.15.0
 prometheus-client>=0.19.0
 
+# Observability & Optimization
+langsmith>=0.1.0
+dspy-ai>=2.5.0
+

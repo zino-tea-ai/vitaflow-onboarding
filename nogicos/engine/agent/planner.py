@@ -51,6 +51,131 @@ class PlanStep:
     suggested_tool: Optional[str] = None
     tool_args_hint: Optional[Dict[str, Any]] = None
     status: str = "pending"  # pending, in_progress, completed, failed
+    details: Optional[str] = None  # Additional details, file paths, etc.
+    editable: bool = True  # Whether user can edit this step
+
+
+@dataclass
+class EditablePlanStep:
+    """A detailed step for Plan mode with full metadata"""
+    step_number: int
+    description: str
+    tool: Optional[str] = None
+    details: Optional[str] = None
+    file_paths: List[str] = field(default_factory=list)
+    code_references: List[str] = field(default_factory=list)
+    editable: bool = True
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "step": self.step_number,
+            "description": self.description,
+            "tool": self.tool,
+            "details": self.details,
+            "file_paths": self.file_paths,
+            "code_references": self.code_references,
+            "editable": self.editable,
+        }
+
+
+@dataclass
+class EditablePlan:
+    """
+    Detailed, editable plan for Plan mode (Cursor-style).
+    
+    Includes:
+    - Summary of what will be done
+    - Clarifying questions for user
+    - Detailed steps with tool suggestions
+    - Risks and considerations
+    - Estimated time
+    """
+    summary: str
+    steps: List[EditablePlanStep] = field(default_factory=list)
+    clarifying_questions: List[str] = field(default_factory=list)
+    risks: List[str] = field(default_factory=list)
+    estimated_time: str = ""
+    complexity: TaskComplexity = TaskComplexity.MODERATE
+    confirmed: bool = False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "summary": self.summary,
+            "steps": [s.to_dict() for s in self.steps],
+            "clarifying_questions": self.clarifying_questions,
+            "risks": self.risks,
+            "estimated_time": self.estimated_time,
+            "complexity": self.complexity.value,
+            "confirmed": self.confirmed,
+        }
+    
+    def to_markdown(self) -> str:
+        """Convert plan to editable Markdown format"""
+        lines = []
+        
+        # Header
+        lines.append("# Execution Plan")
+        lines.append("")
+        
+        # Summary
+        lines.append("## Summary")
+        lines.append(self.summary)
+        lines.append("")
+        
+        # Clarifying questions (if any)
+        if self.clarifying_questions:
+            lines.append("## Clarifying Questions")
+            lines.append("")
+            lines.append("Please answer these questions before I proceed:")
+            lines.append("")
+            for i, q in enumerate(self.clarifying_questions, 1):
+                lines.append(f"{i}. {q}")
+            lines.append("")
+        
+        # Steps
+        lines.append("## Steps")
+        lines.append("")
+        for step in self.steps:
+            lines.append(f"### Step {step.step_number}: {step.description}")
+            if step.tool:
+                lines.append(f"- **Tool:** `{step.tool}`")
+            if step.details:
+                lines.append(f"- **Details:** {step.details}")
+            if step.file_paths:
+                lines.append(f"- **Files:** {', '.join(f'`{p}`' for p in step.file_paths)}")
+            if step.code_references:
+                lines.append(f"- **Code refs:** {', '.join(step.code_references)}")
+            lines.append("")
+        
+        # Risks
+        if self.risks:
+            lines.append("## Risks & Considerations")
+            lines.append("")
+            for risk in self.risks:
+                lines.append(f"- {risk}")
+            lines.append("")
+        
+        # Metadata
+        lines.append("---")
+        lines.append(f"*Complexity: {self.complexity.value} | Estimated time: {self.estimated_time}*")
+        
+        return "\n".join(lines)
+    
+    def to_simple_plan(self) -> "Plan":
+        """Convert to simple Plan for execution"""
+        return Plan(
+            steps=[s.description for s in self.steps],
+            complexity=self.complexity,
+            estimated_tools=len(self.steps),
+            detailed_steps=[
+                PlanStep(
+                    description=s.description,
+                    suggested_tool=s.tool,
+                    details=s.details,
+                )
+                for s in self.steps
+            ],
+        )
 
 
 @dataclass
@@ -133,6 +258,56 @@ If the task is simple (single action), return:
   "steps": [{{"description": "Execute the action", "tool": "tool_name"}}]
 }}
 ```
+"""
+
+# Plan mode prompt for detailed, editable plans (Cursor-style)
+PLAN_MODE_PROMPT = """You are a task planner for an AI agent in PLAN mode. Your job is to create a detailed, actionable plan that the user can review and edit before execution.
+
+## Available Tools
+{tools_description}
+
+## Task
+{task}
+
+## Context (if available)
+{context}
+
+## Instructions
+1. Analyze the task thoroughly
+2. Explore what information/files might be needed
+3. Identify any ambiguities that need clarification
+4. Generate a detailed plan with 2-10 steps
+5. For each step, specify:
+   - Clear description
+   - Which tool to use
+   - Any relevant file paths or code references
+   - Additional details if needed
+6. Identify potential risks
+7. Estimate completion time
+
+## Output Format
+Return a JSON object:
+```json
+{{
+  "summary": "Brief summary of what will be done",
+  "clarifying_questions": ["Question 1?", "Question 2?"],
+  "steps": [
+    {{
+      "step": 1,
+      "description": "What this step does",
+      "tool": "suggested_tool_name",
+      "details": "Additional context",
+      "file_paths": ["path/to/file1", "path/to/file2"],
+      "code_references": ["function_name", "class_name"]
+    }}
+  ],
+  "risks": ["Potential risk 1", "Risk 2"],
+  "estimated_time": "5-10 minutes",
+  "complexity": "simple|moderate|complex"
+}}
+```
+
+Be thorough but practical. Ask clarifying questions if the task is ambiguous.
 """
 
 # Smart replanning prompt with error analysis
@@ -417,6 +592,114 @@ class TaskPlanner:
             logger.error(f"Planning failed: {e}")
             return Plan(steps=[task], complexity=TaskComplexity.SIMPLE)
     
+    async def generate_editable_plan(
+        self,
+        task: str,
+        context: Optional[str] = None,
+        category_filter: Optional[str] = None,
+    ) -> EditablePlan:
+        """
+        Generate a detailed, editable plan for Plan mode.
+        
+        This is used in Plan mode where the user can review, edit,
+        and confirm the plan before execution.
+        
+        Args:
+            task: User's task description
+            context: Optional context about codebase/files
+            category_filter: Optional tool category to focus on
+            
+        Returns:
+            EditablePlan with detailed steps, questions, risks
+        """
+        client = self._get_client()
+        if not client:
+            logger.warning("No Anthropic client, creating simple plan")
+            return EditablePlan(
+                summary=task,
+                steps=[EditablePlanStep(
+                    step_number=1,
+                    description=task,
+                )],
+                complexity=TaskComplexity.SIMPLE,
+                estimated_time="Unknown",
+            )
+        
+        try:
+            # Build tools description
+            tools_description = self._build_tools_description(category_filter)
+            
+            # Build prompt
+            prompt = PLAN_MODE_PROMPT.format(
+                tools_description=tools_description,
+                task=task,
+                context=context or "No additional context provided.",
+            )
+            
+            # Call Claude for detailed planning
+            response = client.messages.create(
+                model=self.model,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=60.0,  # Longer timeout for detailed planning
+            )
+            
+            # Parse response
+            response_text = response.content[0].text
+            plan_data = self._parse_json_response(response_text)
+            
+            if not plan_data:
+                logger.warning("Failed to parse editable plan")
+                return EditablePlan(
+                    summary=task,
+                    steps=[EditablePlanStep(step_number=1, description=task)],
+                )
+            
+            # Parse steps
+            steps = []
+            for i, step_data in enumerate(plan_data.get("steps", []), 1):
+                if isinstance(step_data, dict):
+                    steps.append(EditablePlanStep(
+                        step_number=step_data.get("step", i),
+                        description=step_data.get("description", ""),
+                        tool=step_data.get("tool"),
+                        details=step_data.get("details"),
+                        file_paths=step_data.get("file_paths", []),
+                        code_references=step_data.get("code_references", []),
+                    ))
+                else:
+                    steps.append(EditablePlanStep(
+                        step_number=i,
+                        description=str(step_data),
+                    ))
+            
+            # Parse complexity
+            complexity_str = plan_data.get("complexity", "moderate")
+            try:
+                complexity = TaskComplexity(complexity_str)
+            except ValueError:
+                complexity = TaskComplexity.MODERATE
+            
+            editable_plan = EditablePlan(
+                summary=plan_data.get("summary", task),
+                steps=steps,
+                clarifying_questions=plan_data.get("clarifying_questions", []),
+                risks=plan_data.get("risks", []),
+                estimated_time=plan_data.get("estimated_time", "Unknown"),
+                complexity=complexity,
+            )
+            
+            logger.info(f"Generated editable plan: {len(steps)} steps, {len(editable_plan.clarifying_questions)} questions")
+            return editable_plan
+            
+        except Exception as e:
+            logger.error(f"Editable plan generation failed: {e}")
+            return EditablePlan(
+                summary=task,
+                steps=[EditablePlanStep(step_number=1, description=task)],
+                estimated_time="Unknown",
+            )
+    
     async def replan(
         self,
         state: PlanExecuteState,
@@ -569,6 +852,8 @@ __all__ = [
     "TaskPlanner",
     "Plan",
     "PlanStep",
+    "EditablePlan",
+    "EditablePlanStep",
     "PlanExecuteState",
     "TaskComplexity",
     "create_plan",

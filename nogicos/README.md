@@ -1,76 +1,71 @@
 # NogicOS
 
-**Your AI Work Partner, living in your computer.**
+> **The AI that works where you work**
+> 
+> Browser. Files. Desktop. One AI, complete context. Gets faster every time.
 
-> "Cursor for Everyone" - The AI work partner that lives in your computer, not just your browser.
+---
 
 ## What is NogicOS?
 
-NogicOS is an AI control center that bridges the internet and your local environment. Unlike traditional AI assistants that only chat, NogicOS **executes** tasks end-to-end:
+NogicOS is the first AI that works across your browser, files, and desktop as one unified workspace.
 
+**The Problem:**
+- ChatGPT only sees what you paste
+- Claude only sees what you upload
+- Cursor only sees your code
+- Browser agents only see one webpage
+
+**Our Solution:**
+NogicOS sees your complete work environment—and takes action directly in it.
+
+---
+
+## Key Features
+
+### 🌐 Unified Workspace
 - Browse the web and extract data
-- Organize files and manage your desktop
+- Read and write local files
+- Understand desktop state
 - Execute shell commands
-- Intelligent decision-making with ReAct Agent
 
-## Architecture (V2)
-
+### 🚀 Gets Faster Every Time
 ```
-+-------------------------------------------------------------+
-|                    Electron Client                           |
-|  +----------------------+  +------------------------------+  |
-|  |   Glass UI Panel     |  |     BrowserView / Tools      |  |
-|  |   - Chat Interface   |  |     - Web Preview            |  |
-|  |   - Tool Cards       |  |     - File Operations        |  |
-|  |   - Real-time Stream |  |     - Shell Commands         |  |
-|  +----------------------+  +------------------------------+  |
-+--------------------------------+----------------------------+
-                                 | WebSocket (8765) + HTTP (8080)
-+--------------------------------v----------------------------+
-|                    Python Backend                            |
-|  +----------------------------------------------------------+
-|  |                   ReAct Agent                             |
-|  |   Think -> Act -> Observe -> Think -> Act -> ...         |
-|  +----------------------------------------------------------+
-|  +------------+  +------------+  +--------------------+      |
-|  |   Tools    |  |  WebSocket |  |   Observability    |      |
-|  | - Browser  |  |  - Stream  |  |   - Logging        |      |
-|  | - Local    |  |  - Status  |  |   - Health Check   |      |
-|  +------------+  +------------+  +--------------------+      |
-+-------------------------------------------------------------+
+First time:  Normal Path (30-60s) → Full AI reasoning
+Second time: Fast Path (1-5s)     → Replay optimized trajectory
+After that:  Skill Path (<1s)     → Instant execution
 ```
 
-## Engine Structure
+### 🤝 Collective Learning
+- Knowledge Store captures task trajectories
+- More users = richer skill library = faster for everyone
+
+---
+
+## Architecture
 
 ```
-engine/
-├── agent/
-│   └── react_agent.py    # Pure ReAct Agent (core)
-├── tools/
-│   ├── base.py           # Tool Registry & Definitions
-│   ├── browser.py        # Browser automation tools
-│   └── local.py          # File system & shell tools
-├── server/
-│   └── websocket.py      # Real-time status broadcasting
-├── middleware/
-│   ├── filesystem.py     # File operation safety
-│   └── todo.py           # Task management
-├── health/
-│   └── __init__.py       # Health check system
-└── observability/
-    └── __init__.py       # Logging system
+┌─────────────────────────────────────────────────────────────┐
+│                    Electron Client                          │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │  Chat UI    │  │  AI Panel   │  │  Status Bar │         │
+│  └─────────────┘  └─────────────┘  └─────────────┘         │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ WebSocket + HTTP
+┌───────────────────────────▼─────────────────────────────────┐
+│                    Python Backend                            │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              ReAct Agent + Smart Router              │    │
+│  │       Think → Act → Observe → Learn → Repeat        │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                            │                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │Browser Tools │  │ Local Tools  │  │Desktop Tools │       │
+│  └──────────────┘  └──────────────┘  └──────────────┘       │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Server status |
-| `/stats` | GET | Execution statistics |
-| `/v2/execute` | POST | **Execute task with ReAct Agent** |
-| `/v2/tools` | GET | List available tools |
-| `/health` | GET | Health check |
-| `/read_file` | GET | Read file content |
+---
 
 ## Quick Start
 
@@ -82,17 +77,11 @@ engine/
 ### Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/example/nogicos.git
-cd nogicos
-
 # Install Python dependencies
 pip install -r requirements.txt
 
 # Install Electron dependencies
-cd client
-npm install
-cd ..
+cd client && npm install && cd ..
 
 # Set up API keys
 cp api_keys.example.py api_keys.py
@@ -102,59 +91,101 @@ cp api_keys.example.py api_keys.py
 ### Running
 
 ```bash
-# Option 1: Start from client (auto-starts backend)
-cd client
-npm start
-
-# Option 2: Start backend separately
+# Start backend
 python hive_server.py
-# Then in another terminal:
-cd client
-npm start
+
+# In another terminal, start frontend
+cd nogicos-ui && npm run dev
 ```
+
+---
 
 ## Available Tools
 
 ### Browser Tools
-- `navigate` - Navigate to URL
-- `click` - Click element
-- `type` - Type text
-- `scroll` - Scroll page
-- `screenshot` - Take screenshot
-- `get_page_content` - Extract page content
+| Tool | Description |
+|------|-------------|
+| `browser_navigate` | Navigate to URL |
+| `browser_click` | Click element |
+| `browser_type` | Type text |
+| `browser_scroll` | Scroll page |
+| `browser_screenshot` | Take screenshot |
+| `browser_extract` | Extract page content |
 
 ### Local Tools
-- `read_file` - Read file content
-- `write_file` - Write to file
-- `list_directory` - List directory contents
-- `create_directory` - Create directory
-- `move_file` - Move/rename file
-- `copy_file` - Copy file
-- `delete_file` - Delete file
-- `shell_execute` - Run shell command
-- `glob_search` - Search files by pattern
-- `grep_search` - Search file contents
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read file content |
+| `write_file` | Write to file |
+| `list_directory` | List directory |
+| `create_directory` | Create folder |
+| `move_file` | Move/rename file |
+| `shell_execute` | Run shell command |
+| `glob_search` | Search by pattern |
+| `grep_search` | Search contents |
+
+---
 
 ## Example Tasks
 
 ```
-"Organize my desktop"
--> Agent lists desktop, categorizes files, creates folders, moves files
+"Analyze this competitor's website and save key features to Excel"
+→ Agent opens website → extracts data → creates Excel file
 
-"Save this webpage content to a file"
--> Agent navigates, extracts content, writes to file
+"Organize my desktop by file type"
+→ Agent lists files → categorizes → creates folders → moves files
 
-"Find all files containing TODO in this project"
--> Agent uses grep_search to find matches
+"Find all TODO comments in this project"
+→ Agent searches files → aggregates results → generates report
 ```
+
+---
+
+## Project Structure
+
+```
+nogicos/
+├── hive_server.py           # Backend entry point
+├── engine/
+│   ├── agent/               # ReAct Agent + Planner
+│   ├── tools/               # Browser/Local/Desktop tools
+│   ├── knowledge/           # Knowledge Store
+│   └── server/              # WebSocket service
+├── client/                  # Electron client
+├── nogicos-ui/              # React frontend
+├── PRODUCT_SPEC.md          # Product specification
+├── ARCHITECTURE.md          # Technical architecture
+├── PITCH_CONTEXT.md         # Team pitch context
+└── CHANGELOG.md             # Version history
+```
+
+---
+
+## Documentation
+
+- [PRODUCT_SPEC.md](./PRODUCT_SPEC.md) - Product definition and standards
+- [ARCHITECTURE.md](./ARCHITECTURE.md) - Technical architecture details
+- [PITCH_CONTEXT.md](./PITCH_CONTEXT.md) - Pitch and collaboration guide
+- [CHANGELOG.md](./CHANGELOG.md) - Version history
+
+---
 
 ## Tech Stack
 
-- **Frontend**: Electron + Glassmorphism UI
+- **Frontend**: Electron + React + Tailwind
 - **Backend**: Python + FastAPI + WebSocket
-- **AI**: Claude 3.5 Sonnet + Pure ReAct Loop
-- **Design**: Vision Pro inspired floating panels
+- **AI**: Claude 3.5 Sonnet + ReAct Loop
+- **Browser**: Playwright
+- **Design**: Vision Pro inspired glassmorphism
+
+---
 
 ## License
 
 MIT License
+
+---
+
+## Team
+
+Building the AI work partner for everyone.

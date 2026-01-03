@@ -11,6 +11,7 @@ Key Features:
 - Dynamic tool selection: Agent chooses tools based on task requirements
 - Streaming: Real-time feedback via WebSocket
 - Speculative Prompt Caching: Pre-warm cache while user types for faster TTFT
+- LangSmith Integration: Full observability and tracing
 
 Architecture:
     User Task → ReAct Loop → Tool Execution → Response
@@ -30,6 +31,25 @@ from dataclasses import dataclass, field
 from engine.observability import get_logger
 logger = get_logger("react_agent")
 
+# LangSmith integration (optional)
+try:
+    from engine.observability.langsmith_tracer import (
+        is_enabled as langsmith_enabled,
+        trace_agent_run,
+        trace_tool_call,
+        wrap_anthropic_client,
+        trace_span,
+    )
+    LANGSMITH_AVAILABLE = langsmith_enabled()
+    if LANGSMITH_AVAILABLE:
+        logger.info("[Agent] LangSmith tracing enabled")
+except ImportError:
+    LANGSMITH_AVAILABLE = False
+    trace_agent_run = lambda **kw: lambda f: f  # No-op decorator
+    trace_tool_call = lambda **kw: lambda f: f
+    wrap_anthropic_client = lambda c: c
+    trace_span = None
+
 # Prometheus metrics (optional)
 try:
     from monitoring.prometheus.metrics import get_metrics, AgentMetrics
@@ -41,6 +61,9 @@ except ImportError:
 # Import tool registry
 from engine.tools.base import ToolRegistry, ToolCategory
 from engine.tools import create_full_registry
+
+# Import mode router
+from engine.agent.modes import AgentMode, ModeRouter, get_mode_router
 
 # Centralized optional imports (reduces ~80 lines of try/except boilerplate)
 from engine.agent.imports import (
@@ -456,6 +479,12 @@ class ReActAgent:
         self.client = create_anthropic_client()
         self.async_client = create_async_anthropic_client()
         
+        # Wrap clients with LangSmith tracing if enabled
+        if LANGSMITH_AVAILABLE:
+            self.client = wrap_anthropic_client(self.client)
+            self.async_client = wrap_anthropic_client(self.async_client)
+            logger.info("[Agent] Anthropic clients wrapped with LangSmith tracing")
+        
         # Tool registry - create once and reuse
         self.registry = create_full_registry()
         
@@ -493,6 +522,9 @@ class ReActAgent:
         
         # Track first message per session (for full context injection)
         self._session_first_message: Dict[str, bool] = {}
+        
+        # Mode router for Agent/Ask/Plan modes (Cursor-style)
+        self.mode_router = get_mode_router()
     
     def _refresh_tool_categories(self) -> None:
         """Refresh tool categories cache from registry"""
@@ -1030,29 +1062,134 @@ class ReActAgent:
         logger.warning(f"[Loop Detection] Detected {window} identical calls to {first['name']}")
         return True
     
+    async def _handle_plan_mode(
+        self,
+        task: str,
+        session_id: str,
+        context: Optional[str],
+        message_id: str,
+    ) -> AgentResult:
+        """
+        Handle Plan mode: generate editable plan without executing.
+        
+        In Plan mode, we:
+        1. Analyze the task and explore context (read-only)
+        2. Generate a detailed, editable plan
+        3. Return the plan for user to review/edit
+        4. User can then confirm to execute
+        
+        Args:
+            task: User's task description
+            session_id: Session ID
+            context: Optional context
+            message_id: Message ID for WebSocket
+            
+        Returns:
+            AgentResult with plan in response (JSON format)
+        """
+        from engine.agent.planner import EditablePlan
+        
+        logger.info(f"[Plan Mode] Generating editable plan for: {task[:50]}...")
+        
+        # Broadcast plan generation start
+        if self.status_server:
+            await self.status_server.broadcast({
+                "type": "plan_generating",
+                "message_id": message_id,
+            })
+        
+        try:
+            # Use planner to generate detailed plan
+            if self.planner and PLANNER_AVAILABLE:
+                editable_plan = await self.planner.generate_editable_plan(
+                    task=task,
+                    context=context,
+                )
+            else:
+                # Fallback: create simple plan
+                from engine.agent.planner import EditablePlanStep, TaskComplexity
+                editable_plan = EditablePlan(
+                    summary=task,
+                    steps=[EditablePlanStep(
+                        step_number=1,
+                        description=task,
+                    )],
+                    complexity=TaskComplexity.SIMPLE,
+                    estimated_time="Unknown",
+                )
+            
+            # Convert to dict for response
+            plan_data = editable_plan.to_dict()
+            plan_markdown = editable_plan.to_markdown()
+            
+            # Broadcast plan to frontend
+            if self.status_server:
+                await self.status_server.broadcast({
+                    "type": "plan_generated",
+                    "message_id": message_id,
+                    "plan": plan_data,
+                    "markdown": plan_markdown,
+                })
+            
+            logger.info(f"[Plan Mode] Generated plan with {len(editable_plan.steps)} steps")
+            
+            # Return plan as response (user needs to confirm)
+            import json
+            return AgentResult(
+                success=True,
+                response=json.dumps(plan_data, ensure_ascii=False, indent=2),
+                iterations=0,
+                tool_calls=[],
+            )
+            
+        except Exception as e:
+            logger.error(f"[Plan Mode] Failed to generate plan: {e}")
+            
+            if self.status_server:
+                await self.status_server.broadcast({
+                    "type": "plan_error",
+                    "message_id": message_id,
+                    "error": str(e),
+                })
+            
+            return AgentResult(
+                success=False,
+                response="",
+                error=f"Failed to generate plan: {e}",
+            )
+    
     async def run(
         self,
         task: str,
         session_id: str = "default",
         context: Optional[str] = None,
+        mode: AgentMode = AgentMode.AGENT,
+        confirmed_plan: Optional[Plan] = None,
         on_text_delta: Optional[Callable[[str], Awaitable[None]]] = None,
         on_thinking_delta: Optional[Callable[[str], Awaitable[None]]] = None,
         on_tool_start: Optional[Callable[[str, str, Dict[str, Any]], Awaitable[None]]] = None,
         on_tool_end: Optional[Callable[[str, bool, str], Awaitable[None]]] = None,
     ) -> AgentResult:
         """
-        Execute a task autonomously using ReAct loop with smart routing.
+        Execute a task using ReAct loop with mode-based routing.
+        
+        Modes:
+        - AGENT: Autonomous execution, all tools available
+        - ASK: Read-only exploration, restricted to read-only tools
+        - PLAN: Generate editable plan, return for user confirmation
         
         Flow:
-        1. Classify task (browser/local/mixed)
-        2. Filter tools based on task type
-        3. Generate plan for complex tasks
-        4. Execute with ReAct loop
+        1. Check mode and apply mode-specific logic
+        2. Classify task (browser/local/mixed)
+        3. Filter tools based on task type AND mode
+        4. Generate/execute based on mode
         
         Args:
             task: User's task/question
             session_id: Session ID for message grouping
             context: Optional additional context
+            mode: Agent mode (AGENT/ASK/PLAN)
+            confirmed_plan: User-confirmed plan for execution (Plan mode)
             on_text_delta: Callback for real-time text streaming (delta: str)
             on_thinking_delta: Callback for thinking content streaming
             on_tool_start: Callback when tool execution starts (tool_id, tool_name)
@@ -1071,6 +1208,27 @@ class ReActAgent:
         # Generate unique message ID
         import uuid
         message_id = str(uuid.uuid4())[:8]
+        
+        # ===========================================
+        # PHASE 0: Mode-specific handling
+        # ===========================================
+        logger.info(f"[Agent] Running in {mode.value} mode")
+        
+        # Broadcast mode to frontend
+        if self.status_server:
+            await self.status_server.broadcast({
+                "type": "mode_active",
+                "message_id": message_id,
+                "mode": mode.value,
+            })
+        
+        # PLAN MODE: Generate editable plan and return (don't execute)
+        if mode == AgentMode.PLAN and confirmed_plan is None:
+            return await self._handle_plan_mode(task, session_id, context, message_id)
+        
+        # If we have a confirmed plan (from Plan mode), use it
+        if confirmed_plan is not None:
+            logger.info(f"[Agent] Executing confirmed plan with {len(confirmed_plan.steps)} steps")
         
         # ===========================================
         # PHASE 1: Task Classification
@@ -1096,10 +1254,16 @@ class ReActAgent:
                 })
         
         # ===========================================
-        # PHASE 2: Tool Selection based on task type
+        # PHASE 2: Tool Selection based on task type AND mode
         # ===========================================
         tools = self._get_tools_by_task_type(task_type_str)
-        logger.info(f"Using {len(tools)} tools for {task_type_str} task")
+        
+        # Filter tools based on mode (ASK mode = read-only tools only)
+        if mode in (AgentMode.ASK, AgentMode.PLAN):
+            tools = self.mode_router.get_allowed_tools(mode, tools)
+            logger.info(f"[Agent] Mode {mode.value}: filtered to {len(tools)} read-only tools")
+        
+        logger.info(f"Using {len(tools)} tools for {task_type_str} task in {mode.value} mode")
         
         # ===========================================
         # PHASE 2.5: Browser Session Initialization
@@ -1146,6 +1310,12 @@ class ReActAgent:
         system_prompt = await self._build_system_prompt_with_memory(
             session_id, task, skip_memory=is_simple_chat
         )
+        
+        # Add mode-specific prompt modifier (ASK/PLAN modes)
+        mode_modifier = self.mode_router.get_system_prompt_modifier(mode)
+        if mode_modifier:
+            system_prompt = mode_modifier + "\n\n" + system_prompt
+            logger.debug(f"[Agent] Added {mode.value} mode prompt modifier")
         
         # Inject plan into context if we have one
         user_content = task

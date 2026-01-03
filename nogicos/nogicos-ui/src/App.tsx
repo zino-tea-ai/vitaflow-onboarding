@@ -42,6 +42,7 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [minimalInitialMessages, setMinimalInitialMessages] = useState<Array<{ id: string; role: 'user' | 'assistant'; content: string; parts?: any[] }>>([]);
   const [tools, setTools] = useState<ToolExecution[]>([]);
   const [isExecuting, setIsExecuting] = useState(false);
   const [thinkingState, setThinkingState] = useState<ThinkingState>({
@@ -89,6 +90,15 @@ function App() {
               timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
             }));
             setMessages(loadedMessages);
+            
+            // Also set for MinimalChatArea (include parts for reasoning)
+            const minimalMessages = detail.history.map((m: any, i) => ({
+              id: `loaded-${mostRecent.id}-${i}`,
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+              ...(m.parts ? { parts: m.parts } : {}),
+            }));
+            setMinimalInitialMessages(minimalMessages);
           }
         });
       }
@@ -479,6 +489,7 @@ function App() {
     setSessions((prev) => [newSession, ...prev]);
     setActiveSessionId(id);
     setMessages([]);
+    setMinimalInitialMessages([]);  // Clear for new session
     setTools([]);
   }, []);
 
@@ -495,12 +506,39 @@ function App() {
 
   // Select session
   const handleSelectSession = useCallback(async (id: string) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App:handleSelectSession:start',message:'selecting session',data:{id},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
+    
+    const detail = await loadSession(id);
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App:handleSelectSession:loaded',message:'loadSession result',data:{id,hasDetail:!!detail,historyLength:detail?.history?.length,historyPreview:detail?.history?.slice(0,2)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
+    
+    // Prepare messages for MinimalChatArea (include parts for reasoning/tools)
+    let minimalMessages: Array<{ id: string; role: 'user' | 'assistant'; content: string; parts?: any[] }> = [];
+    if (detail?.history && detail.history.length > 0) {
+      minimalMessages = detail.history.map((m: any, i) => ({
+        id: `loaded-${id}-${i}`,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        // Preserve parts if they exist (contains reasoning/tools)
+        ...(m.parts ? { parts: m.parts } : {}),
+      }));
+    }
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App:handleSelectSession:prepared',message:'prepared minimalMessages',data:{count:minimalMessages.length,preview:minimalMessages.slice(0,2)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
+    
+    // Update state
+    setMinimalInitialMessages(minimalMessages);
     setActiveSessionId(id);
     setMessages([]);
     setTools([]);
     
-    // Load session messages from backend
-    const detail = await loadSession(id);
+    // Also update legacy messages state
     if (detail?.history) {
       const loadedMessages: Message[] = detail.history.map((m, i) => ({
         id: `loaded-${id}-${i}`,
@@ -645,6 +683,42 @@ function App() {
           <MinimalChatArea
             apiUrl={VERCEL_AI_API_URL}
             sessionId={activeSessionId || 'default'}
+            initialMessages={minimalInitialMessages}
+            onSessionUpdate={(title, preview) => {
+              // Create session if none exists
+              let sessionId = activeSessionId;
+              if (!sessionId) {
+                sessionId = `session-${Date.now()}`;
+                const newSession: Session = {
+                  id: sessionId,
+                  title,
+                  preview,
+                  timestamp: new Date(),
+                };
+                setSessions((prev) => [newSession, ...prev]);
+                setActiveSessionId(sessionId);
+              } else {
+                // Update existing session
+                setSessions((prev) =>
+                  prev.map((s) =>
+                    s.id === sessionId
+                      ? { ...s, title, preview, timestamp: new Date() }
+                      : s
+                  )
+                );
+              }
+            }}
+            onMessagesChange={(msgs) => {
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/1146cc51-3fe3-46a3-9e1a-4801e1a50de0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App:onMessagesChange',message:'saving messages',data:{sessionId:activeSessionId,msgCount:msgs.length,preview:msgs.slice(0,2)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H2'})}).catch(()=>{});
+              // #endregion
+              // Save messages to backend
+              const sessionId = activeSessionId;
+              if (sessionId) {
+                const session = sessions.find(s => s.id === sessionId);
+                saveSession(sessionId, msgs as any, session?.title);
+              }
+            }}
           />
         </div>
       ) : CHAT_MODE === 'system' ? (
