@@ -23,8 +23,7 @@ import asyncio
 import argparse
 from typing import Optional, List, Dict, Any
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+# Note: Module uses standard import paths - ensure PYTHONPATH is configured correctly
 
 from engine.observability import get_logger, setup_logging
 logger = get_logger("evaluation_runner")
@@ -44,6 +43,10 @@ from engine.evaluation.evaluators import (
     token_count_evaluator,
     tool_call_count_evaluator,
     error_rate_evaluator,
+    # UX 评估器（用户体验）
+    ttft_evaluator,
+    follow_up_evaluator,
+    content_richness_evaluator,
     # LLM-as-judge 评估器（语义理解）
     task_completion_llm_evaluator,
     tool_selection_llm_evaluator,
@@ -57,6 +60,7 @@ from engine.evaluation.evaluators import (
     get_fast_evaluators,
     get_quality_evaluators,
     get_essential_evaluators,
+    get_ux_evaluators,
 )
 from engine.evaluation.dataset_manager import (
     DatasetManager,
@@ -190,6 +194,7 @@ def run_evaluation(
             "llm": get_llm_evaluators,           # LLM（语义理解）
             "rule": get_rule_evaluators,         # 规则（客观指标）
             "essential": get_essential_evaluators, # 核心（延迟、错误、任务完成、幻觉）
+            "ux": get_ux_evaluators,             # UX（TTFT、追问、丰富度）
         }
         
         if evaluator_mode in mode_map:
@@ -343,8 +348,8 @@ def main():
         "--mode",
         type=str,
         default="all",
-        choices=["all", "fast", "quality", "llm", "rule", "essential"],
-        help="Evaluator mode: all=全部, fast=规则, quality=规则+幻觉+任务, llm=LLM, rule=规则, essential=核心",
+        choices=["all", "fast", "quality", "llm", "rule", "essential", "ux"],
+        help="Evaluator mode: all=全部, fast=规则, quality=规则+幻觉+任务, llm=LLM, rule=规则, essential=核心, ux=用户体验(TTFT/追问/丰富度)",
     )
     
     args = parser.parse_args()

@@ -201,14 +201,16 @@ def _get_api_key() -> Optional[str]:
         from api_keys import ANTHROPIC_API_KEY
         if ANTHROPIC_API_KEY:
             return ANTHROPIC_API_KEY
-    except (ImportError, AttributeError):
+    except ImportError:
         pass
-    
+    except AttributeError:
+        pass
+
     # Then try environment variable
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
         return key
-    
+
     return None
 
 
@@ -253,6 +255,51 @@ def create_async_anthropic_client(api_key: Optional[str] = None):
 
 
 # =============================================================================
+# Verification Module
+# =============================================================================
+
+VERIFICATION_AVAILABLE = False
+AnswerVerifier = None
+verify_answer: Optional[Callable] = None
+
+try:
+    from engine.agent.verification import (
+        AnswerVerifier as _AnswerVerifier,
+        verify_answer as _verify_answer,
+    )
+
+    AnswerVerifier = _AnswerVerifier
+    verify_answer = _verify_answer
+    VERIFICATION_AVAILABLE = True
+except ImportError:
+    pass
+
+
+# =============================================================================
+# Context Injection Module (Cursor-style)
+# =============================================================================
+
+CONTEXT_INJECTION_AVAILABLE = False
+ContextInjector = None
+ContextConfig = None
+get_context_injector: Optional[Callable] = None
+
+try:
+    from engine.context import (
+        ContextInjector as _ContextInjector,
+        ContextConfig as _ContextConfig,
+        get_context_injector as _get_context_injector,
+    )
+
+    ContextInjector = _ContextInjector
+    ContextConfig = _ContextConfig
+    get_context_injector = _get_context_injector
+    CONTEXT_INJECTION_AVAILABLE = True
+except ImportError:
+    pass
+
+
+# =============================================================================
 # Summary of Available Features
 # =============================================================================
 
@@ -266,5 +313,7 @@ def get_available_features() -> Dict[str, bool]:
         "planner": PLANNER_AVAILABLE,
         "classifier": CLASSIFIER_AVAILABLE,
         "browser_session": BROWSER_SESSION_AVAILABLE,
+        "verification": VERIFICATION_AVAILABLE,
+        "context_injection": CONTEXT_INJECTION_AVAILABLE,
     }
 

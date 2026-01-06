@@ -10,6 +10,11 @@ import base64
 from typing import Optional, Dict, Any, List
 
 from .base import ToolRegistry, ToolCategory, get_registry
+from .descriptions import (
+    BROWSER_NAVIGATE, BROWSER_CLICK, BROWSER_TYPE, 
+    BROWSER_SCREENSHOT, BROWSER_GET_CONTENT, BROWSER_SCROLL, BROWSER_EXTRACT,
+    BROWSER_GET_URL, BROWSER_GET_TITLE, BROWSER_BACK, BROWSER_WAIT, BROWSER_SEND_KEYS
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +33,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
         registry = get_registry()
     
     @registry.action(
-        description="Navigate to a URL in the browser. Returns the page title after navigation.",
+        description=BROWSER_NAVIGATE,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
@@ -47,7 +52,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error navigating to {url}: {str(e)}"
     
     @registry.action(
-        description="Click on an element identified by CSS selector or text content.",
+        description=BROWSER_CLICK,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
@@ -64,7 +69,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error clicking {selector}: {str(e)}"
     
     @registry.action(
-        description="Type text into an input field identified by CSS selector.",
+        description=BROWSER_TYPE,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
@@ -81,28 +86,64 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error typing into {selector}: {str(e)}"
     
     @registry.action(
-        description="Take a screenshot of the current page. Returns base64-encoded image.",
+        description=BROWSER_SCREENSHOT,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
-    async def browser_screenshot(browser_session=None) -> str:
-        """Take a screenshot"""
+    async def browser_screenshot(browser_session=None) -> Dict[str, Any]:
+        """
+        Take a screenshot and return structured data for multimodal LLM.
+        
+        Returns:
+            Dict with:
+            - type: "browser_screenshot" (for Agent to detect)
+            - image_base64: PNG screenshot as base64
+            - page_content: Text content of the page (for context)
+            - url: Current page URL
+            - title: Page title
+        """
         if browser_session is None:
-            return "Error: No browser session available"
+            return {"type": "error", "message": "No browser session available"}
         
         try:
+            # Take screenshot
             screenshot_data = await browser_session.screenshot()
             if isinstance(screenshot_data, bytes):
                 screenshot_b64 = base64.b64encode(screenshot_data).decode('utf-8')
             else:
                 screenshot_b64 = screenshot_data
-            return f"Screenshot captured (base64 length: {len(screenshot_b64)})"
+            
+            # Also extract page content for LLM understanding
+            try:
+                page_content = await browser_session.get_page_content()
+                # Truncate to avoid token explosion
+                page_content = page_content[:3000] if len(page_content) > 3000 else page_content
+            except Exception:
+                page_content = "(Could not extract page content)"
+            
+            # Get URL and title
+            try:
+                url = await browser_session.get_current_url()
+                title = await browser_session.get_title()
+            except Exception:
+                url = "(unknown)"
+                title = "(unknown)"
+            
+            logger.info(f"[Browser] Screenshot captured: {len(screenshot_b64)} bytes, URL: {url}")
+            
+            return {
+                "type": "browser_screenshot",
+                "image_base64": screenshot_b64,
+                "page_content": page_content,
+                "url": url,
+                "title": title,
+            }
         except Exception as e:
             logger.error(f"Screenshot failed: {e}")
-            return f"Error taking screenshot: {str(e)}"
+            return {"type": "error", "message": f"Error taking screenshot: {str(e)}"}
     
     @registry.action(
-        description="Extract text content from the page or a specific element. Use a CSS selector to target specific elements, or leave empty to extract all visible text.",
+        description=BROWSER_EXTRACT,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
@@ -122,7 +163,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error extracting content: {str(e)}"
     
     @registry.action(
-        description="Get the current page URL.",
+        description=BROWSER_GET_URL,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
@@ -139,7 +180,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error getting URL: {str(e)}"
     
     @registry.action(
-        description="Get the current page title.",
+        description=BROWSER_GET_TITLE,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
@@ -156,7 +197,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error getting title: {str(e)}"
     
     @registry.action(
-        description="Get the text content of the current page.",
+        description=BROWSER_GET_CONTENT,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
@@ -173,7 +214,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error getting content: {str(e)}"
     
     @registry.action(
-        description="Scroll the page. Direction can be 'up', 'down', 'top', or 'bottom'.",
+        description=BROWSER_SCROLL,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
@@ -190,7 +231,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error scrolling: {str(e)}"
     
     @registry.action(
-        description="Go back to the previous page in browser history.",
+        description=BROWSER_BACK,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )
@@ -207,7 +248,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
             return f"Error going back: {str(e)}"
     
     @registry.action(
-        description="Wait for a specified number of seconds.",
+        description=BROWSER_WAIT,
         category=ToolCategory.BROWSER
     )
     async def browser_wait(seconds: int = 1) -> str:
@@ -217,7 +258,7 @@ def register_browser_tools(registry: Optional[ToolRegistry] = None) -> ToolRegis
         return f"Waited {seconds} seconds"
     
     @registry.action(
-        description="Send keyboard keys to the browser. Supports special keys like 'Enter', 'Tab', 'Escape', 'ArrowDown', etc.",
+        description=BROWSER_SEND_KEYS,
         category=ToolCategory.BROWSER,
         requires_context=["browser_session"]
     )

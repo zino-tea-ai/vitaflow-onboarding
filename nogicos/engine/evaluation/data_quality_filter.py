@@ -28,8 +28,8 @@ from anthropic import Anthropic
 try:
     from api_keys import setup_env
     setup_env()
-except ImportError:
-    pass
+except ImportError as e:
+    logger.debug(f"api_keys 模块未找到: {e}")
 
 logger = logging.getLogger(__name__)
 
@@ -164,14 +164,14 @@ def filter_and_score_runs(
     # 获取最近的 runs
     start_time = datetime.now() - timedelta(hours=hours)
     
-    print(f"\n{'='*60}")
-    print(f"NogicOS 数据质量过滤器")
-    print(f"{'='*60}")
-    print(f"项目: {project_name}")
-    print(f"时间范围: 最近 {hours} 小时")
-    print(f"质量阈值: {threshold}")
-    print(f"LLM 评分: {'是' if use_llm else '否'}")
-    print(f"{'='*60}\n")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"NogicOS 数据质量过滤器")
+    logger.info(f"{'='*60}")
+    logger.info(f"项目: {project_name}")
+    logger.info(f"时间范围: 最近 {hours} 小时")
+    logger.info(f"质量阈值: {threshold}")
+    logger.info(f"LLM 评分: {'是' if use_llm else '否'}")
+    logger.info(f"{'='*60}\n")
     
     runs = list(ls_client.list_runs(
         project_name=project_name,
@@ -179,7 +179,7 @@ def filter_and_score_runs(
         start_time=start_time,
     ))
     
-    print(f"找到 {len(runs)} 条记录\n")
+    logger.info(f"找到 {len(runs)} 条记录\n")
     
     stats = {
         "total": len(runs),
@@ -230,7 +230,7 @@ def filter_and_score_runs(
         
         # 打印进度
         quality_tag = "高" if final_score >= 8 else ("中" if final_score >= threshold else "低")
-        print(f"[{i}/{len(runs)}] 分数: {final_score:.1f} ({quality_tag}) - {task[:40]}...")
+        logger.info(f"[{i}/{len(runs)}] 分数: {final_score:.1f} ({quality_tag}) - {task[:40]}...")
         
         # 3. 打标签
         if not dry_run:
@@ -256,19 +256,19 @@ def filter_and_score_runs(
     avg_score = sum(stats["scores"]) / len(stats["scores"]) if stats["scores"] else 0
     total = stats["total"] if stats["total"] > 0 else 1  # 防止除零
     
-    print(f"\n{'='*60}")
-    print("统计结果")
-    print(f"{'='*60}")
-    print(f"总数: {stats['total']}")
+    logger.info(f"\n{'='*60}")
+    logger.info("统计结果")
+    logger.info(f"{'='*60}")
+    logger.info(f"总数: {stats['total']}")
     if stats['total'] > 0:
-        print(f"高质量 (>=8): {stats['high_quality']} ({stats['high_quality']/total*100:.1f}%)")
-        print(f"中等质量 ({threshold}-8): {stats['medium_quality']} ({stats['medium_quality']/total*100:.1f}%)")
-        print(f"低质量 (<{threshold}): {stats['low_quality']} ({stats['low_quality']/total*100:.1f}%)")
-        print(f"被拒绝: {stats['rejected']} ({stats['rejected']/total*100:.1f}%)")
-        print(f"平均分: {avg_score:.1f}")
+        logger.info(f"高质量 (>=8): {stats['high_quality']} ({stats['high_quality']/total*100:.1f}%)")
+        logger.info(f"中等质量 ({threshold}-8): {stats['medium_quality']} ({stats['medium_quality']/total*100:.1f}%)")
+        logger.info(f"低质量 (<{threshold}): {stats['low_quality']} ({stats['low_quality']/total*100:.1f}%)")
+        logger.info(f"被拒绝: {stats['rejected']} ({stats['rejected']/total*100:.1f}%)")
+        logger.info(f"平均分: {avg_score:.1f}")
     else:
-        print("没有找到数据，请扩大时间范围 (--hours)")
-    print(f"{'='*60}")
+        logger.info("没有找到数据，请扩大时间范围 (--hours)")
+    logger.info(f"{'='*60}")
     
     return stats
 
@@ -282,8 +282,8 @@ def create_quality_dataset(
     """从高质量数据创建数据集"""
     ls_client = Client()
     
-    print(f"\n创建高质量数据集: {dataset_name}")
-    print(f"最低分数: {min_score}")
+    logger.info(f"\n创建高质量数据集: {dataset_name}")
+    logger.info(f"最低分数: {min_score}")
     
     # 查询高分数据
     runs = list(ls_client.list_runs(
@@ -294,7 +294,7 @@ def create_quality_dataset(
     ))
     
     if not runs:
-        print("未找到高质量数据，尝试查询所有成功的 runs...")
+        logger.info("未找到高质量数据，尝试查询所有成功的 runs...")
         runs = list(ls_client.list_runs(
             project_name=project_name,
             execution_order=1,
@@ -302,7 +302,7 @@ def create_quality_dataset(
             limit=limit,
         ))
     
-    print(f"找到 {len(runs)} 条符合条件的数据")
+    logger.info(f"找到 {len(runs)} 条符合条件的数据")
     
     # 创建数据集
     try:
@@ -335,7 +335,7 @@ def create_quality_dataset(
                 except Exception as e:
                     logger.warning(f"添加示例失败: {e}")
     
-    print(f"成功添加 {added} 条高质量数据到 {dataset_name}")
+    logger.info(f"成功添加 {added} 条高质量数据到 {dataset_name}")
 
 
 def main():
@@ -349,8 +349,8 @@ def main():
     parser.add_argument("--min-score", type=float, default=7.0, help="数据集最低分数")
     
     args = parser.parse_args()
-    
-    logging.basicConfig(level=logging.WARNING)
+
+    logging.basicConfig(level=logging.INFO)
     
     if args.create_dataset:
         create_quality_dataset(

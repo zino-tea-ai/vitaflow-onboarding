@@ -105,25 +105,16 @@ from engine.agent.imports import (
     BROWSER_SESSION_AVAILABLE,
     get_browser_session,
     close_browser_session,
+    # Verification
+    VERIFICATION_AVAILABLE,
+    AnswerVerifier,
+    verify_answer,
+    # Context Injection
+    CONTEXT_INJECTION_AVAILABLE,
+    ContextInjector,
+    ContextConfig,
+    get_context_injector,
 )
-
-# Verification module (optional)
-try:
-    from engine.agent.verification import AnswerVerifier, verify_answer
-    VERIFICATION_AVAILABLE = True
-except ImportError:
-    VERIFICATION_AVAILABLE = False
-    AnswerVerifier = None
-
-# Context injection module (Cursor-style context)
-try:
-    from engine.context import ContextInjector, ContextConfig, get_context_injector
-    CONTEXT_INJECTION_AVAILABLE = True
-except ImportError:
-    CONTEXT_INJECTION_AVAILABLE = False
-    ContextInjector = None
-    ContextConfig = None
-    get_context_injector = None
 
 
 @dataclass
@@ -145,6 +136,60 @@ class ReflectionResult:
     issues: List[str] = field(default_factory=list)
 
 
+# =============================================================================
+# SYSTEM PROMPTS (Multiple versions for different scenarios)
+# =============================================================================
+
+# STANDARD: For tool-based tasks (~800 tokens, down from ~1500)
+# Used for most tasks that need tools but not complex reasoning
+STANDARD_SYSTEM_PROMPT_TEMPLATE = """You are NogicOS, an autonomous AI agent. ACT first, explain later.
+
+## Capabilities
+{tools_section}
+
+## Core Behavior
+- You are an AGENT, not a chatbot. Take action, show results.
+- Default: ACT, don't ask. Only ask when truly necessary.
+- Complete tasks efficiently (target: ≤8 tool calls)
+
+## Tool Selection
+- For file queries: use `list_directory` (accurate) over `desktop_screenshot` (visual)
+- Only use screenshot for explicit visual requests
+
+## Context Resolution
+- "它/这个" → Last operated file
+- "刚才的" → Last operation result  
+- "桌面" → C:\\Users\\WIN\\Desktop
+
+## Handling Ambiguous Requests (IMPORTANT)
+
+When the user's request is vague or ambiguous (like "帮我整理", "优化这个", "看看这个"):
+
+**DO NOT** silently make assumptions. Instead:
+1. Ask 1-2 SHORT clarifying questions
+2. Suggest 2-3 possible interpretations as options
+
+Example for "帮我整理一下":
+```
+我可以帮你整理，请告诉我：
+- 整理什么？ 桌面文件 / 代码 / 文档 / 其他
+- 怎么整理？ 按类型分类 / 按日期排序 / 删除冗余
+
+或者你可以直接告诉我具体要整理的内容。
+```
+
+**ONLY ask when truly ambiguous.** If context is clear, ACT immediately.
+
+## Response Style
+- Chinese by default, match user's language
+- Max 3 sentences for simple tasks
+- Use lists for multiple items
+- No menus or capability listings
+
+Now execute the user's request."""
+
+# FULL: For complex reasoning tasks (~1500 tokens)
+# Used when _needs_extended_thinking = True (code gen, analysis, writing)
 # Base System Prompt template - tool list will be dynamically generated
 REACT_SYSTEM_PROMPT_TEMPLATE = """You are NogicOS, an autonomous AI agent. You ACT first, explain later.
 
@@ -176,9 +221,95 @@ You are NOT a chatbot. You are an AGENT. The difference:
 - After executing tools, provide a complete response - don't iterate unnecessarily
 - If the task is complete, say so and stop
 
-## Understanding User Intent
+## Tool Selection Guidelines
 
-When user says something vague, INTERPRET and ACT:
+**Use specialized tools over general commands:**
+
+| Task | Preferred Tool | Avoid |
+|------|---------------|-------|
+| List directory | list_directory | shell_execute('ls') |
+| Read file | read_file | shell_execute('cat') |
+| Find by pattern | glob_search | shell_execute('find') |
+| Search content | grep_search | shell_execute('grep') |
+| Navigate web | browser_navigate | curl/wget |
+
+**Each tool description includes WHEN TO USE / WHEN NOT TO USE - follow them strictly.**
+
+When uncertain between tools:
+1. Check the tool's "WHEN TO USE" section
+2. Choose the more specific tool over general ones
+3. Prefer tools that return structured data over raw output
+
+## Browser Task Rules (CRITICAL - NO HALLUCINATION)
+
+When performing browser tasks (navigate, screenshot, extract):
+
+**YOU MUST:**
+1. Base ALL information on actual tool results, NOT your training data
+2. If browser_screenshot returns an image + page_content, use THAT content
+3. If a tool fails, tell the user it failed - don't make up results
+4. For time-sensitive info (dates, prices, events), ONLY use extracted data
+
+**YOU MUST NOT:**
+- Invent or guess webpage content based on your knowledge
+- Provide outdated information from training data for live websites
+- Assume you know what a page says without actually extracting it
+- Describe a screenshot without actually seeing the image
+
+**Example - WRONG:**
+```
+User: "帮我看看YC官网"
+[browser_navigate succeeds]
+[browser_screenshot fails]
+Agent: "YC的申请截止日期是2025年4月1日..." ← HALLUCINATION from training data!
+```
+
+**Example - CORRECT:**
+```
+User: "帮我看看YC官网"
+[browser_navigate succeeds]  
+[browser_screenshot fails]
+Agent: "我成功打开了YC官网，但截图失败了。如果你需要具体信息，我可以尝试用browser_extract提取页面文字。"
+```
+
+## Avoiding Over-Engineering
+
+**Only do what's directly requested:**
+
+- A simple request doesn't need extra features
+- Don't add error handling for impossible scenarios  
+- Don't refactor surrounding code when fixing a bug
+- Don't add configurability unless asked
+- Complete the task, then STOP - don't iterate to "improve"
+
+**Signs you're over-engineering:**
+- Adding features the user didn't ask for
+- Creating abstractions for one-time operations
+- Adding validation for internal inputs
+- "While I'm here, let me also..."
+
+## Handling Ambiguous Requests (CRITICAL)
+
+When the user's request is vague or truly ambiguous (like "帮我整理", "优化这个", "看看这个"):
+
+**DO NOT** silently make assumptions. Instead:
+1. Ask 1-2 SHORT clarifying questions
+2. Suggest 2-3 possible interpretations as options
+
+Example for "帮我整理一下":
+```
+我可以帮你整理，请告诉我：
+- 整理什么？ 桌面文件 / 代码 / 文档 / 其他
+- 怎么整理？ 按类型分类 / 按日期排序 / 删除冗余
+
+或者你可以直接告诉我具体要整理的内容。
+```
+
+**ONLY ask when truly ambiguous.** If context provides hints, ACT immediately.
+
+## Understanding User Intent (When Context is Clear)
+
+When user says something vague BUT context is clear, INTERPRET and ACT:
 | User says | You understand | You do |
 |-----------|---------------|--------|
 | "整理桌面" | Organize desktop files | list_directory → create folders → move files |
@@ -262,9 +393,20 @@ If a path is protected, skip it silently and continue with others. Don't ask per
 
 ## Response Style
 
-- **Be brief**: No lengthy explanations unless asked
-- **Be action-oriented**: "已移动 5 个文件到 文档 文件夹" not "我可以帮你移动文件..."
-- **Match language**: 用户说中文，你回中文
+**Be action-oriented and concise:**
+
+- **Report results, not process**: "已移动 5 个文件" ✓ NOT "我准备帮你移动文件..."
+- **Maximum 3 sentences** for simple tasks, 5 for complex
+- **Use lists** for multiple items - no paragraphs for file listings
+- **Skip tool explanations** - don't explain what list_directory does
+- **Match language**: 用户说中文，你回中文；English if they write English
+
+**What NOT to include:**
+- Don't explain your reasoning unless asked
+- Don't announce what you're about to do - just do it
+- Don't list your capabilities
+- Don't ask "need anything else?" - wait for user
+- Don't repeat the user's request back to them
 - **No menus**: Don't list what you CAN do. Just DO what they asked.
 
 ## ANTI-PATTERNS (Never do these)
@@ -290,15 +432,15 @@ If a path is protected, skip it silently and continue with others. Don't ask per
 Now execute the user's request. Act first, explain briefly after."""
 
 
-def build_system_prompt(registry: ToolRegistry) -> str:
-    """
-    Build system prompt dynamically from tool registry.
+def _build_tools_section(registry: ToolRegistry, compact: bool = False) -> str:
+    """Build tools section from registry.
     
     Args:
         registry: Tool registry with all registered tools
+        compact: If True, use shorter descriptions
         
     Returns:
-        Complete system prompt with tool descriptions
+        Formatted tools section string
     """
     tools = registry.get_all()
     
@@ -308,37 +450,63 @@ def build_system_prompt(registry: ToolRegistry) -> str:
     other_tools = []
     
     for tool in tools:
-        if tool.category == ToolCategory.BROWSER:
-            browser_tools.append(f"- {tool.name}: {tool.description}")
-        elif tool.category == ToolCategory.LOCAL:
-            local_tools.append(f"- {tool.name}: {tool.description}")
+        if compact:
+            # Compact: just name
+            desc = f"- {tool.name}"
         else:
-            other_tools.append(f"- {tool.name}: {tool.description}")
+            # Full: name + description
+            desc = f"- {tool.name}: {tool.description}"
+            
+        if tool.category == ToolCategory.BROWSER:
+            browser_tools.append(desc)
+        elif tool.category == ToolCategory.LOCAL:
+            local_tools.append(desc)
+        else:
+            other_tools.append(desc)
     
     # Build tools section
     tools_sections = []
     
     if browser_tools:
-        tools_sections.append("**Browser Tools:**")
+        tools_sections.append("**Browser:**" if compact else "**Browser Tools:**")
         tools_sections.extend(browser_tools)
-        tools_sections.append("")  # Empty line
+        tools_sections.append("")
     
     if local_tools:
-        tools_sections.append("**Local Tools:**")
+        tools_sections.append("**Local:**" if compact else "**Local Tools:**")
         tools_sections.extend(local_tools)
-        tools_sections.append("")  # Empty line
+        tools_sections.append("")
     
     if other_tools:
-        tools_sections.append("**Other Tools:**")
+        tools_sections.append("**Other:**" if compact else "**Other Tools:**")
         tools_sections.extend(other_tools)
-        tools_sections.append("")  # Empty line
+        tools_sections.append("")
     
     tools_section = "\n".join(tools_sections).strip()
+    return tools_section or "No tools available."
+
+
+def build_system_prompt(registry: ToolRegistry, mode: str = "full") -> str:
+    """
+    Build system prompt dynamically from tool registry.
     
-    # If no tools, provide fallback
-    if not tools_section:
-        tools_section = "No tools available."
+    Args:
+        registry: Tool registry with all registered tools
+        mode: "simple" | "standard" | "full"
+            - simple: No tools, minimal prompt (~50 tokens)
+            - standard: Compact prompt for tool tasks (~800 tokens)
+            - full: Complete prompt for complex reasoning (~1500 tokens)
+        
+    Returns:
+        Complete system prompt with tool descriptions
+    """
+    if mode == "standard":
+        # Compact tools section for standard mode
+        tools_section = _build_tools_section(registry, compact=True)
+        return STANDARD_SYSTEM_PROMPT_TEMPLATE.format(tools_section=tools_section)
     
+    # Full mode (default)
+    tools_section = _build_tools_section(registry, compact=False)
     return REACT_SYSTEM_PROMPT_TEMPLATE.format(tools_section=tools_section)
 
 
@@ -369,35 +537,57 @@ def format_operation_history(session_id: str) -> str:
     - Last operated objects (for "它", "这个")
     - Last destination (for "那里", "那个文件夹")
     - Reversible operations (for "还原", "撤销")
+    - Last error context (for retry logic)
     """
     history = get_session_history(session_id)
     if not history:
-        return "No operations yet. (User references like '刚才' have no target)"
+        return "<operation_context>\nNo operations yet. (User references like '刚才' have no target)\n</operation_context>"
     
-    lines = []
+    lines = ["<operation_context>"]
     
     # Extract key references for pronoun resolution
     last_file = None
     last_folder = None
     last_destination = None
+    last_error = None
+    last_error_tool = None
     reversible_ops = []
     
     for op in history[-10:]:
         tool = op.get("tool", "")
         args = op.get("args", {})
         success = op.get("success", False)
+        error = op.get("error", "")
+        
+        # Track errors for retry context
+        if not success and error:
+            last_error = error
+            last_error_tool = tool
         
         # Track references
         if tool == "move_file" and success:
             last_file = args.get("source", "")
             last_destination = args.get("destination", "")
-            reversible_ops.append(f"move {last_file} → {last_destination}")
+            reversible_ops.append({
+                "type": "move",
+                "from": last_file,
+                "to": last_destination
+            })
         elif tool == "create_directory" and success:
             last_folder = args.get("path", "")
-            reversible_ops.append(f"create folder {last_folder}")
+            reversible_ops.append({
+                "type": "create_dir",
+                "path": last_folder
+            })
         elif tool == "delete_file" and success:
             last_file = args.get("path", "")
-            reversible_ops.append(f"delete {last_file}")
+            reversible_ops.append({
+                "type": "delete",
+                "path": last_file
+            })
+        elif tool == "copy_file" and success:
+            last_file = args.get("source", "")
+            last_destination = args.get("destination", "")
         elif tool in ["list_directory", "read_file"]:
             path = args.get("path", "") or args.get("file_path", "")
             if path:
@@ -406,21 +596,45 @@ def format_operation_history(session_id: str) -> str:
                 else:
                     last_folder = path
     
-    # Reference resolution section
-    lines.append("**Reference Targets:**")
+    # Reference resolution section with XML tags
+    lines.append("<reference_targets>")
     if last_file:
-        lines.append(f"- '它'/'这个文件' = {last_file}")
+        lines.append(f"  <last_file description=\"它/这个文件\">{last_file}</last_file>")
     if last_folder:
-        lines.append(f"- '那个文件夹' = {last_folder}")
+        lines.append(f"  <last_folder description=\"那个文件夹\">{last_folder}</last_folder>")
     if last_destination:
-        lines.append(f"- '那里'/'同样位置' = {last_destination}")
+        lines.append(f"  <last_destination description=\"那里/同样位置\">{last_destination}</last_destination>")
     
     if not (last_file or last_folder or last_destination):
-        lines.append("- (No specific targets yet)")
+        lines.append("  (No specific targets yet)")
+    lines.append("</reference_targets>")
     
     # Reversible operations for "撤销"
     if reversible_ops:
-        lines.append(f"\n**Last reversible action:** {reversible_ops[-1]}")
+        last_op = reversible_ops[-1]
+        lines.append("<reversible_operation>")
+        if last_op["type"] == "move":
+            lines.append(f"  Type: move")
+            lines.append(f"  From: {last_op['from']}")
+            lines.append(f"  To: {last_op['to']}")
+            lines.append(f"  Undo: move_file(source=\"{last_op['to']}\", destination=\"{last_op['from']}\")")
+        elif last_op["type"] == "create_dir":
+            lines.append(f"  Type: create_directory")
+            lines.append(f"  Path: {last_op['path']}")
+            lines.append(f"  Undo: delete_file(path=\"{last_op['path']}\")")
+        elif last_op["type"] == "delete":
+            lines.append(f"  Type: delete (NOT reversible)")
+            lines.append(f"  Path: {last_op['path']}")
+        lines.append("</reversible_operation>")
+    
+    # Last error context for retry
+    if last_error:
+        lines.append("<last_error>")
+        lines.append(f"  Tool: {last_error_tool}")
+        lines.append(f"  Error: {last_error[:200]}")
+        lines.append("</last_error>")
+    
+    lines.append("</operation_context>")
     
     # Operation timeline
     lines.append("\n**Recent operations:**")
@@ -539,6 +753,10 @@ class ReActAgent:
         
         # Mode router for Agent/Ask/Plan modes (Cursor-style)
         self.mode_router = get_mode_router()
+        
+        # P2: Browser failure tracking for fast-fail mechanism
+        self._browser_consecutive_failures: int = 0
+        self._browser_max_consecutive_failures: int = 2  # Fail fast after 2 consecutive failures
     
     def _refresh_tool_categories(self) -> None:
         """Refresh tool categories cache from registry"""
@@ -547,60 +765,86 @@ class ReActAgent:
             self._tool_categories_cache[tool.name] = tool.category.value
         logger.debug(f"Refreshed tool categories: {len(self._tool_categories_cache)} tools")
     
-    def _is_simple_chat(self, task: str) -> bool:
+    def _is_ambiguous_task(self, task: str) -> bool:
         """
-        Detect if task is simple chat that doesn't need tools.
+        Detect if task is ambiguous and requires clarification.
         
-        Simple chats include:
-        - Greetings (hi, hello, 你好, etc.)
-        - Confirmations (yes, no, ok, etc.)
-        - Basic questions about the AI
+        Ambiguous tasks have action intent but lack specific target/context:
+        - "帮我整理一下" (整理什么? 怎么整理?)
+        - "优化这个" (优化什么? 哪方面?)
+        - "看看这个" (看什么? 在哪里?)
         
-        NOT simple (needs tools):
-        - Tasks with action verbs (看、找、打开、列出, etc.)
-        - Any request that implies file/browser/system operations
+        NOT ambiguous (specific enough to act):
+        - "整理桌面" (target: 桌面)
+        - "优化这个Python代码" (target: Python代码)
+        - "看看当前目录" (target: 当前目录)
+        
+        Note: Ambiguous check takes priority over simple check for action verbs.
         
         Returns:
-            True if task is simple chat (no tools needed)
+            True if task is ambiguous and needs follow-up questions
         """
         task_lower = task.lower().strip()
         
-        # Action verbs indicate tool usage is needed (NOT simple)
-        action_patterns = [
-            # Chinese action verbs
-            '看', '找', '打开', '列出', '运行', '创建', '删除', '移动', '复制',
-            '搜索', '查找', '整理', '修改', '编辑', '下载', '上传', '安装',
-            '桌面', '文件', '文件夹', '目录', '浏览器', '网页', '网站',
-            # English action verbs
-            'look', 'find', 'open', 'list', 'run', 'create', 'delete', 'move', 'copy',
-            'search', 'organize', 'modify', 'edit', 'download', 'upload', 'install',
-            'desktop', 'file', 'folder', 'directory', 'browser', 'website', 'page',
-            'show me', 'tell me about', 'what is in', 'what\'s in',
+        # Ambiguous patterns: action verb + vague pronoun/phrase
+        # These are tasks where user expects action but target is unclear
+        ambiguous_patterns = [
+            # Chinese: action + vague reference
+            r'^帮我?整理一下$',
+            r'^整理一下$',
+            r'^帮我?优化一下$',
+            r'^优化一下$',
+            r'^帮我?看看$',
+            r'^看看这个$',
+            r'^看一下$',
+            r'^帮我?处理一下$',
+            r'^处理一下$',
+            r'^帮我?改一下$',
+            r'^改一下$',
+            r'^帮我?弄一下$',
+            r'^弄一下$',
+            r'^帮我?做一下$',
+            r'^做一下$',
+            # English
+            r'^organize this$',
+            r'^clean this up$',
+            r'^fix this$',
+            r'^help me with this$',
+            r'^check this$',
+            r'^look at this$',
         ]
-        if any(p in task_lower for p in action_patterns):
-            return False  # Needs tools
         
-        # Greeting patterns (simple)
-        greetings = {'hi', 'hello', 'hey', '你好', '嗨', 'hola', 'bonjour', 'yo', 'sup'}
-        if task_lower in greetings or any(task_lower.startswith(g) for g in greetings):
-            return True
+        import re
+        for pattern in ambiguous_patterns:
+            if re.search(pattern, task_lower):
+                return True
         
-        # Very short messages without action intent (simple)
-        if len(task) < 6:
-            return True
+        # Short task with action verb but no specific target
+        # "整理" alone is ambiguous, "整理桌面" is not
+        if len(task) < 10:
+            vague_verbs = ['整理', '优化', '处理', '修改', '改', '弄', '做', 'fix', 'check', 'organize']
+            has_verb = any(v in task_lower for v in vague_verbs)
+            # Check if there's a specific target (file, directory, etc.)
+            specific_targets = ['桌面', '文件', '代码', '目录', 'desktop', 'file', 'code', 'directory', '.py', '.js', '.md']
+            has_target = any(t in task_lower for t in specific_targets)
+            
+            if has_verb and not has_target:
+                return True
         
-        # Confirmation patterns (simple)
-        confirmations = {'yes', 'no', 'ok', 'okay', '好', '是', '否', 'sure', 'yep', 'nope'}
-        if task_lower in confirmations:
-            return True
-        
-        # Simple questions about the AI (simple)
-        simple_patterns = ['how are you', 'what time', "what's up", '怎么样', '你是谁', 'who are you']
-        if any(p in task_lower for p in simple_patterns):
-            return True
-        
-        # Default: not simple (give tools)
         return False
+
+    def _needs_extended_thinking(self, task: str, classification: Optional[Any] = None) -> bool:
+        """
+        Determine if task requires Extended Thinking.
+        
+        All tasks use Extended Thinking for intelligent, Cursor-like experience.
+        This adds 2-3s latency but provides visible thinking process.
+
+        Returns:
+            True - Always enable thinking for all tasks
+        """
+        # Always enable thinking for intelligent feel
+        return True
     
     async def cleanup_browser_session(self) -> None:
         """
@@ -642,6 +886,93 @@ class ReActAgent:
         else:
             # Mixed or unknown: return all
             return all_tools
+    
+    def _get_tools_by_task_keywords(self, task: str) -> List[Dict[str, Any]]:
+        """
+        Get tools filtered by task keywords (on-demand loading).
+        
+        This is a more fine-grained tool selection based on task content,
+        reducing the number of tools sent to the model for faster responses.
+        
+        P1 Optimization: Tool categories mapping:
+        - File operations: list_directory, read_file, write_file, move_file, etc.
+        - Browser operations: browser_navigate, browser_click, browser_type, etc.
+        - Desktop operations: desktop_screenshot, desktop_click, etc.
+        - Search: web_search, grep_search
+        - Memory: save_memory, get_memory
+        
+        Args:
+            task: User's task description
+            
+        Returns:
+            List of relevant tools in Anthropic format
+        """
+        task_lower = task.lower()
+        all_tools = self.registry.to_anthropic_format()
+        
+        # Define keyword-to-tool-names mapping
+        KEYWORD_TOOLS = {
+            # File operations
+            'file_ops': {
+                'keywords': ['文件', '目录', '文件夹', 'file', 'directory', 'folder', '读', '写', 
+                            '创建', '删除', '移动', '复制', 'read', 'write', 'create', 'delete', 
+                            'move', 'copy', '列出', 'list', '打开', 'open'],
+                'tools': ['list_directory', 'read_file', 'write_file', 'move_file', 
+                         'create_directory', 'delete_file', 'rename_file', 'file_exists']
+            },
+            # Browser operations
+            'browser_ops': {
+                'keywords': ['浏览器', '网页', '网站', 'browser', 'website', 'web', 'page', 
+                            '打开网', '访问', 'url', 'http', '搜索网', 'google', 'bing'],
+                'tools': ['browser_navigate', 'browser_click', 'browser_type', 'browser_scroll',
+                         'browser_extract_text', 'browser_screenshot', 'browser_get_url']
+            },
+            # Desktop operations  
+            'desktop_ops': {
+                'keywords': ['桌面', '截图', '屏幕', 'desktop', 'screenshot', 'screen', 
+                            '看看桌面', '桌面上'],
+                'tools': ['desktop_screenshot', 'desktop_click', 'desktop_type', 'desktop_scroll']
+            },
+            # Search operations
+            'search_ops': {
+                'keywords': ['搜索', '查找', 'search', 'find', 'grep', '查'],
+                'tools': ['web_search', 'grep_search', 'find_files']
+            },
+            # Memory operations
+            'memory_ops': {
+                'keywords': ['记住', '记忆', '保存', 'remember', 'memory', 'save'],
+                'tools': ['save_memory', 'get_memory', 'list_memories']
+            },
+            # Code operations
+            'code_ops': {
+                'keywords': ['代码', '函数', '写代码', 'code', 'function', 'script', '脚本', 
+                            'python', 'javascript', 'typescript', '.py', '.js', '.ts'],
+                'tools': ['write_file', 'read_file', 'grep_search', 'run_command']
+            },
+        }
+        
+        # Collect relevant tool names based on keywords
+        relevant_tool_names = set()
+        for category, config in KEYWORD_TOOLS.items():
+            if any(kw in task_lower for kw in config['keywords']):
+                relevant_tool_names.update(config['tools'])
+        
+        # If no keywords matched, return all tools (fallback)
+        if not relevant_tool_names:
+            logger.debug(f"[Agent] No keyword match for '{task[:50]}...', using all tools")
+            return all_tools
+        
+        # Filter tools by names
+        filtered_tools = [t for t in all_tools if t['name'] in relevant_tool_names]
+        
+        # Always include essential tools
+        essential_tools = ['list_directory', 'read_file']  # Basic file ops always useful
+        for tool in all_tools:
+            if tool['name'] in essential_tools and tool not in filtered_tools:
+                filtered_tools.append(tool)
+        
+        logger.info(f"[Agent] Keyword-based tool selection: {len(filtered_tools)}/{len(all_tools)} tools for '{task[:30]}...'")
+        return filtered_tools
     
     def _build_system_prompt_with_history(self, session_id: str, task: str = "") -> str:
         """
@@ -1107,6 +1438,75 @@ class ReActAgent:
             issues=issues,
         )
     
+    def _format_screenshot_result(self, tool_use_id: str, output: Any) -> Dict[str, Any]:
+        """
+        Format browser_screenshot result for Claude's multimodal API.
+        
+        Converts structured screenshot data to Claude's content format with:
+        - Image block (base64 PNG)
+        - Text block (page content for context)
+        
+        Args:
+            tool_use_id: The tool use ID for this result
+            output: The structured output from browser_screenshot
+            
+        Returns:
+            Tool result in Claude's multimodal format
+        """
+        # Handle dict output from new browser_screenshot
+        if isinstance(output, dict):
+            if output.get("type") == "browser_screenshot":
+                # Build multimodal content blocks
+                content_blocks = []
+                
+                # Add image block (Claude vision format)
+                if output.get("image_base64"):
+                    content_blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": output["image_base64"],
+                        }
+                    })
+                
+                # Add text context block
+                text_context = []
+                if output.get("url"):
+                    text_context.append(f"URL: {output['url']}")
+                if output.get("title"):
+                    text_context.append(f"Title: {output['title']}")
+                if output.get("page_content"):
+                    text_context.append(f"\nPage Content:\n{output['page_content']}")
+                
+                if text_context:
+                    content_blocks.append({
+                        "type": "text",
+                        "text": "\n".join(text_context),
+                    })
+                
+                logger.info(f"[Agent] Formatted screenshot with {len(content_blocks)} content blocks")
+                
+                return {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content_blocks,
+                }
+            
+            elif output.get("type") == "error":
+                return {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": f"Screenshot failed: {output.get('message', 'Unknown error')}",
+                }
+        
+        # Fallback: treat as string (old format)
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": str(output),
+        }
+    
     def _detect_loop(self, tool_calls: List[Dict[str, Any]], window: int = 3) -> bool:
         """
         Detect if the agent is stuck in a repetitive loop.
@@ -1233,6 +1633,10 @@ class ReActAgent:
                 error=f"Failed to generate plan: {e}",
             )
     
+    # ===========================================
+    # FAST PATH METHODS (Cursor-style optimization)
+    # ===========================================
+    
     async def run(
         self,
         task: str,
@@ -1307,6 +1711,7 @@ class ReActAgent:
         
         # ===========================================
         # PHASE 1: Task Classification
+        # All tasks go through full pipeline for "intelligent" feel
         # ===========================================
         classification = None
         task_type_str = "local"  # Default to local
@@ -1329,16 +1734,26 @@ class ReActAgent:
                 })
         
         # ===========================================
-        # PHASE 2: Tool Selection based on task type AND mode
+        # PHASE 2: Tool Selection (two-stage filtering)
+        # Stage 1: Filter by task type (browser/local/mixed)
+        # Stage 2: Filter by keywords (on-demand loading)
         # ===========================================
+        
+        # Stage 1: Task type filtering
         tools = self._get_tools_by_task_type(task_type_str)
+        initial_count = len(tools)
+        
+        # Stage 2: Keyword-based on-demand loading (P1 optimization)
+        # Only apply if task type didn't restrict much (mixed = all tools)
+        if task_type_str == "mixed" and len(tools) > 20:
+            tools = self._get_tools_by_task_keywords(task)
         
         # Filter tools based on mode (ASK mode = read-only tools only)
         if mode in (AgentMode.ASK, AgentMode.PLAN):
             tools = self.mode_router.get_allowed_tools(mode, tools)
             logger.info(f"[Agent] Mode {mode.value}: filtered to {len(tools)} read-only tools")
         
-        logger.info(f"Using {len(tools)} tools for {task_type_str} task in {mode.value} mode")
+        logger.info(f"Using {len(tools)} tools (from {initial_count}) for {task_type_str} task in {mode.value} mode")
         
         # ===========================================
         # PHASE 2.5: Browser Session Initialization
@@ -1375,15 +1790,11 @@ class ReActAgent:
                             "complexity": plan.complexity.value,
                         })
         
-        # Early simple chat detection for optimization
-        is_simple_chat = self._is_simple_chat(task)
-        if is_simple_chat:
-            logger.info(f"[Agent] Simple chat detected early, will skip memory search")
+        # All tasks go through memory search for intelligent context
         
         # Build system prompt with session history and long-term memory (async)
-        # Skip memory search for simple chats to save ~3s
         system_prompt = await self._build_system_prompt_with_memory(
-            session_id, task, skip_memory=is_simple_chat
+            session_id, task, skip_memory=False  # Complex tasks need memory
         )
         
         # Add mode-specific prompt modifier (ASK/PLAN modes)
@@ -1427,6 +1838,21 @@ class ReActAgent:
             except Exception as e:
                 logger.warning(f"[Context] Failed to inject context: {e}")
         
+        # Hook system context injection (browser/desktop/file awareness)
+        try:
+            from engine.context import get_context_store
+            hook_store = get_context_store()
+            hook_context = hook_store.format_context_prompt()
+            
+            if hook_context:
+                # Inject hook context at the beginning of user content
+                user_content = f"{hook_context}\n\n{user_content}"
+                logger.debug("[Context] Injected Hook system context")
+        except ImportError:
+            pass  # Hook system not available
+        except Exception as e:
+            logger.warning(f"[Context] Failed to inject Hook context: {e}")
+        
         if plan and len(plan.steps) > 1:
             plan_text = "\n".join([f"{i+1}. {step}" for i, step in enumerate(plan.steps)])
             user_content = f"{user_content}\n\n**Suggested Plan:**\n{plan_text}\n\nFollow this plan step by step."
@@ -1458,11 +1884,20 @@ class ReActAgent:
         if had_warm_cache:
             logger.debug(f"Session {session_id} had pre-warmed cache")
         
+        # P2: Reduced max_iterations for browser tasks (faster failure detection)
+        effective_max_iterations = self.max_iterations
+        if task_type_str == "browser":
+            effective_max_iterations = min(self.max_iterations, 12)  # Browser: max 12 iterations
+            logger.info(f"[Agent] Browser task: reduced max_iterations to {effective_max_iterations}")
+        
+        # Reset browser failure counter at task start
+        self._browser_consecutive_failures = 0
+        
         # Visualization: task start
         if VISUALIZATION_AVAILABLE and self.status_server:
-            await visualize_task_start(self.status_server, max_steps=self.max_iterations)
+            await visualize_task_start(self.status_server, max_steps=effective_max_iterations)
         
-        while iteration < self.max_iterations:
+        while iteration < effective_max_iterations:
             iteration += 1
             
             try:
@@ -1471,45 +1906,63 @@ class ReActAgent:
                 tool_uses = []
                 current_tool_args = ""  # Accumulate tool args JSON
                 current_tool_index = -1
-                
+
                 # Build API call params
-                # Dynamically adjust model and Extended Thinking based on task complexity
-                is_simple = is_simple_chat  # Use early detection result
-                logger.info(f"[Agent] Task '{task[:30]}...' is_simple={is_simple}")
+                # All tasks go through full processing for intelligent responses
                 
-                # Extended Thinking requires Opus model (Sonnet doesn't support it)
-                # Always use Opus for consistent UX with thinking feedback
-                # Simple chats: smaller thinking budget + output for fast response
-                thinking_budget = 2048 if is_simple else 4096
-                max_tokens = 2048 if is_simple else 16384
-                
+                # TTFT Optimization: Most tool tasks don't need extended thinking
+                use_thinking = self._needs_extended_thinking(task, classification)
+
+                logger.info(f"[Agent] Task '{task[:30]}...' needs_thinking={use_thinking}")
+
+                # Model selection: Opus for tool tasks (need tool calling capability)
+                use_model = self.model  # Opus
+                max_tokens = 16384
+
                 api_params = {
-                    "model": self.model,  # Always Opus for thinking support
+                    "model": use_model,
                     "max_tokens": max_tokens,
                     "messages": messages,
-                    "thinking": {
-                        "type": "enabled",
-                        "budget_tokens": thinking_budget,
-                    },
                 }
-                # Only include tools if we have any (empty array causes API error)
-                if not is_simple and tools:
-                    # Use cached tools when caching is enabled for better performance
+
+                # Only enable Extended Thinking for tasks that benefit from it
+                # This is the KEY TTFT optimization: most tool tasks don't need thinking
+                if use_thinking:
+                    api_params["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": 4096,
+                    }
+
+                # Include tools for all tasks that reach here
+                if tools:
                     if use_caching:
                         api_params["tools"] = self._build_cached_tools(tools)
                     else:
                         api_params["tools"] = tools
-                logger.info(f"[Agent] {'Simple' if is_simple else 'Complex'} chat: {self.model}, thinking={thinking_budget}, max_tokens={max_tokens}, tools={len(tools) if not is_simple else 0}, caching={use_caching}")
                 
-                # Extended Thinking requires beta header
-                # Combine with prompt caching header if using caching
-                beta_headers = [self.THINKING_BETA]
-                if use_caching:
-                    beta_headers.append(self.PROMPT_CACHE_BETA)
-                    api_params["system"] = self._build_cached_system(system_prompt)
+                logger.info(f"[Agent] Tool task: {use_model}, thinking={use_thinking}, max_tokens={max_tokens}, tools={len(tools) if tools else 0}")
+                
+                # System prompt selection based on whether thinking is enabled
+                if use_thinking:
+                    # Complex reasoning tasks get full prompt
+                    beta_headers = [self.THINKING_BETA]
+                    if use_caching:
+                        beta_headers.append(self.PROMPT_CACHE_BETA)
+                        api_params["system"] = self._build_cached_system(system_prompt)
+                    else:
+                        api_params["system"] = system_prompt
+                    api_params["extra_headers"] = {"anthropic-beta": ",".join(beta_headers)}
+                    logger.debug(f"[Agent] Using FULL prompt (~1500 tokens) with thinking")
                 else:
-                    api_params["system"] = system_prompt
-                api_params["extra_headers"] = {"anthropic-beta": ",".join(beta_headers)}
+                    # Standard tool tasks get compact prompt
+                    standard_prompt = build_system_prompt(self.registry, mode="standard")
+                    if use_caching:
+                        beta_headers = [self.PROMPT_CACHE_BETA]
+                        api_params["system"] = self._build_cached_system(standard_prompt)
+                        api_params["extra_headers"] = {"anthropic-beta": ",".join(beta_headers)}
+                    else:
+                        api_params["system"] = standard_prompt
+                    logger.debug(f"[Agent] Using STANDARD prompt (~800 tokens)")
                 
                 # Track thinking state
                 is_thinking = False
@@ -1682,15 +2135,15 @@ class ReActAgent:
                                 message_id, tool_id, tool_name
                             )
                         
-                        # Execute with timeout
+                        # Execute with timeout (P0: increased from 10s to 15s)
                         try:
                             result = await asyncio.wait_for(
                                 self._execute_with_retry(tool_name, tool_args),
-                                timeout=10.0  # 10 second timeout per tool
+                                timeout=15.0  # 15 second timeout per tool
                             )
                         except asyncio.TimeoutError:
                             from engine.tools.base import ToolResult
-                            result = ToolResult(success=False, output="", error="Tool execution timed out (10s)")
+                            result = ToolResult(success=False, output="", error="Tool execution timed out (15s)")
                         
                         # Stream tool result
                         if on_tool_end:
@@ -1742,14 +2195,50 @@ class ReActAgent:
                             })
                         
                         # Format result for Claude
-                        result_content = str(result.output) if result.success else f"Error: {result.error}"
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_id,
-                            "content": result_content,
-                        })
+                        # Special handling for browser_screenshot: convert to multimodal format
+                        if result.success and tool_name == "browser_screenshot":
+                            tool_result = self._format_screenshot_result(tool_id, result.output)
+                        elif result.success:
+                            tool_result = {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": str(result.output),
+                            }
+                        else:
+                            tool_result = {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": f"Error: {result.error}",
+                            }
+                        
+                        tool_results.append(tool_result)
                 else:
                     # Sequential execution (for browser tools or single tool)
+                    # P0: Category-based timeout optimization
+                    BROWSER_TIMEOUT = 20.0  # Browser tools: 20s (was 30s)
+                    DEFAULT_TIMEOUT = 30.0  # Other tools: 30s
+                    
+                    # P2: Check for browser fast-fail before execution
+                    if has_browser_tools and self._browser_consecutive_failures >= self._browser_max_consecutive_failures:
+                        logger.warning(f"[Agent] Browser fast-fail triggered: {self._browser_consecutive_failures} consecutive failures")
+                        # Signal to Claude that browser is unreliable
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_uses[0]["id"],
+                            "content": f"⚠️ Browser operations have failed {self._browser_consecutive_failures} times consecutively. "
+                                      f"Consider an alternative approach or inform the user that browser interaction is currently unreliable.",
+                        })
+                        # Add to messages and continue loop (let Claude decide)
+                        messages.append({
+                            "role": "assistant",
+                            "content": response.content,
+                        })
+                        messages.append({
+                            "role": "user",
+                            "content": tool_results,
+                        })
+                        continue  # Skip tool execution, let Claude replan
+                    
                     for tool_index, tool_use in enumerate(tool_uses):
                         tool_name = tool_use["name"]
                         tool_args = tool_use["input"]
@@ -1772,8 +2261,23 @@ class ReActAgent:
                                 step=len(tool_calls_made) + tool_index
                             )
                         
-                        # Execute tool with smart retry
-                        result = await self._execute_with_retry(tool_name, tool_args)
+                        # P0: Use category-based timeout
+                        timeout = BROWSER_TIMEOUT if tool_name in browser_tool_names else DEFAULT_TIMEOUT
+                        
+                        # Execute tool with smart retry + timeout
+                        try:
+                            result = await asyncio.wait_for(
+                                self._execute_with_retry(tool_name, tool_args),
+                                timeout=timeout
+                            )
+                        except asyncio.TimeoutError:
+                            from engine.tools.base import ToolResult
+                            result = ToolResult(
+                                success=False, 
+                                output="", 
+                                error=f"Tool '{tool_name}' timed out after {timeout}s"
+                            )
+                            logger.warning(f"[Agent] Tool {tool_name} timed out after {timeout}s")
                         
                         # Stream tool result
                         if on_tool_end:
@@ -1808,6 +2312,20 @@ class ReActAgent:
                             "retried": getattr(result, 'retried', False),
                         })
                         
+                        # P2: Track browser failure count for fast-fail
+                        if tool_name in browser_tool_names:
+                            if result.success:
+                                # Reset counter on success
+                                self._browser_consecutive_failures = 0
+                            else:
+                                # Increment counter on failure
+                                self._browser_consecutive_failures += 1
+                                logger.info(f"[Agent] Browser failure #{self._browser_consecutive_failures}: {tool_name}")
+                                
+                                # Check if we should trigger fast-fail on next iteration
+                                if self._browser_consecutive_failures >= self._browser_max_consecutive_failures:
+                                    logger.warning(f"[Agent] Browser fast-fail threshold reached ({self._browser_consecutive_failures})")
+                        
                         # Add to session history (for "undo" functionality)
                         # Only record file-modifying operations
                         if tool_name in ["move_file", "create_directory", "delete_file", "write_file", "copy_file"]:
@@ -1819,16 +2337,23 @@ class ReActAgent:
                             })
                         
                         # Format result for Claude
-                        if result.success:
-                            result_content = str(result.output)
+                        # Special handling for browser_screenshot: convert to multimodal format
+                        if result.success and tool_name == "browser_screenshot":
+                            tool_result = self._format_screenshot_result(tool_id, result.output)
+                        elif result.success:
+                            tool_result = {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": str(result.output),
+                            }
                         else:
-                            result_content = f"Error: {result.error}"
+                            tool_result = {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": f"Error: {result.error}",
+                            }
                         
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_id,
-                            "content": result_content,
-                        })
+                        tool_results.append(tool_result)
                 
                 # Add assistant message and tool results to history
                 messages.append({

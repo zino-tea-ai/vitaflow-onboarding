@@ -12,9 +12,11 @@ import type { KeyboardEvent } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowUp, ChevronRight, Square, Terminal, CheckCircle2, Loader2, AlertCircle, Bot, Search, ListTodo } from 'lucide-react';
+import { ArrowUp, ChevronRight, ChevronDown, Square, Terminal, CheckCircle2, Check, Loader2, AlertCircle, Bot, Search, ListTodo, FileText, Folder, FolderOpen, Code, Globe, MousePointer } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { cn } from '@/lib/utils';
 import './styles/minimal-theme.css';
 
@@ -44,6 +46,16 @@ export interface ChatMessage {
   isHistory?: boolean;  // True for loaded messages (skip animations)
 }
 
+// File context for Cursor-style auto-injection
+export interface FileContext {
+  path?: string;           // Current file path
+  content?: string;        // Full file content
+  selected?: string;       // Selected code block
+  cursorLine?: number;     // Line number where cursor is
+  cursorColumn?: number;   // Column position
+  visibleRange?: [number, number];  // [start_line, end_line] visible in editor
+}
+
 interface MinimalChatAreaProps {
   apiUrl?: string;
   sessionId: string;
@@ -55,6 +67,8 @@ interface MinimalChatAreaProps {
   onMessagesChange?: (messages: ChatMessage[]) => void;
   // Called when session title/preview should update
   onSessionUpdate?: (title: string, preview: string) => void;
+  // Current file context (Cursor-style auto-injection)
+  fileContext?: FileContext;
 }
 
 export function MinimalChatArea({
@@ -65,6 +79,7 @@ export function MinimalChatArea({
   initialMessages = [],
   onMessagesChange,
   onSessionUpdate,
+  fileContext,
 }: MinimalChatAreaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -111,6 +126,18 @@ export function MinimalChatArea({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Create transport with current fileContext
+  // useMemo ensures transport is recreated when fileContext changes
+  const chatTransport = useMemo(() => new DefaultChatTransport({
+    api: apiUrl,
+    body: { 
+      session_id: sessionId,
+      // File context for Cursor-style auto-injection
+      // This is sent with every message when available
+      ...(fileContext && { fileContext }),
+    },
+  }), [apiUrl, sessionId, fileContext]);
+  
   // useChat - using session ID as key
   const {
     messages: chatMessages,
@@ -120,10 +147,7 @@ export function MinimalChatArea({
     setMessages,
   } = useChat({
     id: `chat-${sessionId}`,  // Unique per session
-    transport: new DefaultChatTransport({
-      api: apiUrl,
-      body: { session_id: sessionId },
-    }),
+    transport: chatTransport,
     onError: (err) => {
       console.error('[MinimalChatArea] Error:', err);
     },
@@ -191,11 +215,21 @@ export function MinimalChatArea({
   }, [chatMessages, initialMessages]);
 
   // Save messages when they change (debounced) - use ref to avoid dependency issues
-  const saveTimeoutRef = useRef<NodeJS.Timeout>();
+  // 【修复 #27】添加 saveTimeoutRef 清理
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onMessagesChangeRef = useRef(onMessagesChange);
   const chatMessagesRef = useRef(chatMessages);
   useEffect(() => { onMessagesChangeRef.current = onMessagesChange; }, [onMessagesChange]);
   useEffect(() => { chatMessagesRef.current = chatMessages; }, [chatMessages]);
+
+  // 【修复 #27】组件卸载时清理 saveTimeoutRef
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, []);
   
   // Helper to prepare messages for saving
   const prepareMessagesForSave = useCallback((msgs: typeof chatMessages) => {
@@ -315,12 +349,19 @@ export function MinimalChatArea({
   }, [messages, userScrolledUp, justSentMessage]);
 
   // Streaming scroll
+  // 【修复 #28】添加 scrollInterval 清理
+  const scrollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (isActuallyStreaming && !userScrolledUp) {
-      const scrollInterval = setInterval(() => {
+      scrollIntervalRef.current = setInterval(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 300);
-      return () => clearInterval(scrollInterval);
+      return () => {
+        if (scrollIntervalRef.current) {
+          clearInterval(scrollIntervalRef.current);
+          scrollIntervalRef.current = null;
+        }
+      };
     }
   }, [isActuallyStreaming, userScrolledUp]);
 
@@ -382,34 +423,36 @@ export function MinimalChatArea({
                 animate={{ opacity: 1 }}
                 transition={{ duration: 0.2 }}
               >
-                <AnimatePresence initial={false}>
-                  {messages.map((message, index) => {
-                    const isLastUserMessage = message.role === 'user' && 
-                      messages.slice(index + 1).every(m => m.role !== 'user');
-                    
-                    // Skip animation for historical messages
-                    const skipAnimation = message.isHistory || message.id.startsWith('loaded-');
-                    
-                    return (
-                      <motion.div
-                        key={message.id}
-                        ref={isLastUserMessage ? lastUserMessageRef : undefined}
-                        initial={skipAnimation ? false : { opacity: 0, y: 15, filter: 'blur(4px)' }}
-                        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-                        transition={skipAnimation ? { duration: 0 } : { duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
-                        style={{ willChange: skipAnimation ? undefined : 'transform, opacity, filter' }}
-                      >
-                        <MinimalMessage
-                          role={message.role}
-                          content={message.content}
-                          parts={message.parts}
-                          isStreaming={isActuallyStreaming && index === messages.length - 1 && message.role === 'assistant'}
-                          skipAnimation={skipAnimation}
-                        />
-                      </motion.div>
-                    );
-                  })}
-                </AnimatePresence>
+                {messages.map((message, index) => {
+                  const isLastUserMessage = message.role === 'user' && 
+                    messages.slice(index + 1).every(m => m.role !== 'user');
+                  
+                  // Skip animation for historical messages
+                  const skipAnimation = message.isHistory || message.id.startsWith('loaded-');
+                  
+                  // Use stable key: index for streaming messages, id for historical
+                  const stableKey = skipAnimation ? message.id : `msg-${index}`;
+                  
+                  return (
+                    <motion.div
+                      key={stableKey}
+                      ref={isLastUserMessage ? lastUserMessageRef : undefined}
+                      initial={skipAnimation ? false : { opacity: 0, y: 15, filter: 'blur(4px)' }}
+                      animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                      transition={skipAnimation ? { duration: 0 } : { duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
+                      style={{ willChange: skipAnimation ? undefined : 'transform, opacity, filter' }}
+                    >
+                      <MinimalMessage
+                        role={message.role}
+                        content={message.content}
+                        parts={message.parts}
+                        isStreaming={isLoading && index === messages.length - 1 && message.role === 'assistant'}
+                        skipAnimation={skipAnimation}
+                      />
+                    </motion.div>
+                  );
+                })}
+                
                 <div ref={messagesEndRef} />
               </motion.div>
             )}
@@ -719,29 +762,385 @@ function StreamingText({ text, isStreaming, onComplete }: { text: string; isStre
   return <span ref={containerRef} className="whitespace-pre-wrap" />;
 }
 
-interface ToolWidgetProps {
-  tool: {
-    type: string;
-    toolCallId: string;
-    toolName?: string;
-    state: string;
-    input?: Record<string, any>;
-    output?: any;
-    errorText?: string;
+// === TOOL DISPLAY HELPERS ===
+
+interface ToolInfo {
+  type: string;
+  toolCallId: string;
+  toolName?: string;
+  state: string;
+  input?: Record<string, any>;
+  output?: any;
+  errorText?: string;
+}
+
+// === SCREENSHOT OUTPUT ===
+
+interface ScreenshotData {
+  type: 'browser_screenshot';
+  image_base64: string;
+  page_content?: string;
+  url?: string;
+  title?: string;
+}
+
+function parseToolOutput(output: any): any {
+  if (!output) return null;
+  // If it's a string, try to parse as JSON
+  if (typeof output === 'string') {
+    try {
+      return JSON.parse(output);
+    } catch {
+      return output;
+    }
+  }
+  return output;
+}
+
+function getScreenshotData(output: any): ScreenshotData | null {
+  if (!output) return null;
+  
+  // Try to parse if string
+  let data = output;
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
+  
+  // Check if it's a screenshot object
+  if (data && typeof data === 'object') {
+    // Direct match
+    if (data.type === 'browser_screenshot' && data.image_base64) {
+      return data as ScreenshotData;
+    }
+    // Check if it has image_base64 (maybe type is slightly different)
+    if (data.image_base64 && typeof data.image_base64 === 'string' && data.image_base64.length > 100) {
+      // [P0-7 FIX] Enhanced security: Validate base64 is a valid PNG/JPEG image
+      try {
+        // Decode enough bytes to check file magic bytes (400 base64 chars = ~300 bytes)
+        const decoded = atob(data.image_base64.slice(0, 400));
+
+        // [P0-7 FIX] Validate PNG magic bytes: 0x89 'P' 'N' 'G' 0x0D 0x0A 0x1A 0x0A
+        const isPNG = decoded.charCodeAt(0) === 0x89 &&
+                      decoded.slice(1, 4) === 'PNG';
+
+        // [P0-7 FIX] Validate JPEG magic bytes: 0xFF 0xD8 0xFF
+        const isJPEG = decoded.charCodeAt(0) === 0xFF &&
+                       decoded.charCodeAt(1) === 0xD8 &&
+                       decoded.charCodeAt(2) === 0xFF;
+
+        // Only allow PNG and JPEG images
+        if (!isPNG && !isJPEG) {
+          console.warn('[Security] Blocked non-image base64 content (not PNG/JPEG)');
+          return null;
+        }
+
+        // [P0-7 FIX] Additional check: Block any SVG/XML/HTML markers anywhere in first 300 bytes
+        const lowerDecoded = decoded.toLowerCase();
+        const blockedPatterns = ['<svg', '<?xml', '<!doctype', '<html', '<script', 'javascript:'];
+        for (const pattern of blockedPatterns) {
+          if (lowerDecoded.includes(pattern)) {
+            console.warn(`[Security] Blocked potential injection (${pattern}) in image_base64`);
+            return null;
+          }
+        }
+      } catch {
+        // Invalid base64
+        console.warn('[Security] Invalid base64 in image_base64');
+        return null;
+      }
+
+      return {
+        type: 'browser_screenshot',
+        image_base64: data.image_base64,
+        page_content: data.page_content,
+        url: data.url,
+        title: data.title,
+      };
+    }
+  }
+  
+  return null;
+}
+
+function isScreenshotOutput(output: any): output is ScreenshotData {
+  return getScreenshotData(output) !== null;
+}
+
+const ScreenshotOutput = memo(function ScreenshotOutput({ data }: { data: ScreenshotData }) {
+  const [imageExpanded, setImageExpanded] = useState(false);
+  
+  return (
+    <div className="screenshot-output">
+      {/* URL & Title */}
+      {(data.url || data.title) && (
+        <div className="screenshot-header">
+          {data.title && <span className="screenshot-title">{data.title}</span>}
+          {data.url && (
+            <a 
+              href={data.url} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="screenshot-url"
+            >
+              {data.url}
+            </a>
+          )}
+        </div>
+      )}
+      
+      {/* Screenshot Image */}
+      <motion.div 
+        className={cn("screenshot-image-container", imageExpanded && "expanded")}
+        onClick={() => setImageExpanded(e => !e)}
+        whileHover={{ scale: 1.01 }}
+        transition={{ duration: 0.15 }}
+      >
+        <img 
+          src={`data:image/png;base64,${data.image_base64}`}
+          alt={data.title || 'Browser Screenshot'}
+          className="screenshot-image"
+        />
+        <div className="screenshot-overlay">
+          <span>{imageExpanded ? 'Click to collapse' : 'Click to expand'}</span>
+        </div>
+      </motion.div>
+      
+      {/* Page Content Preview */}
+      {data.page_content && (
+        <details className="screenshot-content">
+          <summary>Page Content</summary>
+          <pre>{data.page_content}</pre>
+        </details>
+      )}
+    </div>
+  );
+});
+
+// Get filename from path
+function getFileName(path: string): string {
+  if (!path) return '';
+  return path.split(/[/\\]/).pop() || path;
+}
+
+// Format tool display based on type
+function formatToolDisplay(toolName: string, input: Record<string, any> | undefined) {
+  const name = toolName.toLowerCase().replace(/^tool-/, '');
+  
+  switch (name) {
+    case 'read_file':
+      const fileName = getFileName(input?.target_file || '');
+      const lines = input?.offset && input?.limit 
+        ? `L${input.offset}-${input.offset + input.limit}` 
+        : '';
+      return {
+        icon: <FileText className="w-3.5 h-3.5" />,
+        label: `Read ${fileName}${lines ? ' ' + lines : ''}`,
+        category: 'explore'
+      };
+    
+    case 'list_dir':
+      return {
+        icon: <Folder className="w-3.5 h-3.5" />,
+        label: `Listed ${getFileName(input?.target_directory || '')}`,
+        category: 'explore'
+      };
+    
+    case 'codebase_search':
+      const query = input?.query || '';
+      return {
+        icon: <Search className="w-3.5 h-3.5" />,
+        label: `Searched "${query.length > 30 ? query.slice(0, 30) + '...' : query}"`,
+        category: 'search'
+      };
+    
+    case 'grep':
+      return {
+        icon: <Code className="w-3.5 h-3.5" />,
+        label: `Grep ${input?.pattern || ''}`,
+        category: 'search'
+      };
+    
+    case 'glob_file_search':
+    case 'file_search':
+      return {
+        icon: <Search className="w-3.5 h-3.5" />,
+        label: `Search files ${input?.glob_pattern || input?.pattern || ''}`,
+        category: 'search'
+      };
+
+    case 'browser_navigate':
+    case 'browser_click':
+    case 'browser_type':
+    case 'browser_snapshot':
+      return {
+        icon: <Globe className="w-3.5 h-3.5" />,
+        label: name.replace('browser_', '').replace(/_/g, ' '),
+        category: 'browser'
+      };
+    
+    case 'run_terminal_cmd':
+      const cmd = input?.command || '';
+      return {
+        icon: <Terminal className="w-3.5 h-3.5" />,
+        label: `Run ${cmd.length > 40 ? cmd.slice(0, 40) + '...' : cmd}`,
+        category: 'terminal'
+      };
+    
+    default:
+      return {
+        icon: <Terminal className="w-3.5 h-3.5" />,
+        label: name.replace(/_/g, ' '),
+        category: 'other'
+      };
+  }
+}
+
+// Group tools by category
+function groupTools(tools: ToolInfo[]) {
+  const groups: { 
+    category: string; 
+    label: string;
+    icon: React.ReactNode;
+    items: Array<{ tool: ToolInfo; display: ReturnType<typeof formatToolDisplay> }>;
+    isComplete: boolean;
+    hasError: boolean;
+  }[] = [];
+  
+  const categoryConfig: Record<string, { label: string; icon: React.ReactNode }> = {
+    explore: { label: 'Explored', icon: <FolderOpen className="w-3.5 h-3.5" /> },
+    search: { label: 'Searched', icon: <Search className="w-3.5 h-3.5" /> },
+    browser: { label: 'Browser', icon: <Globe className="w-3.5 h-3.5" /> },
+    terminal: { label: 'Terminal', icon: <Terminal className="w-3.5 h-3.5" /> },
+    other: { label: 'Actions', icon: <MousePointer className="w-3.5 h-3.5" /> },
   };
+  
+  tools.forEach(tool => {
+    const toolName = tool.toolName || tool.type?.replace(/^tool-/, '') || 'unknown';
+    const display = formatToolDisplay(toolName, tool.input);
+    const isComplete = tool.state === 'output-available';
+    const isError = tool.state === 'error' || !!tool.errorText;
+    
+    // Find or create group
+    let group = groups.find(g => g.category === display.category);
+    if (!group) {
+      const config = categoryConfig[display.category] || categoryConfig.other;
+      group = {
+        category: display.category,
+        label: config.label,
+        icon: config.icon,
+        items: [],
+        isComplete: true,
+        hasError: false
+      };
+      groups.push(group);
+    }
+    
+    group.items.push({ tool, display });
+    if (!isComplete) group.isComplete = false;
+    if (isError) group.hasError = true;
+  });
+  
+  return groups;
+}
+
+// Cursor-style: Single tool item with inline result display
+const ToolItemCursor = memo(function ToolItemCursor({ tool }: { tool: ToolInfo }) {
+  const [expanded, setExpanded] = useState(false);
+  
+  const toolName = tool.toolName || tool.type?.replace(/^tool-/, '') || 'unknown';
+  const display = formatToolDisplay(toolName, tool.input);
+  const isComplete = tool.state === 'output-available';
+  const isError = tool.state === 'error' || !!tool.errorText;
+  const isRunning = tool.state === 'input-streaming' || tool.state === 'input-available';
+  const hasOutput = !!tool.output;
+  
+  // Parse output and check for screenshot
+  const screenshotData = useMemo(() => getScreenshotData(tool.output), [tool.output]);
+  const isScreenshot = toolName.includes('screenshot') || screenshotData !== null;
+  
+  return (
+    <motion.div 
+      className="tool-item-cursor"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+    >
+      {/* Tool header line */}
+      <div 
+        className={cn("tool-item-header", hasOutput && !isScreenshot && "clickable")}
+        onClick={() => hasOutput && !isScreenshot && setExpanded(e => !e)}
+      >
+        <span className="tool-item-status">
+          {isError ? <AlertCircle className="w-3.5 h-3.5 text-red-400" />
+           : isRunning ? <Loader2 className="w-3.5 h-3.5 text-neutral-400 animate-spin" />
+           : <Check className="w-3.5 h-3.5 text-emerald-400" />}
+        </span>
+        <span className="tool-item-label">{display.label}</span>
+        {hasOutput && !isScreenshot && (
+          <ChevronRight className={cn("w-3.5 h-3.5 tool-item-chevron", expanded && "expanded")} />
+        )}
+      </div>
+      
+      {/* Screenshot results - always visible */}
+      {screenshotData && (
+        <motion.div
+          className="tool-item-screenshot"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.3, delay: 0.1 }}
+        >
+          <ScreenshotOutput data={screenshotData} />
+        </motion.div>
+      )}
+      
+      {/* Other results - expandable */}
+      <AnimatePresence>
+        {expanded && hasOutput && !isScreenshot && (
+          <motion.div
+            className="tool-item-output"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <pre>{typeof tool.output === 'string' ? tool.output.slice(0, 500) : JSON.stringify(tool.output, null, 2).slice(0, 500)}</pre>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+});
+
+// Cursor-style operations list - each tool on its own line
+const OperationGroup = memo(function OperationGroup({ tools }: { tools: ToolInfo[] }) {
+  if (tools.length === 0) return null;
+  
+  return (
+    <div className="operations-list-cursor">
+      {tools.map((tool, index) => (
+        <ToolItemCursor key={tool.toolCallId || index} tool={tool} />
+      ))}
+    </div>
+  );
+});
+
+// Legacy single tool widget (fallback)
+interface ToolWidgetProps {
+  tool: ToolInfo;
 }
 
 const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
   const [expanded, setExpanded] = useState(false);
   
   const toolName = tool.toolName || tool.type?.replace(/^tool-/, '') || 'unknown';
+  const display = formatToolDisplay(toolName, tool.input);
   const isComplete = tool.state === 'output-available';
   const isError = tool.state === 'error' || !!tool.errorText;
   const isRunning = tool.state === 'input-streaming' || tool.state === 'input-available';
-  
-  const displayName = toolName.replace(/_/g, ' ');
-  const mainArg = tool.input ? Object.values(tool.input)[0] : '';
-  const argPreview = typeof mainArg === 'string' ? mainArg.length > 50 ? mainArg.slice(-50) : mainArg : '';
 
   return (
     <motion.div 
@@ -755,10 +1154,9 @@ const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
           {isComplete ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
            : isError ? <AlertCircle className="w-3.5 h-3.5 text-red-400" />
            : isRunning ? <Loader2 className="w-3.5 h-3.5 text-neutral-500 animate-spin" />
-           : <Terminal className="w-3.5 h-3.5 text-neutral-600" />}
+           : display.icon}
         </span>
-        <span className="tool-chip-name">{displayName}</span>
-        {argPreview && <span className="tool-chip-arg">{argPreview}</span>}
+        <span className="tool-chip-name">{display.label}</span>
         {tool.output && (
           <span className={`tool-chip-chevron ${expanded ? 'open' : ''}`}>
             <ChevronRight className="w-3 h-3" />
@@ -775,7 +1173,11 @@ const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.15 }}
           >
-            <pre>{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
+            {isScreenshotOutput(tool.output) ? (
+              <ScreenshotOutput data={tool.output} />
+            ) : (
+              <pre>{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -787,67 +1189,97 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
   const [thinkingOpen, setThinkingOpen] = useState(true);
   const [thinkingComplete, setThinkingComplete] = useState(skipAnimation ? true : false);
   const [thinkingAnimationDone, setThinkingAnimationDone] = useState(skipAnimation ? true : false);
-  const [roleVisible, setRoleVisible] = useState(skipAnimation ? true : false);
+  const [thinkingDuration, setThinkingDuration] = useState<number | null>(null);
+  const [planningMinTimeElapsed, setPlanningMinTimeElapsed] = useState(skipAnimation ? true : false);
   const thinkingStartTime = useRef<number | null>(null);
+  const planningStartTime = useRef<number | null>(null);
+  const hasAutoCollapsed = useRef(false); // Track if we've auto-collapsed once
   const isUser = role === 'user';
 
-  const textContent = useMemo(() => 
-    parts?.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('') || content || '',
-    [parts, content]
-  );
+  // [P1 FIX] Type-safe parts processing with runtime validation
+  const textContent = useMemo(() => {
+    if (!Array.isArray(parts)) return content || '';
+    return parts
+      .filter((p): p is { type: string; text: string } =>
+        p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string'
+      )
+      .map(p => p.text)
+      .join('') || content || '';
+  }, [parts, content]);
 
-  const reasoningText = useMemo(() => 
-    parts?.filter((p: any) => p.type === 'reasoning').map((p: any) => p.text).join('') || '',
-    [parts]
-  );
+  const reasoningText = useMemo(() => {
+    if (!Array.isArray(parts)) return '';
+    return parts
+      .filter((p): p is { type: string; text: string } =>
+        p && typeof p === 'object' && p.type === 'reasoning' && typeof p.text === 'string'
+      )
+      .map(p => p.text)
+      .join('');
+  }, [parts]);
 
-  const toolInvocations = useMemo(() => 
-    parts?.filter((p: any) => p.type?.startsWith('tool-') || p.type === 'dynamic-tool') || [],
-    [parts]
-  );
+  const toolInvocations = useMemo(() => {
+    if (!Array.isArray(parts)) return [];
+    return parts.filter((p): p is ToolInfo =>
+      p && typeof p === 'object' && typeof p.type === 'string' &&
+      (p.type.startsWith('tool-') || p.type === 'dynamic-tool')
+    );
+  }, [parts]);
 
   const hasReasoning = reasoningText.length > 0;
   const hasTools = toolInvocations.length > 0;
-  const showPlanning = isStreaming && !hasReasoning && !textContent;
   
+  // Track when planning starts and ensure minimum display time
+  const shouldShowPlanning = isStreaming && !hasReasoning && !textContent;
   useEffect(() => {
-    if (isUser || skipAnimation) {
-      setRoleVisible(true);
-    } else if (!showPlanning && !roleVisible) {
-      const timer = setTimeout(() => setRoleVisible(true), 450);
+    if (shouldShowPlanning && planningStartTime.current === null) {
+      planningStartTime.current = Date.now();
+      setPlanningMinTimeElapsed(false);
+      // Ensure planning shows for at least 400ms to prevent flashing
+      const timer = setTimeout(() => setPlanningMinTimeElapsed(true), 400);
       return () => clearTimeout(timer);
     }
-  }, [isUser, showPlanning, roleVisible, skipAnimation]);
+  }, [shouldShowPlanning]);
+  
+  // Show planning if we should AND either: still in planning state OR minimum time hasn't elapsed
+  const showPlanning = isStreaming && (shouldShowPlanning || (!planningMinTimeElapsed && !textContent));
+  
   
   useEffect(() => {
     if (hasReasoning && thinkingStartTime.current === null) {
       thinkingStartTime.current = Date.now();
     }
-  }, [hasReasoning]);
+    // Calculate duration when thinking completes
+    if (thinkingComplete && thinkingStartTime.current && thinkingDuration === null) {
+      setThinkingDuration(Math.round((Date.now() - thinkingStartTime.current) / 1000));
+    }
+  }, [hasReasoning, thinkingComplete, thinkingDuration]);
+  
+  // Auto-collapse thinking ONCE when response text appears (Cursor-style)
+  useEffect(() => {
+    if (textContent && thinkingComplete && !hasAutoCollapsed.current && !skipAnimation) {
+      hasAutoCollapsed.current = true;
+      const timer = setTimeout(() => setThinkingOpen(false), 300);
+      return () => clearTimeout(timer);
+    }
+  }, [textContent, thinkingComplete, skipAnimation]);
   
   const showText = !hasReasoning || thinkingComplete;
-  const showRole = isUser ? true : roleVisible;
 
   return (
     <div className="minimal-message">
-      <motion.div 
-        className="minimal-message-role"
-        initial={skipAnimation ? false : { opacity: isUser ? 0 : 0, x: -8 }}
-        animate={{ opacity: showRole ? 1 : 0, x: showRole ? 0 : -8 }}
-        transition={skipAnimation ? { duration: 0 } : { duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-      >
+      <div className="minimal-message-role">
         {isUser ? 'You' : 'NogicOS'}
-      </motion.div>
+      </div>
       
       <div className={`minimal-message-content ${isStreaming ? 'streaming' : ''}`}>
         <AnimatePresence mode="wait">
           {showPlanning ? (
             <motion.div
               key="planning"
-              initial={{ opacity: 0, y: 8 }}
+              initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.35, delay: 0.7, ease: [0.4, 0, 0.2, 1] }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
               className="minimal-planning"
             >
               <LoadingDots />
@@ -867,17 +1299,26 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
                   <ChevronRight className="w-3 h-3" />
                 </span>
                 <span className="minimal-thinking-status">
-                  {isStreaming && !textContent ? 'Planning next moves' : 'Thought process'}
+                  {isStreaming && !textContent 
+                    ? 'Thinking...' 
+                    : thinkingDuration !== null 
+                      ? `Thought for ${thinkingDuration}s` 
+                      : 'Thought process'}
                 </span>
               </div>
               <AnimatePresence>
                 {thinkingOpen && (
                   <motion.div 
                     className="minimal-thinking-content"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.4, ease: [0.4, 0, 0.2, 1] }}
+                    initial={{ opacity: 0, scaleY: 0.8, height: 0 }}
+                    animate={{ opacity: 1, scaleY: 1, height: 'auto' }}
+                    exit={{ opacity: 0, scaleY: 0.95, height: 0 }}
+                    transition={{ 
+                      duration: 0.35, 
+                      ease: [0.32, 0.72, 0, 1],
+                      opacity: { duration: 0.2 }
+                    }}
+                    style={{ transformOrigin: 'top', willChange: 'transform, opacity' }}
                   >
                     {thinkingAnimationDone || skipAnimation ? (
                       <span className="whitespace-pre-wrap">{reasoningText}</span>
@@ -902,6 +1343,7 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
           ) : null}
         </AnimatePresence>
 
+        {/* Operations/Tools - Cursor style grouped display */}
         <AnimatePresence>
           {hasTools && (
             <motion.div
@@ -910,9 +1352,7 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
               animate={{ opacity: 1, y: 0 }}
               transition={skipAnimation ? { duration: 0 } : { duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
             >
-              {toolInvocations.map((tool: any, index: number) => (
-                <ToolWidget key={tool.toolCallId || index} tool={tool} />
-              ))}
+              <OperationGroup tools={toolInvocations} />
             </motion.div>
           )}
         </AnimatePresence>
@@ -937,22 +1377,55 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
                   li: ({ children }) => <li className="text-neutral-300">{children}</li>,
                   strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
                   em: ({ children }) => <em className="italic text-neutral-200">{children}</em>,
-                  code: ({ className, children }) => {
-                    const isBlock = className?.includes('language-');
+                  code: ({ className, children, ...props }) => {
+                    const match = /language-(\w+)/.exec(className || '');
+                    const isBlock = Boolean(match);
                     return isBlock ? (
-                      <pre className="bg-neutral-900 rounded-lg p-4 my-3 overflow-x-auto">
-                        <code className="text-sm font-mono text-neutral-200">{children}</code>
-                      </pre>
+                      <SyntaxHighlighter
+                        style={oneDark}
+                        language={match?.[1] || 'text'}
+                        PreTag="div"
+                        customStyle={{
+                          margin: 0,
+                          padding: '1rem',
+                          borderRadius: '0.5rem',
+                          fontSize: '0.875rem',
+                          lineHeight: '1.5',
+                        }}
+                        showLineNumbers={String(children).split('\n').length > 5}
+                        lineNumberStyle={{
+                          minWidth: '2.5em',
+                          paddingRight: '1em',
+                          color: '#666',
+                          userSelect: 'none',
+                        }}
+                        {...props}
+                      >
+                        {String(children).replace(/\n$/, '')}
+                      </SyntaxHighlighter>
                     ) : (
                       <code className="bg-neutral-800 px-1.5 py-0.5 rounded text-sm font-mono text-neutral-200">{children}</code>
                     );
                   },
-                  pre: ({ children }) => <>{children}</>,
-                  a: ({ href, children }) => (
-                    <a href={href} className="text-white underline underline-offset-2 hover:text-neutral-300" target="_blank" rel="noopener noreferrer">
-                      {children}
-                    </a>
-                  ),
+                  pre: ({ children }) => <div className="my-3 overflow-x-auto">{children}</div>,
+                  a: ({ href, children }) => {
+                    // [P0 FIX Round 1] XSS prevention: validate URL protocol
+                    const isSafeUrl = href && (
+                      href.startsWith('http://') ||
+                      href.startsWith('https://') ||
+                      href.startsWith('mailto:') ||
+                      href.startsWith('#')
+                    );
+                    if (!isSafeUrl) {
+                      // Block javascript:, data:, vbscript:, and other dangerous protocols
+                      return <span className="text-neutral-400">{children}</span>;
+                    }
+                    return (
+                      <a href={href} className="text-white underline underline-offset-2 hover:text-neutral-300" target="_blank" rel="noopener noreferrer">
+                        {children}
+                      </a>
+                    );
+                  },
                   blockquote: ({ children }) => (
                     <blockquote className="border-l-2 border-neutral-700 pl-4 my-3 text-neutral-400 italic">{children}</blockquote>
                   ),

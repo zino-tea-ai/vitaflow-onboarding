@@ -5,6 +5,7 @@ NogicOS Evaluators for LangSmith - 最佳实践版本
 评估器设计原则：
 1. 规则评估器只用于客观可量化的指标（延迟、Token数、工具调用次数、错误率）
 2. 语义判断交给 LLM 评估器（任务完成度、工具选择合理性、正确性、幻觉、简洁性）
+3. UX 评估器用于感知迭代变化（TTFT、追问建议、内容丰富度）
 
 Usage:
     from engine.evaluation.evaluators import (
@@ -13,6 +14,11 @@ Usage:
         token_count_evaluator,
         tool_call_count_evaluator,
         error_rate_evaluator,
+        
+        # UX 评估器（用户体验）
+        ttft_evaluator,
+        follow_up_evaluator,
+        content_richness_evaluator,
         
         # LLM 评估器（语义理解）
         task_completion_llm_evaluator,
@@ -24,6 +30,7 @@ Usage:
         # 评估器列表
         get_rule_evaluators,
         get_llm_evaluators,
+        get_ux_evaluators,  # 新增：UX 评估器
         get_all_evaluators,
     )
 """
@@ -34,6 +41,13 @@ from typing import Dict, Any, Optional, List, Callable
 
 from engine.observability import get_logger
 logger = get_logger("evaluators")
+
+# Centralized keyword list for tool-required task detection
+TOOL_REQUIRED_KEYWORDS = [
+    "文件", "目录", "打开", "创建", "删除", "浏览器", "搜索",
+    "file", "directory", "open", "create", "delete", "browser", "search",
+    "桌面", "窗口", "截图", "desktop", "window", "screenshot",
+]
 
 # Try to import LangSmith
 try:
@@ -186,11 +200,7 @@ def tool_call_count_evaluator(run: Run, example: Example) -> Dict[str, Any]:
         
         # 简单对话不需要工具
         task = inputs.get("task", "") or ""
-        is_simple_chat = not any(kw in task.lower() for kw in [
-            "文件", "目录", "打开", "创建", "删除", "浏览器", "搜索",
-            "file", "directory", "open", "create", "delete", "browser", "search",
-            "桌面", "窗口", "截图", "desktop", "window", "screenshot",
-        ])
+        is_simple_chat = not any(kw in task.lower() for kw in TOOL_REQUIRED_KEYWORDS)
         
         if is_simple_chat and num_calls == 0:
             return {"key": "tool_call_count", "score": 1.0, "comment": "Simple chat, no tools needed"}
@@ -267,15 +277,234 @@ def error_rate_evaluator(run: Run, example: Example) -> Dict[str, Any]:
 
 
 # ===========================================
+# UX 评估器 - 用户体验指标（感知迭代变化）
+# ===========================================
+
+@run_evaluator
+def ttft_evaluator(run: Run, example: Example) -> Dict[str, Any]:
+    """
+    TTFT (Time To First Token) 评估器
+    
+    评分标准：
+    - 1.0: < 1s (excellent - 目标)
+    - 0.7: 1-2s (good)
+    - 0.5: 2-3s (acceptable)
+    - 0.2: > 3s (slow)
+    """
+    try:
+        outputs = run.outputs or {}
+        
+        # 方式1: 从 outputs 获取（agent 输出）
+        ttft_ms = outputs.get("ttft_ms")
+        
+        # 方式2: 从 run 的 first_token_time 计算
+        if ttft_ms is None and hasattr(run, 'first_token_time') and run.start_time:
+            if run.first_token_time:
+                ttft_ms = (run.first_token_time - run.start_time).total_seconds() * 1000
+        
+        # 方式3: 如果都没有，用总延迟的估算（假设 TTFT 是总时间的 30%）
+        if ttft_ms is None and run.end_time and run.start_time:
+            total_ms = (run.end_time - run.start_time).total_seconds() * 1000
+            ttft_ms = total_ms * 0.3  # 估算
+        
+        if ttft_ms is None:
+            return {"key": "ttft", "score": 0.5, "comment": "TTFT not available"}
+        
+        # 评分
+        if ttft_ms < 1000:
+            score, rating = 1.0, "excellent"
+        elif ttft_ms < 2000:
+            score, rating = 0.7, "good"
+        elif ttft_ms < 3000:
+            score, rating = 0.5, "acceptable"
+        else:
+            score, rating = 0.2, "slow"
+        
+        return {"key": "ttft", "score": score, "comment": f"{ttft_ms:.0f}ms ({rating})"}
+        
+    except Exception as e:
+        logger.error(f"[ttft_evaluator] Error: {e}")
+        return {"key": "ttft", "score": 0.5, "comment": f"Error: {str(e)[:100]}"}
+
+
+@run_evaluator
+def follow_up_evaluator(run: Run, example: Example) -> Dict[str, Any]:
+    """
+    追问建议评估器 - 检测响应是否包含追问建议
+    
+    评分标准：
+    - 1.0: 有 2+ 个追问建议
+    - 0.7: 有 1 个追问建议
+    - 0.5: 有模糊的追问暗示
+    - 0.0: 无追问建议
+    
+    检测模式：
+    - JSON 格式: {"follow_ups": [...]}
+    - 列表格式: "你可能还想：\n- xxx\n- yyy"
+    - 问句格式: "需要我帮你xxx吗？"
+    """
+    try:
+        outputs = run.outputs or {}
+        inputs = run.inputs or {}
+        
+        response = outputs.get("response", "")
+        task = inputs.get("task", "")
+        
+        # 检查是否是需要追问的场景
+        ambiguous_keywords = ["整理", "优化", "改进", "处理", "帮我", "这个", "那个"]
+        needs_follow_up = any(kw in task for kw in ambiguous_keywords) and len(task) < 20
+        
+        # 如果不是需要追问的场景，直接返回满分
+        if not needs_follow_up:
+            return {"key": "follow_up", "score": 1.0, "comment": "No follow-up needed for this task"}
+        
+        follow_up_count = 0
+        
+        # 检测方式1: JSON 格式
+        if "follow_ups" in response or "follow_up" in response:
+            follow_up_count += 2
+        
+        # 检测方式2: 列表格式
+        list_patterns = [
+            r"你可能还想[：:]\s*\n",
+            r"你是否需要[：:]",
+            r"建议[：:]\s*\n\s*[-•]",
+            r"可以考虑[：:]",
+        ]
+        for pattern in list_patterns:
+            if re.search(pattern, response):
+                follow_up_count += 1
+                break
+        
+        # 检测方式3: 问句格式
+        question_patterns = [
+            r"需要我.*吗[？?]",
+            r"要不要.*[？?]",
+            r"是否需要.*[？?]",
+            r"还有什么.*[？?]",
+            r"请问.*[？?]",
+            r"想要.*吗[？?]",
+        ]
+        for pattern in question_patterns:
+            if re.search(pattern, response):
+                follow_up_count += 1
+                break
+        
+        # 评分
+        if follow_up_count >= 2:
+            score, rating = 1.0, "excellent"
+        elif follow_up_count == 1:
+            score, rating = 0.7, "good"
+        elif "?" in response or "？" in response:
+            score, rating = 0.5, "has question"
+        else:
+            score, rating = 0.0, "no follow-up"
+        
+        return {"key": "follow_up", "score": score, "comment": f"{follow_up_count} suggestions ({rating})"}
+        
+    except Exception as e:
+        logger.error(f"[follow_up_evaluator] Error: {e}")
+        return {"key": "follow_up", "score": 0.5, "comment": f"Error: {str(e)[:100]}"}
+
+
+@run_evaluator
+def content_richness_evaluator(run: Run, example: Example) -> Dict[str, Any]:
+    """
+    内容丰富度评估器 - 检测响应的结构化程度
+    
+    检测内容类型：
+    - 代码块 (```code```)
+    - 列表 (- item 或 1. item)
+    - 标题 (# / ## / ###)
+    - 表格 (| col |)
+    - 链接 ([text](url))
+    
+    评分标准：
+    - 1.0: 3+ 种内容类型
+    - 0.8: 2 种内容类型
+    - 0.6: 1 种内容类型
+    - 0.4: 只有纯文本
+    """
+    try:
+        outputs = run.outputs or {}
+        inputs = run.inputs or {}
+        
+        response = outputs.get("response", "")
+        task = inputs.get("task", "")
+        
+        # 检查是否是需要富内容的场景
+        rich_content_keywords = [
+            "写", "代码", "函数", "脚本", "列表", "步骤", "对比", "比较",
+            "解释", "说明", "分析", "报告", "总结", "整理",
+        ]
+        needs_rich_content = any(kw in task for kw in rich_content_keywords)
+        
+        # 如果是简单对话，不需要富内容
+        simple_chat_patterns = ["你好", "谢谢", "再见", "好的", "明白"]
+        if any(p in task for p in simple_chat_patterns) and len(task) < 10:
+            return {"key": "content_richness", "score": 1.0, "comment": "Simple chat, no rich content needed"}
+        
+        content_types = []
+        
+        # 检测代码块
+        if re.search(r"```[\s\S]*?```", response):
+            content_types.append("code")
+        
+        # 检测列表
+        if re.search(r"^\s*[-•*]\s+", response, re.MULTILINE) or re.search(r"^\s*\d+[.、]\s+", response, re.MULTILINE):
+            content_types.append("list")
+        
+        # 检测标题
+        if re.search(r"^#{1,3}\s+", response, re.MULTILINE):
+            content_types.append("heading")
+        
+        # 检测表格
+        if re.search(r"\|.*\|.*\|", response):
+            content_types.append("table")
+        
+        # 检测链接
+        if re.search(r"\[.+?\]\(.+?\)", response):
+            content_types.append("link")
+        
+        # 检测强调
+        if re.search(r"\*\*.+?\*\*|__.+?__", response):
+            content_types.append("emphasis")
+        
+        num_types = len(content_types)
+        
+        # 评分
+        if num_types >= 3:
+            score, rating = 1.0, "rich"
+        elif num_types == 2:
+            score, rating = 0.8, "good"
+        elif num_types == 1:
+            score, rating = 0.6, "basic"
+        else:
+            # 如果需要富内容但没有，扣分
+            if needs_rich_content:
+                score, rating = 0.4, "plain text"
+            else:
+                score, rating = 0.7, "acceptable plain"
+        
+        types_str = ", ".join(content_types) if content_types else "none"
+        return {"key": "content_richness", "score": score, "comment": f"{num_types} types: {types_str} ({rating})"}
+        
+    except Exception as e:
+        logger.error(f"[content_richness_evaluator] Error: {e}")
+        return {"key": "content_richness", "score": 0.5, "comment": f"Error: {str(e)[:100]}"}
+
+
+# ===========================================
 # LLM 评估器 - 语义理解
 # ===========================================
 
 # 自定义 prompt 用于任务完成度评估
+# NOTE: openevals 使用 {inputs} 和 {outputs} 作为变量名
 TASK_COMPLETION_PROMPT = """You are evaluating whether an AI agent successfully completed a user's task.
 
-User's Task: {question}
+User's Task: {inputs}
 
-Agent's Response: {answer}
+Agent's Response: {outputs}
 
 Evaluate based on:
 1. Did the agent understand the task correctly?
@@ -293,11 +522,14 @@ Respond with a JSON object: {{"score": <number>, "reasoning": "<explanation>"}}"
 
 
 # 自定义 prompt 用于工具选择评估
+# NOTE: 这里使用 {inputs} 包含任务和工具信息
 TOOL_SELECTION_PROMPT = """You are evaluating whether an AI agent selected appropriate tools for a task.
 
-User's Task: {question}
+Task and Tools Info:
+{inputs}
 
-Tools Used: {tools_used}
+Agent's Response:
+{outputs}
 
 Evaluate based on:
 1. Were the tools appropriate for the task?
@@ -315,19 +547,38 @@ Score:
 Respond with a JSON object: {{"score": <number>, "reasoning": "<explanation>"}}"""
 
 
-# Evaluator 模型配置
-# 可选: 
+# Evaluator 模型配置常量
+# 可选:
 #   - "anthropic:claude-opus-4-5-20251101" (Claude Opus 4.5 - 最新最强)
 #   - "anthropic:claude-3-5-sonnet-20241022" (Claude 3.5 Sonnet - 性价比)
 #   - "openai:gpt-4o-mini" (GPT-4o-mini - 最便宜)
-EVALUATOR_MODEL = "anthropic:claude-opus-4-5-20251101"  # Claude Opus 4.5 (2025年11月)
+EVALUATOR_MODEL_OPUS = "anthropic:claude-opus-4-5-20251101"
+EVALUATOR_MODEL_SONNET = "anthropic:claude-3-5-sonnet-20241022"
+EVALUATOR_MODEL_GPT4O_MINI = "openai:gpt-4o-mini"
+
+# Default model
+EVALUATOR_MODEL = EVALUATOR_MODEL_OPUS  # Claude Opus 4.5 (2025年11月)
 
 
 def _create_llm_evaluators():
-    """创建 LLM-as-judge 评估器（使用 Claude Opus 4.5）"""
+    """创建 LLM-as-judge 评估器（使用 Claude Opus 4.5）
+    
+    IMPORTANT: 这个函数必须在 setup_env() 之后调用，否则没有 API Key
+    """
     if not OPENEVALS_AVAILABLE:
         logger.warning("[Evaluators] openevals not available, LLM evaluators disabled")
         return {}
+    
+    # 确保 API Key 已设置
+    import os
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        logger.warning("[Evaluators] ANTHROPIC_API_KEY not set, trying to load from api_keys...")
+        try:
+            from api_keys import setup_env
+            setup_env()
+        except Exception as e:
+            logger.error(f"[Evaluators] Failed to load API keys: {e}")
+            return {}
     
     try:
         evaluators = {}
@@ -377,8 +628,15 @@ def _create_llm_evaluators():
         return {}
 
 
-# 创建 LLM 评估器实例
-_llm_evaluators = _create_llm_evaluators()
+# 懒加载 LLM 评估器（避免在导入时就需要 API Key）
+_llm_evaluators = None
+
+def _get_llm_evaluators():
+    """懒加载获取 LLM 评估器"""
+    global _llm_evaluators
+    if _llm_evaluators is None:
+        _llm_evaluators = _create_llm_evaluators()
+    return _llm_evaluators
 
 
 def _wrap_llm_evaluator(evaluator_key: str, feedback_key: str):
@@ -387,50 +645,76 @@ def _wrap_llm_evaluator(evaluator_key: str, feedback_key: str):
     
     返回一个使用 @run_evaluator 装饰器格式的评估器函数，
     这样 LangSmith 可以正确调用它。
+    
+    IMPORTANT: openevals 期望 inputs/outputs 是字符串，不是字典！
     """
     
     @run_evaluator
     def evaluator_fn(run: Run, example: Example) -> Dict[str, Any]:
-        llm_eval = _llm_evaluators.get(evaluator_key)
+        evaluators = _get_llm_evaluators()
+        llm_eval = evaluators.get(evaluator_key)
         if llm_eval is None:
             return {"key": feedback_key, "score": 0.5, "comment": "LLM evaluator not available"}
         
         try:
             # 从 run 获取 inputs 和 outputs
-            inputs = run.inputs or {}
-            outputs = run.outputs or {}
+            run_inputs = run.inputs or {}
+            run_outputs = run.outputs or {}
             
-            # 转换字段名 - openevals 期望 question/answer 格式
-            eval_inputs = {"question": inputs.get("task", "")}
-            eval_outputs = {"answer": outputs.get("response", "")}
+            # openevals 期望字符串参数，不是字典！
+            task_str = run_inputs.get("task", "")
+            response_str = run_outputs.get("response", "")
             
-            # 对于工具选择评估器，添加工具信息
+            # 对于工具选择评估器，添加工具信息到 inputs
             if evaluator_key == "tool_selection":
-                tool_calls = outputs.get("tool_calls", [])
+                tool_calls = run_outputs.get("tool_calls", [])
                 tools_str = ", ".join(
                     tc.get("name", "unknown") for tc in tool_calls if isinstance(tc, dict)
                 ) if tool_calls else "None"
-                eval_inputs["tools_used"] = tools_str
-            
-            # 对于幻觉检测，需要提供 context
-            # context 可以是 reference 输出或者 agent 响应本身
-            if evaluator_key == "hallucination":
-                # 使用 agent 响应作为 context（检测响应内部一致性）
-                eval_outputs["context"] = outputs.get("response", "")
+                task_str = f"Task: {task_str}\nTools used: {tools_str}"
             
             # 获取 reference outputs（如果有）
-            reference_outputs = {}
+            ref_str = ""
             if example and hasattr(example, 'outputs') and example.outputs:
-                reference_outputs = example.outputs
+                ref_outputs = example.outputs
+                ref_str = str(ref_outputs.get("trajectory", ref_outputs.get("response_pattern", "")))
             
-            result = llm_eval(
-                inputs=eval_inputs,
-                outputs=eval_outputs,
-                reference_outputs=reference_outputs,
-            )
+            # 调用评估器 - 使用字符串参数
+            if evaluator_key == "hallucination":
+                # 幻觉检测需要 context 参数
+                result = llm_eval(
+                    inputs=task_str,
+                    outputs=response_str,
+                    context=response_str,  # 使用响应本身作为 context
+                    reference_outputs=ref_str,
+                )
+            else:
+                result = llm_eval(
+                    inputs=task_str,
+                    outputs=response_str,
+                    reference_outputs=ref_str,
+                )
             
-            score = result.score if hasattr(result, 'score') else 0.5
-            comment = result.comment if hasattr(result, 'comment') else "LLM evaluation completed"
+            # openevals 可能返回 dict 或 object
+            if isinstance(result, dict):
+                raw_score = result.get('score', 0.5)
+                comment = result.get('comment', "LLM evaluation completed")
+            else:
+                raw_score = result.score if hasattr(result, 'score') else 0.5
+                comment = result.comment if hasattr(result, 'comment') else "LLM evaluation completed"
+            
+            # openevals 返回布尔值或字符串，需要转换为浮点数
+            if isinstance(raw_score, bool):
+                score = 1.0 if raw_score else 0.0
+            elif isinstance(raw_score, str):
+                try:
+                    score = float(raw_score)
+                except ValueError:
+                    score = 0.5  # 无法解析时使用默认值
+            elif isinstance(raw_score, (int, float)):
+                score = float(raw_score)
+            else:
+                score = 0.5  # 默认值
             
             return {"key": feedback_key, "score": score, "comment": comment}
             
@@ -499,11 +783,28 @@ def get_llm_evaluators() -> List[Callable]:
 
 def get_all_evaluators() -> List[Callable]:
     """
-    获取所有评估器（规则 + LLM）
+    获取所有评估器（规则 + UX + LLM）
+    
+    包含全部 11 个评估器：
+    - 规则: latency, token_count, tool_call_count, error_rate
+    - UX: ttft, follow_up, content_richness
+    - LLM: task_completion, hallucination, correctness, conciseness, tool_selection
     
     推荐用于全面评估
     """
-    return get_rule_evaluators() + get_llm_evaluators()
+    evaluators = get_rule_evaluators()  # 4 个规则评估器
+    
+    # 添加 UX 评估器（不重复添加 latency）
+    evaluators.extend([
+        ttft_evaluator,
+        follow_up_evaluator,
+        content_richness_evaluator,
+    ])
+    
+    # 添加 LLM 评估器
+    evaluators.extend(get_llm_evaluators())
+    
+    return evaluators
 
 
 def get_fast_evaluators() -> List[Callable]:
@@ -548,6 +849,32 @@ def get_essential_evaluators() -> List[Callable]:
             task_completion_llm_evaluator,
             hallucination_evaluator,
         ])
+    
+    return evaluators
+
+
+def get_ux_evaluators() -> List[Callable]:
+    """
+    获取 UX 评估器（用户体验指标，感知迭代变化）
+    
+    包含：
+    - ttft: 首 Token 时间（目标 < 1s）
+    - follow_up: 追问建议检测
+    - content_richness: 内容丰富度
+    - latency: 总延迟
+    - task_completion_llm: 任务完成度
+    
+    推荐用于迭代对比评估
+    """
+    evaluators = [
+        ttft_evaluator,
+        follow_up_evaluator,
+        content_richness_evaluator,
+        latency_evaluator,
+    ]
+    
+    if OPENEVALS_AVAILABLE:
+        evaluators.append(task_completion_llm_evaluator)
     
     return evaluators
 

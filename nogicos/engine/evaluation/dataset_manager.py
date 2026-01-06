@@ -65,31 +65,39 @@ class DatasetInfo:
 class DatasetManager:
     """
     Manages LangSmith datasets for NogicOS evaluation.
-    
+
     Features:
     - Create datasets from production runs
     - Add manual test examples
     - List and query datasets
     """
-    
+
     def __init__(self, api_key: Optional[str] = None):
         """
         Initialize DatasetManager.
-        
+
         Args:
             api_key: LangSmith API key (uses config if not provided)
         """
         if not LANGSMITH_AVAILABLE:
             raise ImportError("LangSmith not installed. Run: pip install langsmith")
-        
+
         self.api_key = api_key or LANGSMITH_API_KEY
         if not self.api_key:
             raise ValueError("LangSmith API key required")
-        
+
         self.client = Client(api_key=self.api_key)
         self.project_name = LANGSMITH_PROJECT
-        
+
         logger.info(f"[DatasetManager] Initialized for project: {self.project_name}")
+
+    def __repr__(self) -> str:
+        """Safe repr that doesn't expose API key"""
+        return f"DatasetManager(project={self.project_name}, api_key=***)"
+
+    def __str__(self) -> str:
+        """Safe str that doesn't expose API key"""
+        return f"DatasetManager(project={self.project_name})"
     
     def create_from_runs(
         self,
@@ -124,7 +132,8 @@ class DatasetManager:
         runs = list(self.client.list_runs(
             project_name=project,
             execution_order=1,  # Only parent runs
-            error=not only_successful if only_successful else None,
+            # 【修复 #21】修复布尔逻辑：only_successful=True 时应排除错误
+            error=False if only_successful else None,
             limit=limit,
         ))
         
@@ -460,6 +469,36 @@ COMPREHENSIVE_EXAMPLES = [
     # ===============================
     {"inputs": {"task": "同时列出 Desktop 和 Documents 的文件"}, 
      "outputs": {"success": True, "trajectory": ["list_directory", "list_directory"], "response_pattern": "Desktop|Documents|文件"}},
+
+    # ===============================
+    # 13. TTFT 敏感场景 (3) - 必须快速响应
+    # ===============================
+    {"inputs": {"task": "hi"}, 
+     "outputs": {"success": True, "trajectory": [], "response_pattern": "你好|嗨|有什么", "ttft_target_ms": 1000}},
+    {"inputs": {"task": "ok"}, 
+     "outputs": {"success": True, "trajectory": [], "response_pattern": "好|明白|了解", "ttft_target_ms": 1000}},
+    {"inputs": {"task": "?"}, 
+     "outputs": {"success": True, "trajectory": [], "response_pattern": "什么|帮助|问题", "ttft_target_ms": 1000}},
+
+    # ===============================
+    # 14. 追问建议场景 (3) - 应该主动追问
+    # ===============================
+    {"inputs": {"task": "帮我整理一下"}, 
+     "outputs": {"success": True, "trajectory": [], "should_follow_up": True, "response_pattern": "整理什么|具体|请问"}},
+    {"inputs": {"task": "优化这个"}, 
+     "outputs": {"success": True, "trajectory": [], "should_follow_up": True, "response_pattern": "优化什么|哪个|请指定"}},
+    {"inputs": {"task": "改进代码"}, 
+     "outputs": {"success": True, "trajectory": [], "should_follow_up": True, "response_pattern": "哪段|什么代码|请提供"}},
+
+    # ===============================
+    # 15. 富内容场景 (3) - 应该有结构化输出
+    # ===============================
+    {"inputs": {"task": "写一个 Python 排序函数"}, 
+     "outputs": {"success": True, "trajectory": [], "should_have_code": True, "response_pattern": "def|sort|python"}},
+    {"inputs": {"task": "解释 OAuth 认证流程"}, 
+     "outputs": {"success": True, "trajectory": [], "should_have_list": True, "response_pattern": "OAuth|认证|流程|步骤"}},
+    {"inputs": {"task": "对比 REST 和 GraphQL"}, 
+     "outputs": {"success": True, "trajectory": [], "should_have_structure": True, "response_pattern": "REST|GraphQL|对比|区别"}},
 ]
 
 # Backward compatibility alias
@@ -468,10 +507,10 @@ GOLDEN_EXAMPLES = COMPREHENSIVE_EXAMPLES
 
 def create_comprehensive_dataset(dataset_name: str = "nogicos_comprehensive") -> DatasetInfo:
     """
-    Create a comprehensive test dataset with 45 curated examples.
+    Create a comprehensive test dataset with 54 curated examples.
     
     Based on NogicOS core narrative: "The AI that works where you work"
-    Covers: Browser + Files + Desktop = Complete Context
+    Covers: Browser + Files + Desktop = Complete Context + UX Evaluation
     
     Categories:
     - Simple chat (3)
@@ -486,6 +525,9 @@ def create_comprehensive_dataset(dataset_name: str = "nogicos_comprehensive") ->
     - Error recovery (4)
     - Security boundaries (3)
     - Parallel execution (1)
+    - TTFT sensitive (3) - UX: must respond fast
+    - Follow-up scenarios (3) - UX: should ask clarifying questions
+    - Rich content scenarios (3) - UX: should have structured output
     
     Args:
         dataset_name: Name for the dataset
@@ -507,7 +549,7 @@ def create_comprehensive_dataset(dataset_name: str = "nogicos_comprehensive") ->
     # Create new dataset
     dataset = manager.client.create_dataset(
         dataset_name=dataset_name,
-        description="NogicOS comprehensive test set - 45 curated examples covering Browser + Files + Desktop",
+        description="NogicOS comprehensive test set - 54 curated examples covering Browser + Files + Desktop + UX",
     )
     
     # Add examples (LangSmith standard format: inputs/outputs)
@@ -524,7 +566,7 @@ def create_comprehensive_dataset(dataset_name: str = "nogicos_comprehensive") ->
     return DatasetInfo(
         id=str(dataset.id),
         name=dataset_name,
-        description="Comprehensive test set (45 examples)",
+        description="Comprehensive test set (54 examples, includes UX evaluation)",
         example_count=len(COMPREHENSIVE_EXAMPLES),
         created_at=datetime.now(),
     )

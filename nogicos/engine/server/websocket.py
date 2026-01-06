@@ -20,8 +20,8 @@ Usage:
 import asyncio
 import json
 import logging
-from typing import Set, Dict, Any, Optional, AsyncGenerator
-from dataclasses import dataclass, asdict
+from typing import Set, Dict, Any, Optional, AsyncGenerator, List
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
 
 logger = logging.getLogger("nogicos.server")
@@ -86,11 +86,7 @@ class KnowledgeStats:
     """Knowledge store statistics"""
     trajectory_count: int = 0
     domain_count: int = 0
-    domains: list = None
-    
-    def __post_init__(self):
-        if self.domains is None:
-            self.domains = []
+    domains: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -133,12 +129,20 @@ class StatusServer:
         self._agent_status = AgentStatus()
         self._learning_status = LearningStatus()
         self._knowledge_stats = KnowledgeStats()
-        
+
         # CDP response callbacks (for Python → Electron → Python bidirectional communication)
         self._cdp_response_handlers: Dict[str, Any] = {}
-        
+        self._cdp_handler_timestamps: Dict[str, float] = {}  # Track creation time for cleanup
+
         # Tool response callbacks (for Tool calls to Electron)
         self._tool_response_handlers: Dict[str, Any] = {}
+        self._tool_handler_timestamps: Dict[str, float] = {}  # Track creation time for cleanup
+
+        # Handler timeout in seconds (default: 5 minutes)
+        self._handler_timeout_seconds: float = 300.0
+
+        # Start background cleanup task
+        self._cleanup_task: Optional[asyncio.Task] = None
     
     @property
     def client_count(self) -> int:
@@ -153,11 +157,11 @@ class StatusServer:
         if not WEBSOCKETS_AVAILABLE:
             logger.error("[Server] Cannot start: websockets not installed")
             return False
-        
+
         if self._running:
             logger.warning("[Server] Already running")
             return True
-        
+
         try:
             self._server = await websockets.serve(
                 self._handle_client,
@@ -165,25 +169,86 @@ class StatusServer:
                 self.port,
             )
             self._running = True
+
+            # Start background cleanup task for stale handlers
+            self._cleanup_task = asyncio.create_task(self._cleanup_stale_handlers())
+
             logger.info(f"[Server] WebSocket server started at ws://{self.host}:{self.port}")
             return True
         except Exception as e:
             logger.error(f"[Server] Failed to start: {e}")
             return False
+
+    async def _cleanup_stale_handlers(self):
+        """Background task to clean up stale response handlers to prevent memory leaks"""
+        import time
+        while self._running:
+            try:
+                await asyncio.sleep(60)  # Check every minute
+                current_time = time.time()
+
+                # Clean up stale CDP handlers
+                stale_cdp = [
+                    request_id for request_id, timestamp in self._cdp_handler_timestamps.items()
+                    if current_time - timestamp > self._handler_timeout_seconds
+                ]
+                for request_id in stale_cdp:
+                    self._cdp_response_handlers.pop(request_id, None)
+                    self._cdp_handler_timestamps.pop(request_id, None)
+                    logger.debug(f"[Server] Cleaned up stale CDP handler: {request_id[:8]}...")
+
+                # Clean up stale tool handlers
+                stale_tool = [
+                    call_id for call_id, timestamp in self._tool_handler_timestamps.items()
+                    if current_time - timestamp > self._handler_timeout_seconds
+                ]
+                for call_id in stale_tool:
+                    self._tool_response_handlers.pop(call_id, None)
+                    self._tool_handler_timestamps.pop(call_id, None)
+                    logger.debug(f"[Server] Cleaned up stale tool handler: {call_id[:8]}...")
+
+                if stale_cdp or stale_tool:
+                    logger.info(f"[Server] Cleaned up {len(stale_cdp)} CDP + {len(stale_tool)} tool stale handlers")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"[Server] Handler cleanup error: {e}")
     
     async def stop(self):
         """Stop WebSocket server"""
         if not self._running:
             return
-        
+
         self._running = False
-        
-        # Close all client connections
+
+        # Cancel cleanup task
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+
+        # Clear all pending handlers to prevent memory leaks
+        self._cdp_response_handlers.clear()
+        self._cdp_handler_timestamps.clear()
+        self._tool_response_handlers.clear()
+        self._tool_handler_timestamps.clear()
+
+        # Close all client connections with timeout
         if self._clients:
-            await asyncio.gather(
-                *[client.close() for client in self._clients],
-                return_exceptions=True
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *[client.close() for client in self._clients],
+                        return_exceptions=True
+                    ),
+                    timeout=5.0  # 5 second timeout for graceful close
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[Server] Timeout closing client connections")
             self._clients.clear()
         
         # Close server
@@ -216,10 +281,61 @@ class StatusServer:
             self._clients.discard(websocket)
             logger.info(f"[Server] Client removed: {client_id} (remaining: {len(self._clients)})")
     
+    # Security: Maximum message size (1MB) to prevent DoS
+    MAX_MESSAGE_SIZE = 1 * 1024 * 1024
+
+    # [P0-3 FIX] Security: Maximum JSON nesting depth to prevent DoS
+    MAX_JSON_DEPTH = 20
+
+    # Security: Allowed tool names whitelist (use frozenset for immutability)
+    # [P0 FIX Round 2] REMOVED shell_execute - too dangerous for remote execution
+    # shell_execute can run arbitrary commands, should never be exposed via WebSocket
+    ALLOWED_TOOLS = frozenset({
+        "browser_navigate", "browser_click", "browser_type", "browser_scroll",
+        "browser_screenshot", "browser_read", "browser_close",
+        "file_read", "file_list", "file_search",  # REMOVED file_write - potential data loss
+        "search_web", "search_tavily",
+        "desktop_screenshot", "desktop_click", "desktop_type",
+        "memory_add", "memory_search", "memory_list",
+    })
+
+    @staticmethod
+    def _check_json_depth(obj, current_depth: int = 0, max_depth: int = 20) -> bool:
+        """
+        [P0-3 FIX] Check if JSON object exceeds maximum nesting depth.
+        Returns True if depth is within limits, False otherwise.
+        """
+        if current_depth > max_depth:
+            return False
+
+        if isinstance(obj, dict):
+            for value in obj.values():
+                if not StatusServer._check_json_depth(value, current_depth + 1, max_depth):
+                    return False
+        elif isinstance(obj, list):
+            for item in obj:
+                if not StatusServer._check_json_depth(item, current_depth + 1, max_depth):
+                    return False
+
+        return True
+
     async def _handle_message(self, websocket, message: str):
         """Handle incoming message from client"""
+        # Security: Check message size
+        if len(message) > self.MAX_MESSAGE_SIZE:
+            logger.warning(f"[Server] Message too large: {len(message)} bytes (max: {self.MAX_MESSAGE_SIZE})")
+            await websocket.send(json.dumps({"type": "error", "message": "Message too large"}))
+            return
+
         try:
+            # [P0-3 FIX] Parse JSON with depth limit protection
             data = json.loads(message)
+
+            # [P0-3 FIX] Validate JSON nesting depth to prevent stack overflow
+            if not self._check_json_depth(data, max_depth=self.MAX_JSON_DEPTH):
+                logger.warning(f"[Server] JSON nesting depth exceeds limit: {self.MAX_JSON_DEPTH}")
+                await websocket.send(json.dumps({"type": "error", "message": "JSON too deeply nested"}))
+                return
             msg_type = data.get("type", "")
             
             if msg_type == "ping":
@@ -298,22 +414,30 @@ class StatusServer:
     async def send_tool_call(self, tool_name: str, args: dict, timeout: float = 30.0) -> Any:
         """
         Send tool call to Electron and wait for response
-        
+
         Args:
             tool_name: Name of the tool to execute
             args: Tool arguments
             timeout: Timeout in seconds
-            
+
         Returns:
             Tool execution result
+
+        Raises:
+            ValueError: If tool_name is not in ALLOWED_TOOLS whitelist
         """
+        # Security: Validate tool name against whitelist
+        if tool_name not in self.ALLOWED_TOOLS:
+            logger.warning(f"[Server] Blocked tool call to non-whitelisted tool: {tool_name}")
+            raise ValueError(f"Tool '{tool_name}' is not allowed")
+
         import uuid
         call_id = str(uuid.uuid4())
         
         # Create Future to wait for response
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future = loop.create_future()
-        
+
         def on_response(result, error):
             logger.info(f"[Server] on_response called: done={future.done()}, error={error}")
             if not future.done():
@@ -326,9 +450,11 @@ class StatusServer:
             else:
                 logger.warning(f"[Server] Future already done, ignoring response")
         
-        # Register response handler
+        # Register response handler with timestamp for cleanup
+        import time
         self._tool_response_handlers[call_id] = on_response
-        
+        self._tool_handler_timestamps[call_id] = time.time()
+
         try:
             # Send tool call to all clients (Electron will execute)
             tool_msg = {
@@ -350,9 +476,10 @@ class StatusServer:
         except asyncio.TimeoutError:
             raise Exception(f"Tool call timeout: {tool_name}")
         finally:
-            # Clean up handler
+            # Clean up handler and timestamp
             self._tool_response_handlers.pop(call_id, None)
-    
+            self._tool_handler_timestamps.pop(call_id, None)
+
     async def send_cdp_command(self, method: str, params: dict = None, timeout: float = 30.0) -> dict:
         """
         Send CDP command and wait for response (for Python internal calls)
@@ -369,9 +496,9 @@ class StatusServer:
         request_id = str(uuid.uuid4())
         
         # Create Future to wait for response
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future = loop.create_future()
-        
+
         def on_response(data):
             if not future.done():
                 error = data.get("error")
@@ -380,9 +507,11 @@ class StatusServer:
                 else:
                     future.set_result(data.get("result"))
         
-        # Register response handler
+        # Register response handler with timestamp for cleanup
+        import time
         self._cdp_response_handlers[request_id] = on_response
-        
+        self._cdp_handler_timestamps[request_id] = time.time()
+
         try:
             # Send command to all clients (Electron will handle cdp_command)
             await self.broadcast({
@@ -393,16 +522,17 @@ class StatusServer:
                     "params": params or {},
                 }
             })
-            
+
             # Wait for response
             result = await asyncio.wait_for(future, timeout=timeout)
             return result
-            
+
         except asyncio.TimeoutError:
             raise Exception(f"CDP command timeout: {method}")
         finally:
-            # Clean up handler
+            # Clean up handler and timestamp
             self._cdp_response_handlers.pop(request_id, None)
+            self._cdp_handler_timestamps.pop(request_id, None)
     
     async def _send_full_status(self, websocket):
         """Send full status to a specific client"""

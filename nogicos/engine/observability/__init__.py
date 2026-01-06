@@ -86,10 +86,9 @@ class TraceSpan:
 
 class ModuleTracer:
     """Module-level tracer"""
-    
-    _spans: list = []
-    
+
     def __init__(self, module: str):
+        self._spans: list = []
         self.module = module
         self.logger = logging.getLogger(module)
     
@@ -116,5 +115,5 @@ class ModuleTracer:
             duration = (span.end_time - span.start_time).total_seconds() * 1000
             if span.status == "success":
                 self.logger.debug(f"[DONE] {operation} ({duration:.1f}ms)")
-            ModuleTracer._spans.append(span)
+            self._spans.append(span)
 

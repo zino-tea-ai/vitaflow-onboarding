@@ -153,9 +153,16 @@ class SelfTestLoop:
                 "description": "Python traceback leaked to user response"
             })
         
-        # Check for unhandled exceptions
-        if "Exception:" in response or "Error:" in response:
-            if "handled" not in response.lower() and "sorry" not in response.lower():
+        # Check for unhandled exceptions (enhanced patterns)
+        error_patterns = [
+            "Exception:", "Error:", "failed:", "FAILED",
+            "KeyError:", "ValueError:", "TypeError:", "AttributeError:",
+            "ConnectionError:", "TimeoutError:", "FileNotFoundError:",
+        ]
+        if any(pattern in response for pattern in error_patterns):
+            # Allow if the error is being explained/handled
+            handled_indicators = ["handled", "sorry", "error occurred", "encountered", "couldn't"]
+            if not any(ind in response.lower() for ind in handled_indicators):
                 issues.append({
                     "type": "raw_error",
                     "severity": "medium",
@@ -266,7 +273,8 @@ class SelfTestLoop:
         print(f"Failed:   {failed}")
         print(f"Timeouts: {timeouts}")
         print(f"Crashes:  {crashes}")
-        print(f"Pass Rate: {passed/total*100:.1f}%")
+        pass_rate = passed / total * 100 if total > 0 else 0
+        print(f"Pass Rate: {pass_rate:.1f}%")
         print()
         
         # Group issues by type
@@ -308,4 +316,11 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
+
+
+
+
 

@@ -134,8 +134,15 @@ def _get_region_for_category(category: str) -> Dict[str, int]:
     return SCREEN_REGIONS.get(region_name, SCREEN_REGIONS["main_content"])
 
 
-def _random_point_in_region(region: Dict[str, int]) -> Tuple[int, int]:
-    """Get a random point within a region"""
+def _random_point_in_region(region: Dict[str, int], seed: int = None) -> Tuple[int, int]:
+    """Get a random point within a region
+
+    Args:
+        region: Region dict with x, y, w, h
+        seed: Optional seed for reproducible results in tests
+    """
+    if seed is not None:
+        random.seed(seed)
     x = region["x"] + random.randint(10, max(10, region["w"] - 10))
     y = region["y"] + random.randint(10, max(10, region["h"] - 10))
     return x, y
@@ -371,6 +378,13 @@ async def visualize_tool_end(server, tool_name: str, success: bool, step: int = 
         
     except Exception as e:
         logger.warning(f"[Viz] Failed to visualize tool end: {e}")
+
+
+
+
+
+
+
 
 
 

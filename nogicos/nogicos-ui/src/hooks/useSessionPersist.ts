@@ -70,17 +70,28 @@ export function useSessionPersist(options: UseSessionPersistOptions = {}) {
       }
       
       const data = await response.json();
-      
-      // 转换为前端格式
-      const formattedSessions: SessionSummary[] = (data.sessions || []).map((s: any) => ({
-        id: s.id,
-        title: s.title || 'Untitled',
-        preview: s.preview || '',
-        message_count: s.message_count || 0,
-        created_at: s.created_at,
-        updated_at: s.updated_at,
-      }));
-      
+
+      // [P1 FIX] Enhanced data validation with type guards
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid response format');
+      }
+
+      const rawSessions = Array.isArray(data.sessions) ? data.sessions : [];
+
+      // 转换为前端格式 with validation
+      const formattedSessions: SessionSummary[] = rawSessions
+        .filter((s: unknown): s is Record<string, unknown> =>
+          s !== null && typeof s === 'object' && 'id' in s && typeof (s as any).id === 'string'
+        )
+        .map((s) => ({
+          id: String(s.id),
+          title: typeof s.title === 'string' ? s.title : 'Untitled',
+          preview: typeof s.preview === 'string' ? s.preview : '',
+          message_count: typeof s.message_count === 'number' ? s.message_count : 0,
+          created_at: typeof s.created_at === 'string' ? s.created_at : new Date().toISOString(),
+          updated_at: typeof s.updated_at === 'string' ? s.updated_at : new Date().toISOString(),
+        }));
+
       setSessions(formattedSessions);
       return formattedSessions;
     } catch (e) {
@@ -104,13 +115,29 @@ export function useSessionPersist(options: UseSessionPersistOptions = {}) {
       }
       
       const data = await response.json();
+
+      // [P1 FIX] Validate response structure
+      if (!data || typeof data !== 'object' || typeof data.id !== 'string') {
+        throw new Error('Invalid session data format');
+      }
+
+      // [P1 FIX] Validate history array
+      const history = Array.isArray(data.history)
+        ? data.history.filter((m: unknown): m is Message =>
+            m !== null && typeof m === 'object' &&
+            'role' in m && typeof (m as any).role === 'string' &&
+            ['user', 'assistant', 'system'].includes((m as any).role) &&
+            'content' in m && typeof (m as any).content === 'string'
+          )
+        : [];
+
       return {
         id: data.id,
-        title: data.title || 'Untitled',
-        history: data.history || [],
-        preferences: data.preferences || {},
-        created_at: data.created_at,
-        updated_at: data.updated_at,
+        title: typeof data.title === 'string' ? data.title : 'Untitled',
+        history,
+        preferences: typeof data.preferences === 'object' && data.preferences !== null ? data.preferences : {},
+        created_at: typeof data.created_at === 'string' ? data.created_at : new Date().toISOString(),
+        updated_at: typeof data.updated_at === 'string' ? data.updated_at : new Date().toISOString(),
       };
     } catch (e) {
       handleError(e);

@@ -10,13 +10,23 @@ import json
 import asyncio
 import logging
 import functools
+import time
+import os
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import (
-    Dict, Any, List, Callable, Optional, Union, 
+    Dict, Any, List, Callable, Optional, Union,
     TypeVar, Generic, Awaitable, get_type_hints
 )
 from inspect import signature, Parameter, iscoroutinefunction
+
+# Import ToolDescription for type checking
+try:
+    from .descriptions import ToolDescription
+    DESCRIPTIONS_AVAILABLE = True
+except ImportError:
+    DESCRIPTIONS_AVAILABLE = False
+    ToolDescription = None
 
 try:
     from pydantic import BaseModel, Field, create_model
@@ -105,15 +115,23 @@ class ToolRegistry:
     
     def action(
         self,
-        description: str,
+        description: Union[str, "ToolDescription"],
         category: ToolCategory = ToolCategory.SYSTEM,
         requires_context: Optional[List[str]] = None,
     ) -> Callable:
         """
         Decorator for registering actions.
         
+        Supports both simple string descriptions and structured ToolDescription objects.
+        
         Usage:
+            # Simple string description
             @registry.action("Navigate to a URL", category=ToolCategory.BROWSER)
+            async def navigate(url: str) -> str:
+                ...
+            
+            # Structured ToolDescription (recommended)
+            @registry.action(BROWSER_NAVIGATE, category=ToolCategory.BROWSER)
             async def navigate(url: str) -> str:
                 ...
         """
@@ -147,10 +165,16 @@ class ToolRegistry:
                 "required": required
             }
             
+            # Convert ToolDescription to string if needed
+            if DESCRIPTIONS_AVAILABLE and hasattr(description, 'to_string'):
+                description_str = description.to_string()
+            else:
+                description_str = str(description)
+            
             # Create tool definition
             tool_def = ToolDefinition(
                 name=func.__name__,
-                description=description,
+                description=description_str,
                 input_schema=input_schema,
                 category=category,
                 handler=func,
@@ -267,34 +291,47 @@ class ToolRegistry:
         
         return tools
     
+    # Default configuration (can be overridden via environment variables)
+    DEFAULT_MAX_RETRIES = int(os.environ.get("NOGICOS_TOOL_MAX_RETRIES", "3"))
+    DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("NOGICOS_TOOL_TIMEOUT", "30.0"))
+
     async def execute(
         self,
         name: str,
         args: Dict[str, Any],
-        max_retries: int = 3,
-        timeout_seconds: float = 30.0,
+        max_retries: int = None,
+        timeout_seconds: float = None,
     ) -> ToolResult:
         """
         Execute a tool by name with given arguments.
-        
+
         Phase D: Reliability improvements
         - D1.1: Automatic retry (up to max_retries)
         - D1.2: Timeout handling (timeout_seconds)
         - D1.3: Graceful degradation
         - D1.4: User-friendly error messages
-        
+
         Args:
             name: Tool name
             args: Tool arguments
-            max_retries: Maximum retry attempts (default: 3)
-            timeout_seconds: Execution timeout in seconds (default: 30)
-            
+            max_retries: Maximum retry attempts (default: from NOGICOS_TOOL_MAX_RETRIES env or 3)
+            timeout_seconds: Execution timeout in seconds (default: from NOGICOS_TOOL_TIMEOUT env or 30)
+
+        Environment Variables:
+            NOGICOS_TOOL_MAX_RETRIES: Default max retries (default: 3)
+            NOGICOS_TOOL_TIMEOUT: Default timeout in seconds (default: 30.0)
+
         Returns:
             ToolResult with success status and output
         """
-        import time
+        # Use defaults from environment variables if not specified
+        if max_retries is None:
+            max_retries = self.DEFAULT_MAX_RETRIES
+        if timeout_seconds is None:
+            timeout_seconds = self.DEFAULT_TIMEOUT_SECONDS
+
         start_time = time.time()
-        
+
         tool = self._tools.get(name)
         if not tool:
             return ToolResult(
@@ -344,9 +381,11 @@ class ToolRegistry:
                 last_error = str(e)
                 logger.warning(f"Tool '{name}' failed: {e} (attempt {attempt + 1}/{max_retries})")
             
-            # Wait before retry (exponential backoff)
+            # Wait before retry (exponential backoff with upper limit)
+            # [P1 FIX] Cap exponential backoff at 10 seconds to prevent excessive waits
             if attempt < max_retries - 1:
-                await asyncio.sleep(0.5 * (attempt + 1))
+                backoff = min(0.5 * (2 ** attempt), 10.0)  # Cap at 10 seconds
+                await asyncio.sleep(backoff)
         
         # D1.3: Graceful degradation - all retries failed
         duration_ms = int((time.time() - start_time) * 1000)
@@ -395,21 +434,28 @@ class ToolRegistry:
         return f"{tool_name} failed: {error}"
 
 
-# Global registry instance
+# Global registry instance with thread safety
+import threading
+
 _global_registry: Optional[ToolRegistry] = None
+_registry_lock = threading.Lock()
 
 
 def get_registry() -> ToolRegistry:
-    """Get or create the global tool registry"""
+    """Get or create the global tool registry (thread-safe)"""
     global _global_registry
     if _global_registry is None:
-        _global_registry = ToolRegistry()
+        with _registry_lock:
+            # Double-check locking pattern
+            if _global_registry is None:
+                _global_registry = ToolRegistry()
     return _global_registry
 
 
 def reset_registry() -> None:
     """Reset the global registry (for testing)"""
     global _global_registry
-    _global_registry = None
+    with _registry_lock:
+        _global_registry = None
 
 

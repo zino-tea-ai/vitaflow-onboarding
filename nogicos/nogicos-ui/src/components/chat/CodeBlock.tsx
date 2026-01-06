@@ -1,7 +1,26 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { Check, Copy, ChevronDown, ChevronUp } from 'lucide-react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { cn } from '@/lib/utils';
 import './styles/cursor-theme.css';
+
+// Custom theme based on VS Code Dark+
+const customTheme = {
+  ...oneDark,
+  'pre[class*="language-"]': {
+    ...oneDark['pre[class*="language-"]'],
+    background: 'transparent',
+    margin: 0,
+    padding: 0,
+    fontSize: '13px',
+    lineHeight: '1.6',
+  },
+  'code[class*="language-"]': {
+    ...oneDark['code[class*="language-"]'],
+    background: 'transparent',
+  },
+};
 
 interface DiffLine {
   type: 'add' | 'del' | 'context';
@@ -33,7 +52,7 @@ interface CodeBlockProps {
  * - Copy button
  * - Collapsible
  */
-export function CodeBlock({
+export const CodeBlock = memo(function CodeBlock({
   code,
   language,
   filename,
@@ -46,9 +65,28 @@ export function CodeBlock({
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.warn('Clipboard API failed:', err);
+      // Fallback for older browsers or permission denied
+      const textarea = document.createElement('textarea');
+      textarea.value = code;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {
+        console.error('Fallback copy failed');
+      }
+      document.body.removeChild(textarea);
+    }
   };
 
   const hasDiff = diff && (diff.additions > 0 || diff.deletions > 0);
@@ -135,14 +173,32 @@ export function CodeBlock({
               ))}
             </pre>
           ) : (
-            // Regular code view
-            <pre className="text-[13px] font-mono text-[var(--syntax-function)] leading-relaxed">
-              <code>{code}</code>
-            </pre>
+            // Regular code view with syntax highlighting
+            <SyntaxHighlighter
+              language={language || 'text'}
+              style={customTheme}
+              customStyle={{
+                background: 'transparent',
+                padding: 0,
+                margin: 0,
+                borderRadius: 0,
+              }}
+              showLineNumbers={code.split('\n').length > 3}
+              lineNumberStyle={{
+                minWidth: '2.5em',
+                paddingRight: '1em',
+                color: 'var(--chat-text-muted)',
+                userSelect: 'none',
+              }}
+              wrapLines={true}
+              PreTag="div"
+            >
+              {code}
+            </SyntaxHighlighter>
           )}
         </div>
       )}
     </div>
   );
-}
+});
 

@@ -24,6 +24,7 @@ import sys
 import json
 import time
 import logging
+import aiohttp
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -125,11 +126,12 @@ class StatsResponse(BaseModel):
 
 class NogicEngine:
     """Simplified engine for V2 architecture"""
-    
+
     def __init__(self):
         self.status_server: Optional[StatusServer] = None
         self.chatkit_server: Optional["NogicOSChatServer"] = None  # ChatKit 服务器
         self.agent: Optional[ReActAgent] = None  # Reusable agent instance
+        self._agent_lock = asyncio.Lock()  # Lock for agent access
         self._executing = False
         self._current_task: Optional[str] = None
         self._stats = {
@@ -138,7 +140,17 @@ class NogicEngine:
             "failed": 0,
         }
         self._start_time = time.time()
-    
+
+    async def get_agent(self) -> ReActAgent:
+        """Get agent instance with lock protection for thread safety"""
+        async with self._agent_lock:
+            if self.agent is None:
+                self.agent = ReActAgent(
+                    status_server=self.status_server,
+                    max_iterations=20,
+                )
+            return self.agent
+
     async def start_websocket(self):
         """Start WebSocket server"""
         self.status_server = StatusServer(port=8765)
@@ -168,13 +180,26 @@ class NogicEngine:
     
     async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         """Execute task using ReAct Agent with mode support"""
-        if self._executing:
-            raise HTTPException(status_code=429, detail="Another task is executing")
-        
-        self._executing = True
+        # [P0-5 FIX] Use lock for thread-safe execution check with guaranteed cleanup
+        async with self._agent_lock:
+            if self._executing:
+                raise HTTPException(status_code=429, detail="Another task is executing")
+            self._executing = True
+
         task_content = request.task_content
         self._current_task = task_content[:100]
         start_time = time.time()
+
+        # [P0-5 FIX] Wrap everything in try-finally to ensure state cleanup
+        try:
+            return await self._execute_task(request, task_content, start_time)
+        finally:
+            # [P0-5 FIX] Always reset execution state, even on unexpected errors
+            self._executing = False
+            self._current_task = None
+
+    async def _execute_task(self, request: ExecuteRequest, task_content: str, start_time: float) -> ExecuteResponse:
+        """Internal task execution logic - separated for clean error handling"""
         
         # Parse mode
         from engine.agent.modes import AgentMode
@@ -208,12 +233,13 @@ class NogicEngine:
                 logger.warning(f"[Engine] Failed to parse confirmed plan: {e}")
         
         try:
-            # Create ReAct Agent
-            agent = ReActAgent(
-                status_server=self.status_server,
-                max_iterations=request.max_steps,
-            )
-            
+            # [P1 FIX] Reuse existing agent instance instead of creating new one each time
+            # This saves 1-2s initialization overhead per request
+            agent = await self.get_agent()
+            # Update max_iterations if different from default
+            if agent.max_iterations != request.max_steps:
+                agent.max_iterations = request.max_steps
+
             # Execute based on mode
             if confirmed_plan:
                 # Execute confirmed plan
@@ -272,9 +298,7 @@ class NogicEngine:
                 time_seconds=time.time() - start_time,
                 error=str(e),
             )
-        finally:
-            self._executing = False
-            self._current_task = None
+        # [P0-5 FIX] finally block removed - cleanup now handled in outer execute() method
     
     def get_stats(self) -> StatsResponse:
         """Get server statistics"""
@@ -347,13 +371,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# CORS - Security: Limit allowed origins
+# In production, set ALLOWED_ORIGINS env var
+# Note: file:// removed for security - use proper Electron protocol handling
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else [
+    "http://localhost:5173",   # Vite dev server
+    "http://localhost:5174",   # Vite alternative port
+    "http://localhost:5175",   # Vite alternative port
+    "http://localhost:3000",   # React dev server
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+    "http://localhost:8080",   # Local server
+    "http://127.0.0.1:8080",   # Local server
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Session-ID"],
 )
 
 
@@ -416,16 +453,28 @@ class QuickSearchRequest(BaseModel):
 
 
 @app.post("/v2/quick-search")
-async def quick_search(request: QuickSearchRequest):
+async def quick_search(request: QuickSearchRequest, req: Request):
     """
     快速搜索 - 直接调用 Tavily API，跳过 Agent 流程
-    
+
     速度: 1-3 秒 (vs Agent 的 20-30 秒)
     用途: 简单搜索查询
+
+    Security: Requires authentication via Authorization header or X-API-Key
     """
-    import aiohttp
-    import time
-    
+    # Security: Verify authentication
+    auth_header = req.headers.get("Authorization", "")
+    api_key_header = req.headers.get("X-API-Key", "")
+    expected_key = os.environ.get("NOGICOS_API_KEY", "")
+
+    if expected_key:
+        is_valid = (
+            auth_header == f"Bearer {expected_key}" or
+            api_key_header == expected_key
+        )
+        if not is_valid:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
     start = time.time()
     
     # Get API key
@@ -440,21 +489,31 @@ async def quick_search(request: QuickSearchRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="TAVILY_API_KEY not configured")
     
-    # Direct Tavily API call
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": api_key,
-                "query": request.query,
-                "max_results": request.max_results,
-                "include_answer": True,
-                "include_raw_content": False,
-            }
-        ) as resp:
-            if resp.status != 200:
-                raise HTTPException(status_code=resp.status, detail="Tavily API error")
-            data = await resp.json()
+    # [P1 FIX] Direct Tavily API call with enhanced error handling and timeout
+    try:
+        timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": api_key,
+                    "query": request.query[:500],  # [P1 FIX] Limit query length
+                    "max_results": min(request.max_results, 10),  # [P1 FIX] Limit results
+                    "include_answer": True,
+                    "include_raw_content": False,
+                }
+            ) as resp:
+                if resp.status != 200:
+                    # [P1 FIX] Log error details but don't expose to client
+                    error_text = await resp.text()
+                    logger.error(f"[Tavily] API error {resp.status}: {error_text[:200]}")
+                    raise HTTPException(status_code=502, detail="External search service error")
+                data = await resp.json()
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Search request timeout")
+    except aiohttp.ClientError as e:
+        logger.error(f"[Tavily] Client error: {e}")
+        raise HTTPException(status_code=502, detail="Search service unavailable")
     
     elapsed = time.time() - start
     
@@ -539,25 +598,82 @@ async def warm_cache(request: WarmCacheRequest):
 async def read_file(path: str):
     """Read file content (for frontend)"""
     try:
-        # Security: only allow reading from workspace
-        workspace = os.path.dirname(__file__)
-        full_path = os.path.normpath(os.path.join(workspace, path))
-        
-        if not full_path.startswith(workspace):
+        # [P0-4 FIX] Enhanced path validation
+
+        # 1. Input validation - reject obviously malicious inputs early
+        # [P0 FIX Round 2] Block absolute paths including Windows drive letters
+        if not path or '..' in path or path.startswith('/') or path.startswith('\\'):
+            logger.warning(f"[Security] Blocked malicious path input: {path[:50]}")
+            raise HTTPException(status_code=400, detail="Invalid path")
+
+        # [P0 FIX Round 2] Block Windows absolute paths (C:\, D:\, etc.)
+        if len(path) >= 2 and path[1] == ':':
+            logger.warning(f"[Security] Blocked Windows absolute path: {path[:50]}")
+            raise HTTPException(status_code=400, detail="Invalid path")
+
+        # 2. Normalize workspace path
+        workspace = os.path.realpath(os.path.dirname(__file__))
+
+        # 3. Safely join and resolve the full path
+        requested_path = os.path.normpath(path)
+        full_path = os.path.realpath(os.path.join(workspace, requested_path))
+
+        # 4. [P0-4 FIX] Use commonpath for robust path containment check
+        # This works correctly on both Windows and Unix
+        try:
+            common = os.path.commonpath([workspace, full_path])
+            if common != workspace:
+                logger.warning(f"[Security] Path traversal blocked: {path} -> {full_path}")
+                raise HTTPException(status_code=403, detail="Access denied")
+        except ValueError:
+            # Different drives on Windows
+            logger.warning(f"[Security] Cross-drive access blocked: {path}")
             raise HTTPException(status_code=403, detail="Access denied")
-        
+
+        # 5. [P0-4 FIX] Check for symbolic links (prevent symlink attacks)
+        if os.path.islink(full_path):
+            logger.warning(f"[Security] Symbolic link access blocked: {full_path}")
+            raise HTTPException(status_code=403, detail="Symbolic links not allowed")
+
+        # 6. [P0-4 FIX] Block sensitive file patterns (case-insensitive)
+        path_lower = full_path.lower()
+        sensitive_patterns = [
+            '.env', '.ssh', 'credentials', 'secrets', '.git/config',
+            'api_keys', 'password', 'token', '.npmrc', '.pypirc',
+            'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+            '.aws/credentials', '.azure', '.kube/config',
+        ]
+        for pattern in sensitive_patterns:
+            if pattern in path_lower:
+                logger.warning(f"[Security] Blocked access to sensitive file: {path}")
+                raise HTTPException(status_code=403, detail="Access denied to sensitive file")
+
+        # 7. Check file existence and type
         if not os.path.exists(full_path):
             raise HTTPException(status_code=404, detail="File not found")
-        
+
+        if not os.path.isfile(full_path):
+            raise HTTPException(status_code=400, detail="Not a file")
+
+        # 8. [P0-4 FIX] File size limit (prevent DoS)
+        file_size = os.path.getsize(full_path)
+        max_file_size = 10 * 1024 * 1024  # 10MB
+        if file_size > max_file_size:
+            raise HTTPException(status_code=413, detail="File too large")
+
+        # 9. Read file safely
         with open(full_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        
-        return {"path": path, "content": content}
-        
+
+        return {"path": requested_path, "content": content}
+
     except HTTPException:
         raise
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File is not text/UTF-8")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[Security] File read error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ============================================================================
@@ -839,12 +955,16 @@ class ChatRequest(BaseModel):
     messages: Optional[list] = None  # Traditional format
     text: Optional[str] = None  # New sendMessage format
     session_id: str = "default"
-    
-    class Config:
-        extra = "allow"  # Allow extra fields like temperature, etc.
+
+    model_config = {"extra": "allow"}  # Pydantic v2: Allow extra fields like temperature
 
 
-async def generate_ai_sdk_stream(task: str, session_id: str, conversation_history: list = None):
+async def generate_ai_sdk_stream(
+    task: str, 
+    session_id: str, 
+    conversation_history: list = None,
+    file_context: dict = None,  # NEW: Current file context
+):
     """
     Generate SSE stream compatible with Vercel AI SDK 5.0 Data Stream Protocol.
     
@@ -860,15 +980,27 @@ async def generate_ai_sdk_stream(task: str, session_id: str, conversation_histor
         task: Current user message
         session_id: Session identifier
         conversation_history: Previous messages for context (optional)
+        file_context: Current file context from IDE (optional)
+            {
+                "path": "path/to/file.py",
+                "content": "file content...",
+                "selected": "selected code...",
+                "cursorLine": 42,
+                "cursorColumn": 10,
+                "visibleRange": [30, 60]
+            }
     """
     import uuid
-    
-    # Reuse global agent instance (initialized once at server startup)
+
+    # Reuse global agent instance with lock protection
     # This avoids 1-2s initialization overhead per request
-    agent = engine.agent if engine else ReActAgent(
-        status_server=None,
-        max_iterations=20,
-    )
+    if engine:
+        agent = await engine.get_agent()
+    else:
+        agent = ReActAgent(
+            status_server=None,
+            max_iterations=20,
+        )
     
     message_id = str(uuid.uuid4())
     text_id = f"text_{uuid.uuid4().hex[:8]}"
@@ -880,8 +1012,8 @@ async def generate_ai_sdk_stream(task: str, session_id: str, conversation_histor
     def sse(data: dict) -> str:
         return f"data: {json.dumps(data)}\n\n"
     
-    # Use queue to collect events from callbacks
-    event_queue: asyncio.Queue = asyncio.Queue()
+    # 【修复 #8】限制 event_queue 大小防止内存爆炸
+    event_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
     agent_done = asyncio.Event()
     
     async def thinking_callback(delta: str):
@@ -958,6 +1090,40 @@ async def generate_ai_sdk_stream(task: str, session_id: str, conversation_histor
                     context = "## 之前的对话:\n" + "\n".join(context_parts[-6:])  # Keep last 3 turns (6 messages)
                     logger.info(f"[Chat] Injecting {len(context_parts)} previous messages as context")
             
+            # Build file context section (Cursor-style auto-injection)
+            if file_context:
+                file_context_parts = []
+                
+                if file_context.get("path"):
+                    file_context_parts.append(f"当前文件: {file_context['path']}")
+                
+                if file_context.get("cursorLine"):
+                    col = file_context.get("cursorColumn", "")
+                    col_str = f":{col}" if col else ""
+                    file_context_parts.append(f"光标位置: 第 {file_context['cursorLine']} 行{col_str}")
+                
+                if file_context.get("selected"):
+                    file_context_parts.append(f"\n--- 选中代码 ---\n{file_context['selected']}\n--- 选中结束 ---")
+                elif file_context.get("content"):
+                    content = file_context["content"]
+                    lines = content.split('\n')
+                    if len(lines) <= 50:
+                        # Small file, include all
+                        file_context_parts.append(f"\n--- 文件内容 ---\n{content}\n--- 文件结束 ---")
+                    elif file_context.get("cursorLine"):
+                        # Large file, show context around cursor
+                        cursor_line = file_context["cursorLine"]
+                        start = max(0, cursor_line - 15)
+                        end = min(len(lines), cursor_line + 15)
+                        context_lines = lines[start:end]
+                        numbered = [f"{i+start+1:4d}|{line}" for i, line in enumerate(context_lines)]
+                        file_context_parts.append(f"\n--- 光标附近代码 (行 {start+1}-{end}) ---\n" + "\n".join(numbered) + "\n--- 代码结束 ---")
+                
+                if file_context_parts:
+                    file_context_str = "\n".join(file_context_parts)
+                    context = f"## 当前文件上下文:\n{file_context_str}\n\n" + (context or "")
+                    logger.info(f"[Chat] Injecting file context: {file_context.get('path', 'unknown')}")
+            
             result = await agent.run(
                 task=task,
                 session_id=session_id,
@@ -984,8 +1150,9 @@ async def generate_ai_sdk_stream(task: str, session_id: str, conversation_histor
         finally:
             agent_done.set()
     
-    # Start agent in background
+    # 【修复 #9】Start agent in background with exception handling
     agent_task = asyncio.create_task(run_agent())
+    agent_task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
     
     # Send stream start
     yield sse({"type": "start", "messageId": message_id})
@@ -1073,14 +1240,20 @@ async def chat_endpoint(request: Request):
         logger.warning(f"[Chat] No user message found in request: {body}")
         raise HTTPException(status_code=400, detail="No user message found")
     
+    # Extract file context (Cursor-style auto-injection from IDE)
+    # Frontend can send: { fileContext: { path, content, selected, cursorLine, cursorColumn, visibleRange } }
+    file_context = body.get("fileContext") or body.get("file_context")
+    
     # Log context info
-    if conversation_history:
+    if file_context:
+        logger.info(f"[Chat] Processing: {user_message[:100]}... (file: {file_context.get('path', 'unknown')})")
+    elif conversation_history:
         logger.info(f"[Chat] Processing: {user_message[:100]}... (with {len(conversation_history)} history messages)")
     else:
         logger.info(f"[Chat] Processing: {user_message[:100]}...")
     
     return StreamingResponse(
-        generate_ai_sdk_stream(user_message, session_id, conversation_history),
+        generate_ai_sdk_stream(user_message, session_id, conversation_history, file_context),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -1155,15 +1328,278 @@ async def chatkit_endpoint(request: Request):
         )
 
 
+# ============================================================================
+# Hook System API Endpoints
+# ============================================================================
+
+# Import Hook Manager
+try:
+    from engine.context import get_hook_manager, ConnectionTarget
+    HOOK_SYSTEM_AVAILABLE = True
+except ImportError:
+    HOOK_SYSTEM_AVAILABLE = False
+    logger.warning("Hook system not available")
+
+
+class HookConnectRequest(BaseModel):
+    """Hook connect request"""
+    type: str  # browser, desktop, file
+    target: str = ""  # Optional target (e.g., chrome, directory path)
+
+
+@app.get("/api/hooks/status")
+async def get_hook_status():
+    """
+    Get current Hook system status.
+    
+    Returns all connected hooks and their current context.
+    """
+    if not HOOK_SYSTEM_AVAILABLE:
+        return {"hooks": {}, "available": False}
+    
+    try:
+        manager = await get_hook_manager()
+        status = manager.get_status()
+        return status
+    except Exception as e:
+        logger.error(f"Failed to get hook status: {e}")
+        return {"hooks": {}, "error": str(e)}
+
+
+@app.post("/api/hooks/connect")
+async def connect_hook(request: HookConnectRequest):
+    """
+    Connect to an application/resource.
+    
+    Supported types:
+    - browser: Connect to user's browser (Chrome, Firefox, Edge)
+    - desktop: Monitor active windows
+    - file: Watch file changes in a directory
+    """
+    if not HOOK_SYSTEM_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Hook system not available")
+    
+    try:
+        manager = await get_hook_manager()
+        
+        success = await manager.connect(ConnectionTarget(
+            type=request.type,
+            target=request.target,
+        ))
+        
+        # 【修复】连接后立即 capture 一次上下文，确保 API 响应包含完整数据
+        if success:
+            hook = manager.get_hook(request.type)
+            if hook:
+                context = await hook.capture()  # 立即获取第一次上下文
+                if context:
+                    hook._notify_context_update(context)  # 手动更新到 state.context
+        
+        if success:
+            return {
+                "success": True,
+                "message": f"Connected to {request.type}",
+                "status": manager.get_status(),
+            }
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to connect to {request.type}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to connect hook: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/hooks/disconnect/{hook_id}")
+async def disconnect_hook(hook_id: str):
+    """
+    Disconnect a hook by ID.
+    """
+    if not HOOK_SYSTEM_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Hook system not available")
+    
+    try:
+        manager = await get_hook_manager()
+        success = await manager.disconnect(hook_id)
+        
+        return {
+            "success": success,
+            "message": f"Disconnected {hook_id}" if success else f"Failed to disconnect {hook_id}",
+        }
+    except Exception as e:
+        logger.error(f"Failed to disconnect hook: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/hooks/context")
+async def get_hook_context():
+    """
+    Get current context from all connected hooks.
+    
+    This is the context that gets injected into the Agent.
+    """
+    if not HOOK_SYSTEM_AVAILABLE:
+        return {"context": {}, "prompt": ""}
+    
+    try:
+        from engine.context import get_context_store
+        store = get_context_store()
+        
+        return {
+            "context": store.get_context_for_agent(),
+            "prompt": store.format_context_prompt(),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get hook context: {e}")
+        return {"context": {}, "prompt": "", "error": str(e)}
+
+
+# ============================================================================
+# Window Discovery API（用于通用应用连接器）
+# ============================================================================
+
+@app.get("/api/windows")
+async def get_all_windows():
+    """
+    Get all visible windows for the window selector UI.
+    
+    Returns:
+        List of windows with hwnd, title, app_name, is_browser, etc.
+    
+    Used by:
+        - ConnectorPanel window list selector
+        - Drag-and-drop connector target identification
+    """
+    try:
+        from engine.context.hooks.desktop_hook import get_all_windows as _get_all_windows
+
+        windows = _get_all_windows()
+
+        # Security: Update discovered HWNDs whitelist
+        global _discovered_hwnds
+        _discovered_hwnds = {w.hwnd for w in windows}
+
+        return {
+            "success": True,
+            "count": len(windows),
+            "windows": [w.to_dict() for w in windows],
+        }
+    except ImportError as e:
+        logger.warning(f"Window discovery not available: {e}")
+        return {
+            "success": False,
+            "count": 0,
+            "windows": [],
+            "error": "Window discovery not available on this platform",
+        }
+    except Exception as e:
+        logger.error(f"Failed to get windows: {e}")
+        return {
+            "success": False,
+            "count": 0,
+            "windows": [],
+            "error": str(e),
+        }
+
+
+class ConnectWindowRequest(BaseModel):
+    """Connect to a specific window by HWND"""
+    hwnd: int
+    window_title: str = ""  # Optional, for display
+
+
+# Security: HWND whitelist - only allow connecting to windows that were discovered
+_discovered_hwnds: set = set()
+
+
+@app.post("/api/windows/connect")
+async def connect_to_window(request: ConnectWindowRequest):
+    """
+    Connect to a specific window by HWND.
+    
+    This is the unified app connector - works for browsers, IDEs, and any app.
+    
+    Args:
+        hwnd: Window handle to connect to
+        window_title: Optional window title for display
+    
+    Returns:
+        Connection status and context
+    """
+    if not HOOK_SYSTEM_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Hook system not available")
+
+    # Security: Validate HWND against whitelist
+    global _discovered_hwnds
+    if request.hwnd not in _discovered_hwnds:
+        logger.warning(f"[Security] Attempted connection to non-whitelisted HWND: {request.hwnd}")
+        raise HTTPException(status_code=403, detail="HWND not in discovered windows whitelist")
+
+    try:
+        from engine.context.hooks.desktop_hook import get_all_windows as _get_all_windows, BROWSER_PROCESSES
+
+        # Find window info by HWND
+        windows = _get_all_windows()
+        target_window = None
+        for w in windows:
+            if w.hwnd == request.hwnd:
+                target_window = w
+                break
+
+        if not target_window:
+            raise HTTPException(status_code=404, detail=f"Window with HWND {request.hwnd} not found")
+        
+        # Determine hook type based on app
+        hook_type = "browser" if target_window.is_browser else "desktop"
+        
+        # Connect using appropriate hook
+        manager = await get_hook_manager()
+        # 使用 hwnd 作为 target，让 DesktopHook 锁定到特定窗口
+        success = await manager.connect(ConnectionTarget(
+            type=hook_type,
+            target=str(request.hwnd),  # 传递 HWND，不是 app_name
+        ))
+        
+        if success:
+            # Get hook and update context with window info
+            hook = manager.get_hook(hook_type)
+            if hook:
+                context = await hook.capture()
+                if context:
+                    # Inject HWND into context for Overlay
+                    if hasattr(context, 'hwnd'):
+                        context.hwnd = request.hwnd
+                    hook._notify_context_update(context)
+            
+            return {
+                "success": True,
+                "hook_type": hook_type,
+                "window": target_window.to_dict(),
+                "status": manager.get_status(),
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to connect to window")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to connect to window: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health")
 async def health():
     """Health check endpoint"""
+    memory_mb = 0
     try:
         import psutil
         process = psutil.Process()
         memory_mb = process.memory_info().rss / 1024 / 1024
-    except:
-        memory_mb = 0
+    except ImportError:
+        pass  # psutil not installed
+    except (OSError, AttributeError, Exception):
+        pass  # Process or memory info not available
     
     uptime = time.time() - server_start_time
     

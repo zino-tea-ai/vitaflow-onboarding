@@ -16,6 +16,9 @@ from typing import Optional, List
 from pathlib import Path
 
 from .base import ToolRegistry, ToolCategory, get_registry
+from .descriptions import (
+    APPEND_FILE, GET_CWD, PATH_EXISTS, COPY_FILE
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,33 @@ ALLOWED_ROOTS = [
     os.path.expanduser("~"),  # User home
     os.getcwd(),  # Current working directory
 ]
+
+# Security: Sensitive directories that should be excluded from operations
+SENSITIVE_PATTERNS = [
+    ".ssh",           # SSH keys and config
+    ".gnupg",         # GPG keys
+    ".env",           # Environment files
+    ".aws",           # AWS credentials
+    ".azure",         # Azure credentials
+    ".gcp",           # GCP credentials
+    ".kube",          # Kubernetes config
+    ".docker",        # Docker config
+    "credentials",    # Generic credentials
+    "secrets",        # Generic secrets
+    ".netrc",         # Network credentials
+    ".npmrc",         # NPM auth tokens
+    ".pypirc",        # PyPI auth tokens
+]
+
+
+def _is_sensitive_path(path: str) -> bool:
+    """Check if path contains sensitive directories"""
+    abs_path = os.path.realpath(path).lower()
+    path_parts = abs_path.replace("\\", "/").split("/")
+    for pattern in SENSITIVE_PATTERNS:
+        if pattern.lower() in path_parts:
+            return True
+    return False
 
 # Protected directories that should NOT be modified by file organization tasks
 PROTECTED_PATTERNS = [
@@ -44,9 +74,74 @@ CODE_EXTENSIONS = {
 
 
 def _is_path_allowed(path: str) -> bool:
-    """Check if path is within allowed directories"""
-    abs_path = os.path.abspath(path)
-    return any(abs_path.startswith(root) for root in ALLOWED_ROOTS)
+    """Check if path is within allowed directories and not sensitive"""
+    # [P1 FIX] Enhanced symlink check - detect TOCTOU race conditions
+    try:
+        # Get normalized path (but don't resolve symlinks yet)
+        normalized_path = os.path.normpath(os.path.abspath(path))
+
+        # Security: Reject symbolic links to prevent symlink attacks
+        if os.path.islink(path):
+            return False
+
+        # Security: Also check if any parent directory is a symlink
+        # Check from the path itself up to root
+        current = normalized_path
+        checked_paths = set()  # Prevent infinite loops from circular symlinks
+        for _ in range(100):  # Prevent infinite loops
+            if current in checked_paths:
+                return False  # Circular reference detected
+            checked_paths.add(current)
+
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            # Check if parent exists and is a symlink
+            if os.path.exists(parent) and os.path.islink(parent):
+                return False
+            current = parent
+
+        # Now resolve the actual path (follows symlinks)
+        abs_path = os.path.realpath(path)
+
+        # [P1 FIX] Windows multi-drive security - ensure path stays on allowed drives
+        # Extract drive letter for Windows
+        if os.name == 'nt':
+            path_drive = os.path.splitdrive(abs_path)[0].upper()
+            allowed_drives = set()
+            for root in ALLOWED_ROOTS:
+                root_drive = os.path.splitdrive(root)[0].upper()
+                if root_drive:
+                    allowed_drives.add(root_drive)
+            # If we have allowed drives and path drive doesn't match
+            if allowed_drives and path_drive not in allowed_drives:
+                return False
+
+        # [P1 FIX] Use commonpath for secure path prefix checking
+        in_allowed_root = False
+        for root in ALLOWED_ROOTS:
+            try:
+                root_abs = os.path.realpath(root)
+                # Use commonpath to prevent path traversal
+                common = os.path.commonpath([abs_path, root_abs])
+                if common == root_abs:
+                    in_allowed_root = True
+                    break
+            except ValueError:
+                # commonpath raises ValueError if paths are on different drives
+                continue
+
+        if not in_allowed_root:
+            return False
+
+        # Check if path is sensitive
+        if _is_sensitive_path(abs_path):
+            return False
+        return True
+
+    except (OSError, ValueError):
+        # Any path resolution error should fail closed
+        return False
 
 
 def _is_protected_path(path: str) -> tuple[bool, str]:
@@ -221,7 +316,7 @@ Note: Creates parent directories automatically. Overwrites existing files.""",
             return f"Error writing file: {str(e)}"
     
     @registry.action(
-        description="Append content to the end of a file. Creates the file if it doesn't exist.",
+        description=APPEND_FILE,
         category=ToolCategory.LOCAL
     )
     async def append_file(path: str, content: str) -> str:
@@ -258,33 +353,132 @@ Parameters:
 - timeout: Max seconds (default: 30)
 
 Returns: STDOUT, STDERR, exit code
-Security: Blocks rm -rf /, sudo, format, shutdown""",
+Security: Enhanced command validation with whitelist approach""",
         category=ToolCategory.LOCAL
     )
     async def shell_execute(command: str, timeout: int = 30) -> str:
-        """Execute shell command"""
+        """Execute shell command with enhanced security"""
+        import shlex
         try:
-            # Security: Block dangerous commands
-            dangerous_patterns = [
-                r'\brm\s+-rf\s+/',
-                r'\bsudo\b',
-                r'\bformat\b',
-                r'\bdel\s+/[sf]',
-                r'\bshutdown\b',
-                r'\breboot\b',
+            # [P0-1 FIX] Enhanced security: Multi-layer command validation
+
+            # Layer 1: Normalize and detect encoding bypasses
+            normalized_cmd = command.lower()
+            # Detect hex/octal/base64 encoding attempts
+            encoding_patterns = [
+                r'\\x[0-9a-f]{2}',           # hex encoding
+                r'\\[0-7]{3}',               # octal encoding
+                r'\$\'\\x',                  # $'\x...' bash syntax
+                r'base64\s+(-d|--decode)',   # base64 decode
+                r'\$\{IFS\}',                # IFS variable bypass
             ]
-            
-            for pattern in dangerous_patterns:
+            for pattern in encoding_patterns:
                 if re.search(pattern, command, re.IGNORECASE):
+                    logger.warning(f"[Security] Blocked encoding bypass attempt: {pattern}")
+                    return "Error: Command blocked - encoding bypass detected"
+
+            # Layer 2: Block dangerous command patterns (comprehensive)
+            dangerous_patterns = [
+                # Destructive file operations
+                (r'\brm\s+(-[rfivd]+\s+)*[/*~]', "destructive rm"),
+                (r'/bin/rm\b', "direct rm path"),
+                (r'/usr/bin/rm\b', "direct rm path"),
+                (r'\bdel\s+[/\\]', "Windows del"),
+                (r'\brmdir\s+[/\\]', "rmdir system"),
+                (r'\brd\s+/s', "Windows rd /s"),
+                # Privilege escalation
+                (r'\bsudo\b', "sudo"),
+                (r'\bsu\s+(-|root)', "su"),
+                (r'\bdoas\b', "doas"),
+                (r'\brunas\b', "runas"),
+                (r'\bpkexec\b', "pkexec"),
+                # System control
+                (r'\bshutdown\b', "shutdown"),
+                (r'\breboot\b', "reboot"),
+                (r'\bhalt\b', "halt"),
+                (r'\bpoweroff\b', "poweroff"),
+                (r'\binit\s+[06]', "init"),
+                (r'\bsystemctl\s+(halt|poweroff|reboot)', "systemctl"),
+                # Disk operations
+                (r'\bmkfs\b', "mkfs"),
+                (r'\bfdisk\b', "fdisk"),
+                (r'\bformat\b', "format"),
+                (r'\bdd\s+.*of=', "dd write"),
+                (r'\bparted\b', "parted"),
+                # Dangerous redirects
+                (r'>\s*/dev/', "redirect to /dev"),
+                (r'>\s*/etc/', "redirect to /etc"),
+                (r'>\s*/boot/', "redirect to /boot"),
+                (r'\bchmod\s+(777|a\+rwx)', "chmod 777"),
+                (r'\bchown\s+root', "chown root"),
+                # Network backdoors
+                (r'\bnc\s+-[elpvn]*\s', "netcat"),
+                (r'\bncat\b', "ncat"),
+                (r'\bsocat\b', "socat"),
+                (r'bash\s+-i\s*>&', "reverse shell"),
+                (r'/dev/tcp/', "bash tcp"),
+                (r'\bcurl\b.*\|\s*(ba)?sh', "curl to shell"),
+                (r'\bwget\b.*\|\s*(ba)?sh', "wget to shell"),
+                # Code injection
+                (r'\beval\s+["\']', "eval"),
+                (r'`[^`]+`', "backtick substitution"),
+                (r'\$\([^)]+\)', "command substitution"),
+            ]
+
+            for pattern, reason in dangerous_patterns:
+                if re.search(pattern, normalized_cmd, re.IGNORECASE):
+                    logger.warning(f"[Security] Blocked dangerous command ({reason}): {command[:50]}...")
                     return f"Error: Command blocked for security reasons"
-            
-            # Run command
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=os.getcwd()
-            )
+
+            # Layer 3: Validate command isn't targeting sensitive paths
+            if _is_sensitive_path(command):
+                return "Error: Command targets sensitive directory"
+
+            # Layer 4: Parse command safely
+            try:
+                args = shlex.split(command)
+                if not args:
+                    return "Error: Empty command"
+            except ValueError as e:
+                logger.warning(f"[Security] Invalid command syntax: {e}")
+                return f"Error: Invalid command syntax"
+
+            # Layer 5: Determine execution mode
+            # Prefer subprocess without shell when possible
+            shell_chars = ['|', '&', ';', '>', '<', '$', '`', '(', ')', '{', '}', '*', '?']
+            needs_shell = any(c in command for c in shell_chars)
+
+            if needs_shell:
+                # Additional validation for shell mode
+                # Block command chaining unless to safe targets
+                if re.search(r'[;&]', command):
+                    # [P0-1 FIX Round 1] Only allow truly safe command chains
+                    # REMOVED npm/pip/git - they can execute arbitrary code
+                    # npm: npm exec, npm run-script can run arbitrary code
+                    # pip: pip install -e can run setup.py
+                    # git: git config core.hookspath can execute hooks
+                    parts = re.split(r'[;&]', command)
+                    for part in parts:
+                        part = part.strip()
+                        if part and not any(part.startswith(safe) for safe in
+                            ['echo ', 'cd ', 'pwd', 'ls ', 'dir ', 'type ', 'cat ']):
+                            logger.warning(f"[Security] Blocked unsafe command chain: {part[:30]}...")
+                            return "Error: Unsafe command chain blocked"
+
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=os.getcwd()
+                )
+            else:
+                # [P0-1 FIX] Use subprocess without shell - safer
+                process = await asyncio.create_subprocess_exec(
+                    *args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=os.getcwd()
+                )
             
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -414,7 +608,7 @@ Returns: Matching lines as file:line:content (max 50)""",
                                 results.append(f"{filepath}:{line_num}: {line.strip()}")
                                 if len(results) >= max_results:
                                     break
-                except:
+                except (IOError, OSError, UnicodeDecodeError, PermissionError):
                     continue
                 
                 if len(results) >= max_results:
@@ -515,7 +709,7 @@ Returns: Success message""",
             return f"Error creating directory: {str(e)}"
     
     @registry.action(
-        description="Get the current working directory.",
+        description=GET_CWD,
         category=ToolCategory.LOCAL
     )
     async def get_cwd() -> str:
@@ -642,19 +836,7 @@ PROTECTED: Won't move .git, code projects, system folders.""",
             return f"Error moving file: {str(e)}"
     
     @registry.action(
-        description="""Copy a file or directory.
-
-Examples:
-- copy_file("doc.txt", "doc_backup.txt") → Copy file
-- copy_file("folder", "folder_copy") → Copy entire folder
-- copy_file("~/config.json", "~/backup/config.json") → Copy to different location
-
-Parameters:
-- source: Path to copy from
-- destination: Path to copy to
-
-Returns: Success message
-Note: Preserves file metadata, creates destination dir if needed""",
+        description=COPY_FILE,
         category=ToolCategory.LOCAL
     )
     async def copy_file(source: str, destination: str) -> str:
@@ -717,17 +899,30 @@ PROTECTED: Won't delete .git, code projects, system files.""",
                 return f"Error: Path not found: {path}"
             
             # Additional safety check: don't delete important directories
+            # Windows paths are case-insensitive, so normalize for comparison
             danger_paths = [
                 os.path.expanduser("~"),
-                "C:\\",
-                "C:\\Windows",
-                "C:\\Program Files",
                 "/",
                 "/home",
                 "/usr",
             ]
+            # Windows-specific paths (case-insensitive)
+            windows_danger_paths = [
+                "c:\\",
+                "c:\\windows",
+                "c:\\program files",
+                "c:\\program files (x86)",
+                "c:\\users",
+            ]
             abs_path = os.path.abspath(path)
+            abs_path_lower = abs_path.lower()
+
+            # Check exact matches for Unix paths
             if abs_path in danger_paths:
+                return f"Error: Refusing to delete protected path: {path}"
+
+            # Check case-insensitive matches for Windows paths
+            if abs_path_lower in windows_danger_paths or abs_path_lower.rstrip("\\") in windows_danger_paths:
                 return f"Error: Refusing to delete protected path: {path}"
             
             if os.path.isdir(path):
@@ -745,7 +940,7 @@ PROTECTED: Won't delete .git, code projects, system files.""",
             return f"Error deleting: {str(e)}"
     
     @registry.action(
-        description="Check if a file or directory exists at the given path.",
+        description=PATH_EXISTS,
         category=ToolCategory.LOCAL
     )
     async def path_exists(path: str) -> str:
@@ -788,7 +983,7 @@ Parameters:
 Returns: List of errors with line numbers and messages""",
         category=ToolCategory.LOCAL
     )
-    async def read_lints(paths: List[str], linter: str = None) -> str:
+    async def read_lints(paths: List[str], linter: Optional[str] = None) -> str:
         """Read linter errors for specified files"""
         try:
             results = []

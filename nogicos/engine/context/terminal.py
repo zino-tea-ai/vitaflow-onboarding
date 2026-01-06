@@ -8,7 +8,7 @@ Similar to Cursor's <terminal_files_information> injection.
 
 import os
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from dataclasses import dataclass, field
 from collections import deque
 
@@ -41,9 +41,9 @@ class TerminalTracker:
         """
         self.max_history = max_history
         # Per-session command history
-        self._history: Dict[str, deque] = {}
+        self._history: dict[str, deque] = {}
         # Current working directory per session
-        self._cwd: Dict[str, str] = {}
+        self._cwd: dict[str, str] = {}
     
     def record_command(
         self,
@@ -158,4 +158,11 @@ def get_terminal_tracker() -> TerminalTracker:
     if _tracker is None:
         _tracker = TerminalTracker()
     return _tracker
+
+
+
+
+
+
+
 

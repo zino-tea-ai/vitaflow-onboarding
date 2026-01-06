@@ -10,6 +10,7 @@ export type { ToolExecution, ToolStatus } from './ToolCard';
 export { StreamingText } from './StreamingText';
 export { ThinkingIndicator } from './ThinkingIndicator';
 export type { ThinkingState } from './ThinkingIndicator';
+export { ConnectorPanel } from './ConnectorPanel';
 
 // Visualization exports
 export { 

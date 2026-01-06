@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
+import { ConnectorPanel } from './ConnectorPanel';
 
 export interface Session {
   id: string;
@@ -65,7 +66,7 @@ export function Sidebar({
   };
 
   return (
-    <aside className="w-64 flex flex-col bg-black border-r border-neutral-900">
+    <aside className="w-64 h-full flex flex-col bg-black border-r border-neutral-900">
       {/* Header */}
       <div className="p-3 space-y-3">
         {/* New Chat Button */}
@@ -105,56 +106,57 @@ export function Sidebar({
             filteredSessions.map((session) => (
               <div
                 key={session.id}
-                className="group relative"
+                onClick={() => onSelectSession(session.id)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === 'Enter' && onSelectSession(session.id)}
+                className={cn(
+                  'group grid grid-cols-[16px_1fr_28px] items-center gap-2 px-3 py-2 transition-all cursor-pointer border-l-2',
+                  activeSessionId === session.id
+                    ? 'text-white border-white bg-neutral-900/50'
+                    : 'text-neutral-500 hover:text-neutral-300 border-transparent hover:border-neutral-700'
+                )}
               >
-                <div
-                  onClick={() => onSelectSession(session.id)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => e.key === 'Enter' && onSelectSession(session.id)}
-                  className={cn(
-                    'w-full text-left px-3 py-2 transition-all cursor-pointer border-l-2',
-                    activeSessionId === session.id
-                      ? 'text-white border-white bg-neutral-900/50'
-                      : 'text-neutral-500 hover:text-neutral-300 border-transparent hover:border-neutral-700'
-                  )}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <MessageSquare className="w-4 h-4 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-sm truncate block">
-                          {session.title}
-                        </span>
-                      <span className="text-[11px] text-neutral-600">
-                        {formatTime(session.timestamp)}
-                      </span>
-                    </div>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <button
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-neutral-900 transition-opacity"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                          <MoreHorizontal className="w-3.5 h-3.5 text-neutral-600" />
-                            </button>
-                          </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-36 bg-neutral-950 border-neutral-800">
-                            <DropdownMenuItem
-                              onClick={() => onDeleteSession(session.id)}
-                          className="text-red-400 focus:text-red-400 focus:bg-neutral-900"
-                            >
-                              <Trash2 className="w-4 h-4 mr-2" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </div>
+                <MessageSquare className="w-4 h-4" />
+                <div className="overflow-hidden">
+                  <p className="text-sm truncate">{session.title}</p>
+                  <p className="text-[11px] text-neutral-600">{formatTime(session.timestamp)}</p>
+                </div>
+                {/* Three dots menu */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      className="w-7 h-7 flex items-center justify-center rounded hover:bg-neutral-700 transition-all opacity-0 group-hover:opacity-100"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <MoreHorizontal className="w-4 h-4 text-neutral-400" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent 
+                    align="end" 
+                    className="w-36 bg-neutral-950 border-neutral-800"
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => e.stopPropagation()}
+                  >
+                    <DropdownMenuItem
+                      onSelect={() => onDeleteSession(session.id)}
+                      className="text-red-400 focus:text-red-400 focus:bg-neutral-900 cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             ))
           )}
         </div>
       </ScrollArea>
+
+      {/* Connector Panel */}
+      <div className="border-t border-neutral-900 mt-auto">
+        <ConnectorPanel defaultExpanded={true} />
+      </div>
 
     </aside>
   );

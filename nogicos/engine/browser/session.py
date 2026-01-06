@@ -12,6 +12,7 @@ This module bridges the gap between NogicOS tools and actual browser control.
 import asyncio
 import logging
 import os
+import re
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
@@ -46,11 +47,11 @@ class BrowserState:
 class BrowserSession:
     """
     Unified browser session manager.
-    
+
     Supports:
     - Playwright-based headless browsing (default)
     - CDP-based control via Electron (when connected)
-    
+
     Usage:
         session = BrowserSession()
         await session.start()
@@ -58,7 +59,20 @@ class BrowserSession:
         content = await session.get_page_content()
         await session.stop()
     """
-    
+
+    # Default configuration (can be overridden via environment variables)
+    DEFAULT_VIEWPORT_WIDTH = int(os.environ.get("NOGICOS_VIEWPORT_WIDTH", "1280"))
+    DEFAULT_VIEWPORT_HEIGHT = int(os.environ.get("NOGICOS_VIEWPORT_HEIGHT", "720"))
+
+    # Pre-compiled URL validation regex (P0 optimization)
+    _url_pattern = re.compile(
+        r'^https?://'  # http:// or https://
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain
+        r'localhost|'  # localhost
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # or IP
+        r'(?::\d+)?'  # optional port
+        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+
     def __init__(
         self,
         headless: bool = True,
@@ -67,14 +81,21 @@ class BrowserSession:
     ):
         """
         Initialize browser session.
-        
+
         Args:
             headless: Run browser in headless mode (default: True)
             viewport: Custom viewport size {"width": 1280, "height": 720}
             user_agent: Custom user agent string
+
+        Environment Variables:
+            NOGICOS_VIEWPORT_WIDTH: Default viewport width (default: 1280)
+            NOGICOS_VIEWPORT_HEIGHT: Default viewport height (default: 720)
         """
         self.headless = headless
-        self.viewport = viewport or {"width": 1280, "height": 720}
+        self.viewport = viewport or {
+            "width": self.DEFAULT_VIEWPORT_WIDTH,
+            "height": self.DEFAULT_VIEWPORT_HEIGHT
+        }
         self.user_agent = user_agent
         
         # Playwright objects
@@ -100,21 +121,27 @@ class BrowserSession:
     async def start(self) -> bool:
         """
         Start the browser session.
-        
+
         Returns:
             True if started successfully, False otherwise
         """
         if self._started:
             logger.warning("[BrowserSession] Already started")
             return True
-        
+
         if not PLAYWRIGHT_AVAILABLE:
             logger.error("[BrowserSession] Playwright not available, cannot start")
             return False
-        
+
+        # Track resources for cleanup on failure
+        playwright_started = False
+        browser_started = False
+        context_started = False
+
         try:
             self._playwright = await async_playwright().start()
-            
+            playwright_started = True
+
             # Launch browser
             self._browser = await self._playwright.chromium.launch(
                 headless=self.headless,
@@ -123,30 +150,73 @@ class BrowserSession:
                     "--disable-infobars",
                 ]
             )
-            
+            browser_started = True
+
             # Create context with viewport and user agent
             context_options = {
                 "viewport": self.viewport,
             }
             if self.user_agent:
                 context_options["user_agent"] = self.user_agent
-            
+
             self._context = await self._browser.new_context(**context_options)
-            
+            context_started = True
+
             # Create page
             self._page = await self._context.new_page()
-            
+
             # Setup event listeners
             self._page.on("load", self._on_load)
             self._page.on("framenavigated", self._on_navigated)
-            
+
             self._started = True
             logger.info("[BrowserSession] Started successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"[BrowserSession] Failed to start: {e}")
-            await self.stop()
+            # [P1 FIX] Clean up resources in reverse order of creation with comprehensive handling
+            cleanup_errors = []
+
+            # Close context first
+            if context_started and self._context:
+                try:
+                    await asyncio.wait_for(self._context.close(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("context close timeout")
+                except Exception as cleanup_err:
+                    cleanup_errors.append(f"context: {cleanup_err}")
+                finally:
+                    self._context = None
+
+            # Then close browser
+            if browser_started and self._browser:
+                try:
+                    await asyncio.wait_for(self._browser.close(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("browser close timeout")
+                except Exception as cleanup_err:
+                    cleanup_errors.append(f"browser: {cleanup_err}")
+                finally:
+                    self._browser = None
+
+            # Finally stop playwright
+            if playwright_started and self._playwright:
+                try:
+                    await asyncio.wait_for(self._playwright.stop(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("playwright stop timeout")
+                except Exception as cleanup_err:
+                    cleanup_errors.append(f"playwright: {cleanup_err}")
+                finally:
+                    self._playwright = None
+
+            # Log all cleanup errors at once
+            if cleanup_errors:
+                logger.warning(f"[BrowserSession] Cleanup errors: {', '.join(cleanup_errors)}")
+
+            self._page = None
+            self._started = False
             return False
     
     async def stop(self) -> None:
@@ -180,30 +250,154 @@ class BrowserSession:
     
     def _on_navigated(self, frame) -> None:
         """Handle frame navigation event"""
-        if frame == self._page.main_frame:
+        if self._page is not None and frame == self._page.main_frame:
             self._state.url = frame.url
     
     # ========================================================================
     # Navigation Methods
     # ========================================================================
     
-    async def navigate(self, url: str, timeout: float = 30.0) -> bool:
+    # [P0-2 FIX] Security: Enhanced SSRF prevention with comprehensive IP validation
+    BLOCKED_HOSTS = {
+        # Localhost variants
+        "localhost", "127.0.0.1", "0.0.0.0", "::1",
+        "127.0.0.0", "127.255.255.255",
+        # Cloud metadata endpoints
+        "169.254.169.254",              # AWS/Azure metadata
+        "metadata.google.internal",     # GCP metadata
+        "metadata.goog",                # GCP alternative
+        "100.100.100.200",              # Alibaba metadata
+        "192.0.0.192",                  # Oracle Cloud metadata
+        # Kubernetes
+        "kubernetes.default.svc",
+        "kubernetes.default",
+    }
+
+    @staticmethod
+    def _is_private_ip(host: str) -> bool:
+        """
+        [P0-2 FIX] Check if host is a private/internal IP address.
+        Uses ipaddress module for robust validation.
+        """
+        import ipaddress
+
+        try:
+            # Try to parse as IP address
+            ip = ipaddress.ip_address(host)
+
+            # Check various private/special ranges
+            return (
+                ip.is_private or
+                ip.is_loopback or
+                ip.is_link_local or
+                ip.is_reserved or
+                ip.is_multicast or
+                ip.is_unspecified
+            )
+        except ValueError:
+            # Not a valid IP address, check for octal/hex bypass attempts
+            # E.g., 0177.0.0.1 (octal), 0x7f.0.0.1 (hex)
+            if any(part.startswith(('0x', '0X', '0')) and len(part) > 1
+                   for part in host.split('.') if part.isalnum()):
+                return True  # Suspicious IP format
+            return False
+
+    async def navigate(self, url: str, timeout: float = 15.0) -> bool:
         """
         Navigate to a URL.
-        
+
+        Optimized (P0):
+        - Reduced default timeout: 30s → 15s
+        - URL validation before navigation
+        - Fast fail for invalid URLs
+        - [P0-2 FIX] Enhanced SSRF protection with ipaddress module
+
         Args:
             url: URL to navigate to
-            timeout: Navigation timeout in seconds
-            
+            timeout: Navigation timeout in seconds (default: 15s)
+
         Returns:
             True if navigation successful
         """
         if not self._page:
             logger.error("[BrowserSession] Page not available")
             return False
-        
+
+        # P0: URL validation - fail fast for invalid URLs
+        from urllib.parse import urlparse
+        import ipaddress
+
+        if not self._url_pattern.match(url):
+            logger.warning(f"[BrowserSession] Invalid URL format: {url}")
+            self._state.is_loading = False
+            return False
+
+        # [P0-2 FIX] Enhanced SSRF protection
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname.lower() if parsed.hostname else ""
+
+            if not host:
+                logger.warning("[BrowserSession] No hostname in URL")
+                return False
+
+            # Check against blocked hosts (exact match)
+            if host in self.BLOCKED_HOSTS:
+                logger.warning(f"[BrowserSession] SSRF blocked (blocklist): {host}")
+                return False
+
+            # [P0-2 FIX] Check for private IP using ipaddress module
+            if self._is_private_ip(host):
+                logger.warning(f"[BrowserSession] SSRF blocked (private IP): {host}")
+                return False
+
+            # [P0-2 FIX] Validate IPv6 addresses
+            if ':' in host or host.startswith('['):
+                clean_host = host.strip('[]')
+                try:
+                    ipv6 = ipaddress.ip_address(clean_host)
+                    if ipv6.is_private or ipv6.is_loopback or ipv6.is_link_local:
+                        logger.warning(f"[BrowserSession] SSRF blocked (IPv6 private): {host}")
+                        return False
+                except ValueError:
+                    pass
+
+            # [P0-2 FIX] Block suspicious hostname patterns
+            suspicious_patterns = [
+                r'\.internal$',         # internal domains
+                r'\.local$',            # .local domains
+                r'\.localdomain$',      # localdomain
+                r'\.corp$',             # corporate domains
+                r'\.home$',             # home networks
+                r'^169\.254\.',         # link-local (APIPA)
+                r'^fc[0-9a-f]{2}:',     # IPv6 ULA
+                r'^fe80:',              # IPv6 link-local
+            ]
+            for pattern in suspicious_patterns:
+                if re.search(pattern, host, re.IGNORECASE):
+                    logger.warning(f"[BrowserSession] SSRF blocked (suspicious pattern): {host}")
+                    return False
+
+            # [P0-2 FIX Round 1] DNS pre-resolution to prevent DNS rebinding attacks
+            # Resolve hostname and verify the resolved IP is not private
+            import socket
+            try:
+                resolved_ip = socket.gethostbyname(host)
+                if self._is_private_ip(resolved_ip):
+                    logger.warning(f"[BrowserSession] SSRF blocked (DNS resolves to private IP): {host} -> {resolved_ip}")
+                    return False
+            except socket.gaierror:
+                # DNS resolution failed - allow the request (might be a valid public domain)
+                # Playwright will handle the actual resolution
+                pass
+
+        except Exception as e:
+            logger.warning(f"[BrowserSession] URL parsing error: {e}")
+            return False
+
         try:
             self._state.is_loading = True
+            # P0: Use domcontentloaded for faster load, reduced timeout
             await self._page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
             self._state.url = url
             self._state.title = await self._page.title()
@@ -212,7 +406,7 @@ class BrowserSession:
             # Update navigation state
             self._state.can_go_back = await self._can_go_back()
             
-            logger.info(f"[BrowserSession] Navigated to: {url}")
+            logger.info(f"[BrowserSession] Navigated to: {url} in <{timeout}s")
             return True
             
         except Exception as e:
@@ -225,7 +419,7 @@ class BrowserSession:
         try:
             # Playwright doesn't have direct history access, so we track state
             return len(self._page.url) > 0
-        except:
+        except Exception as e:
             return False
     
     async def go_back(self) -> bool:
@@ -280,20 +474,27 @@ class BrowserSession:
             return ""
         try:
             return await self._page.title()
-        except:
+        except Exception as e:
             return ""
     
     # ========================================================================
     # Interaction Methods
     # ========================================================================
     
-    async def click(self, selector: str, timeout: float = 5.0) -> bool:
+    async def click(self, selector: str, timeout: float = 8.0, max_retries: int = 2) -> bool:
         """
         Click an element by selector.
         
+        P1 优化:
+        - 多选择器策略: CSS → text → role → partial match
+        - 点击前等待元素可见
+        - scroll_into_view_if_needed
+        - 自动重试机制 (P1 #6)
+        
         Args:
             selector: CSS selector or text selector
-            timeout: Click timeout in seconds
+            timeout: Click timeout in seconds (default: 8s)
+            max_retries: Maximum retry attempts (default: 2)
             
         Returns:
             True if click successful
@@ -301,27 +502,68 @@ class BrowserSession:
         if not self._page:
             return False
         
-        try:
-            # Try CSS selector first
-            await self._page.click(selector, timeout=timeout * 1000)
-            return True
-        except Exception as e:
-            # Try text-based selector
-            try:
-                await self._page.click(f"text={selector}", timeout=timeout * 1000)
-                return True
-            except:
-                logger.error(f"[BrowserSession] Click failed: {e}")
-                return False
+        # P1: 多选择器策略
+        selectors_to_try = [
+            selector,                           # 原始选择器
+            f"text={selector}",                 # 文本匹配
+            f"role=button[name='{selector}']",  # ARIA role
+            f"role=link[name='{selector}']",    # 链接 role
+            f"*:has-text('{selector}')",        # 部分文本匹配
+        ]
+        
+        # P1 #6: 重试循环
+        for attempt in range(max_retries + 1):
+            for sel in selectors_to_try:
+                try:
+                    # P1: 等待元素可见后再点击
+                    locator = self._page.locator(sel).first
+                    
+                    # 等待元素存在（最多 2 秒）
+                    try:
+                        await locator.wait_for(state="visible", timeout=2000)
+                    except (TimeoutError, Exception):
+                        continue  # 尝试下一个选择器
+                    
+                    # P1: 滚动到可视区域
+                    await locator.scroll_into_view_if_needed()
+                    
+                    # 点击
+                    await locator.click(timeout=timeout * 1000)
+                    logger.info(f"[BrowserSession] Clicked with selector: {sel}")
+                    return True
+                    
+                except Exception:
+                    continue  # 尝试下一个选择器
+            
+            # P1 #6: 重试前等待页面稳定
+            if attempt < max_retries:
+                logger.debug(f"[BrowserSession] Click retry {attempt + 1}/{max_retries} for '{selector}'")
+                await asyncio.sleep(0.5)  # 短暂等待
+                # 等待网络空闲
+                try:
+                    await self._page.wait_for_load_state("networkidle", timeout=2000)
+                except (TimeoutError, Exception):
+                    pass
+        
+        logger.error(f"[BrowserSession] Click failed after {max_retries + 1} attempts for '{selector}'")
+        return False
     
-    async def type(self, selector: str, text: str, delay: float = 0.05) -> bool:
+    async def type(self, selector: str, text: str, delay: float = 0.05, timeout: float = 8.0, max_retries: int = 2) -> bool:
         """
         Type text into an element.
+        
+        P1 优化:
+        - 多选择器策略: CSS → placeholder → label → role
+        - 输入前等待元素可见
+        - 清空现有内容后再输入
+        - 自动重试机制 (P1 #6)
         
         Args:
             selector: CSS selector for input element
             text: Text to type
             delay: Delay between keystrokes in seconds
+            timeout: Timeout in seconds (default: 8s)
+            max_retries: Maximum retry attempts (default: 2)
             
         Returns:
             True if typing successful
@@ -329,18 +571,54 @@ class BrowserSession:
         if not self._page:
             return False
         
+        # P1: 多选择器策略 (输入框专用)
+        selectors_to_try = [
+            selector,                                    # 原始选择器
+            f"input[placeholder*='{selector}' i]",      # placeholder 包含
+            f"input[name*='{selector}' i]",             # name 包含
+            f"textarea[placeholder*='{selector}' i]",   # textarea placeholder
+            f"role=textbox[name='{selector}']",         # ARIA textbox
+            f"role=searchbox",                          # 搜索框 (通用)
+            f"input[type='text']",                      # 通用文本输入框
+            f"input[type='search']",                    # 搜索输入框
+        ]
+        
+        # P1 #6: 重试循环
+        for attempt in range(max_retries + 1):
+            for sel in selectors_to_try:
+                try:
+                    locator = self._page.locator(sel).first
+                    
+                    # P1: 等待元素可见
+                    try:
+                        await locator.wait_for(state="visible", timeout=2000)
+                    except (TimeoutError, Exception):
+                        continue
+                    
+                    # P1: 滚动到可视区域
+                    await locator.scroll_into_view_if_needed()
+                    
+                    # 清空并填充
+                    await locator.fill(text, timeout=timeout * 1000)
+                    logger.info(f"[BrowserSession] Typed into: {sel}")
+                    return True
+                    
+                except Exception:
+                    continue
+            
+            # P1 #6: 重试前等待
+            if attempt < max_retries:
+                logger.debug(f"[BrowserSession] Type retry {attempt + 1}/{max_retries} for '{selector}'")
+                await asyncio.sleep(0.3)
+        
+        # 最后尝试: 点击并键盘输入
         try:
-            await self._page.fill(selector, text)
+            await self._page.keyboard.type(text, delay=delay * 1000)
+            logger.info("[BrowserSession] Typed via keyboard fallback")
             return True
         except Exception as e:
-            # Fallback to type with delay for non-input elements
-            try:
-                await self._page.click(selector, timeout=5000)
-                await self._page.keyboard.type(text, delay=delay * 1000)
-                return True
-            except:
-                logger.error(f"[BrowserSession] Type failed: {e}")
-                return False
+            logger.error(f"[BrowserSession] Type failed after {max_retries + 1} attempts for '{selector}'")
+            return False
     
     async def send_keys(self, keys: str) -> bool:
         """
@@ -517,33 +795,49 @@ class BrowserSession:
 
 
 # ============================================================================
-# Session Manager (Singleton for managing the active session)
+# Session Manager (Using contextvars for async-safe state)
 # ============================================================================
 
-_active_session: Optional[BrowserSession] = None
+import contextvars
+
+# Use contextvars instead of global variable for async-safe session management
+_active_session_var: contextvars.ContextVar[Optional[BrowserSession]] = contextvars.ContextVar(
+    'active_browser_session', default=None
+)
+
+# [P1 FIX] Add lock for concurrent tool execution
+_session_lock = asyncio.Lock()
 
 
 async def get_browser_session() -> BrowserSession:
     """
     Get or create the active browser session.
-    
+
+    Uses contextvars for async-safe session management across coroutines.
+    [P1 FIX] Uses lock to prevent race conditions during session creation.
+
     Returns:
         Active BrowserSession instance
     """
-    global _active_session
-    
-    if _active_session is None or not _active_session.is_started:
-        _active_session = BrowserSession(headless=True)
-        await _active_session.start()
-    
-    return _active_session
+    # [P1 FIX] Use lock to prevent concurrent session creation
+    async with _session_lock:
+        session = _active_session_var.get()
+
+        if session is None or not session.is_started:
+            session = BrowserSession(headless=True)
+            await session.start()
+            _active_session_var.set(session)
+
+        return session
 
 
 async def close_browser_session() -> None:
     """Close the active browser session"""
-    global _active_session
-    
-    if _active_session:
-        await _active_session.stop()
-        _active_session = None
+    # [P1 FIX] Use lock to prevent concurrent session close
+    async with _session_lock:
+        session = _active_session_var.get()
+
+        if session:
+            await session.stop()
+            _active_session_var.set(None)
 

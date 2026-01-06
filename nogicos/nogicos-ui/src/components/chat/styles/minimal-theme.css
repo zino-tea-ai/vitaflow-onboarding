@@ -285,6 +285,125 @@
   margin: 0;
 }
 
+/* === Operation Group (Cursor-style) === */
+.operation-group {
+  margin: 8px 0;
+  border-left: 2px solid var(--m-gray-800);
+  padding-left: 12px;
+}
+
+.operation-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+
+.operation-group-header:hover {
+  color: var(--m-gray-300);
+}
+
+.operation-group-icon {
+  display: flex;
+  align-items: center;
+  color: var(--m-gray-500);
+}
+
+.operation-group-label {
+  font-size: 13px;
+  color: var(--m-gray-400);
+}
+
+.operation-group-chevron {
+  color: var(--m-gray-600);
+  transition: transform 0.2s ease;
+  margin-left: auto;
+}
+
+.operation-group-chevron.expanded {
+  transform: rotate(180deg);
+}
+
+.operation-group-details {
+  overflow: hidden;
+  padding-left: 4px;
+}
+
+.operation-group-section {
+  margin-bottom: 4px;
+}
+
+/* Operation Item */
+.operation-item {
+  margin: 2px 0;
+}
+
+.operation-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--m-gray-500);
+  transition: background 0.15s ease;
+}
+
+.operation-item-main.clickable {
+  cursor: pointer;
+}
+
+.operation-item-main.clickable:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--m-gray-400);
+}
+
+.operation-item-icon {
+  display: flex;
+  align-items: center;
+  color: var(--m-gray-600);
+}
+
+.operation-item-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-item-chevron {
+  color: var(--m-gray-600);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.operation-item-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.operation-item-output {
+  margin: 4px 0 4px 24px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.operation-item-output pre {
+  font-family: var(--m-font-mono);
+  font-size: 11px;
+  color: var(--m-gray-500);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow-y: auto;
+  margin: 0;
+}
+
 /* === Code Block === */
 .minimal-code {
   background: var(--m-gray-950);
@@ -686,6 +805,8 @@
 .minimal-thinking-content {
   position: relative;
   overflow: hidden;
+  transform-origin: top;
+  will-change: transform, opacity;
 }
 
 /* === Streaming text reveal effect === */
@@ -1023,3 +1144,204 @@
   border-radius: 4px;
 }
 
+/* === SCREENSHOT OUTPUT === */
+.screenshot-output {
+  display: flex;
+  flex-direction: column;
+  gap: var(--m-space-3);
+}
+
+.screenshot-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--m-space-1);
+}
+
+.screenshot-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--m-gray-300);
+}
+
+.screenshot-url {
+  font-size: 11px;
+  font-family: var(--m-font-mono);
+  color: var(--m-gray-500);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.screenshot-url:hover {
+  color: var(--m-gray-300);
+}
+
+.screenshot-image-container {
+  position: relative;
+  border-radius: var(--m-radius);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--m-gray-900);
+  border: 1px solid var(--m-gray-800);
+  transition: border-color 0.2s ease;
+}
+
+.screenshot-image-container:hover {
+  border-color: var(--m-gray-600);
+}
+
+.screenshot-image-container.expanded {
+  max-width: none;
+}
+
+.screenshot-image {
+  display: block;
+  width: 100%;
+  max-height: 300px;
+  object-fit: contain;
+  transition: max-height 0.3s var(--spring-smooth);
+}
+
+.screenshot-image-container.expanded .screenshot-image {
+  max-height: 80vh;
+}
+
+.screenshot-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: var(--m-space-2) var(--m-space-3);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.screenshot-image-container:hover .screenshot-overlay {
+  opacity: 1;
+}
+
+.screenshot-overlay span {
+  font-size: 11px;
+  color: var(--m-gray-400);
+}
+
+.screenshot-content {
+  margin-top: var(--m-space-2);
+}
+
+.screenshot-content summary {
+  font-size: 12px;
+  color: var(--m-gray-500);
+  cursor: pointer;
+  padding: var(--m-space-1) 0;
+  transition: color 0.15s ease;
+}
+
+.screenshot-content summary:hover {
+  color: var(--m-gray-300);
+}
+
+.screenshot-content pre {
+  margin-top: var(--m-space-2);
+  padding: var(--m-space-3);
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: var(--m-radius-sm);
+  font-family: var(--m-font-mono);
+  font-size: 11px;
+  color: var(--m-gray-500);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* === CURSOR-STYLE TOOL DISPLAY === */
+.operations-list-cursor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--m-space-2);
+  margin-top: var(--m-space-3);
+}
+
+.tool-item-cursor {
+  display: flex;
+  flex-direction: column;
+}
+
+.tool-item-header {
+  display: flex;
+  align-items: center;
+  gap: var(--m-space-2);
+  padding: var(--m-space-2) var(--m-space-3);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--m-radius);
+  transition: all 0.15s ease;
+}
+
+.tool-item-header.clickable {
+  cursor: pointer;
+}
+
+.tool-item-header.clickable:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.tool-item-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tool-item-label {
+  flex: 1;
+  font-family: var(--m-font);
+  font-size: 13px;
+  color: var(--m-gray-300);
+}
+
+.tool-item-chevron {
+  flex-shrink: 0;
+  color: var(--m-gray-500);
+  transition: transform 0.2s ease;
+}
+
+.tool-item-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.tool-item-screenshot {
+  margin-top: var(--m-space-2);
+  margin-left: var(--m-space-4);
+  padding: var(--m-space-3);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--m-radius);
+}
+
+.tool-item-output {
+  margin-top: var(--m-space-1);
+  margin-left: var(--m-space-4);
+  overflow: hidden;
+}
+
+.tool-item-output pre {
+  padding: var(--m-space-3);
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: var(--m-radius-sm);
+  font-family: var(--m-font-mono);
+  font-size: 11px;
+  color: var(--m-gray-500);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0;
+}

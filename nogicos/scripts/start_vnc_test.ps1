@@ -66,3 +66,10 @@ Write-Host ""
 cd $NOVNC_PATH
 websockify --web . $NOVNC_PORT localhost:$VNC_PORT
 
+
+
+
+
+
+
+

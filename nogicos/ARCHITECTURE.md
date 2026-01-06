@@ -2,7 +2,7 @@
 
 ## Overview
 
-NogicOS is an AI browser with collective learning. Core thesis: "The more people use it, the faster it gets for everyone."
+NogicOS is an AI assistant that works across your browser, files, and desktop as one unified workspace.
 
 ## System Architecture
 
@@ -32,25 +32,19 @@ NogicOS is an AI browser with collective learning. Core thesis: "The more people
 
 ## Core Components
 
-### 1. Smart Router
-Routes tasks to the optimal execution path:
-- **Skill Path**: Executes learned skills (sub-second)
-- **Fast Path**: Replays cached trajectories (seconds)
-- **Normal Path**: Full AI agent execution (30-60s)
-
-### 2. Hive Agent (LangGraph)
+### 1. ReAct Agent
 State machine-based AI agent:
 - `observe` → Capture page state (screenshot + accessibility tree)
 - `think` → LLM reasoning and action planning
 - `act` → Execute browser actions via CDP
 - `terminate` → Return result
 
-### 3. Knowledge Store
-Stores and retrieves operation knowledge:
-- Trajectories: Step-by-step action recordings
-- Skills: Generalized reusable procedures
+### 2. Knowledge Store
+Stores and retrieves context:
+- Semantic memory for relevant context retrieval
+- Session history persistence
 
-### 4. CDP Bridge
+### 3. CDP Bridge
 Chrome DevTools Protocol integration for browser control:
 - Direct control of Electron BrowserView
 - No external browser dependency
@@ -59,11 +53,7 @@ Chrome DevTools Protocol integration for browser control:
 ## Data Flow
 
 ```
-User Task → Router → [Skill/Fast/Normal Path] → Result
-                           │
-                           ▼
-                    Knowledge Store
-                    (Learning Loop)
+User Task → ReAct Agent → Tool Execution → Result
 ```
 
 ## UI Architecture

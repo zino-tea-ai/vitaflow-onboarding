@@ -41,7 +41,7 @@ Mission → Scan → Think → Act → Observe
 ### NogicOS（主线）
 - **定位**："The AI that works where you work" - 在你工作的地方工作的 AI
 - **差异化**：第一个能同时看到浏览器、文件和桌面的 AI（完整上下文）
-- **护城河**：越用越快（30秒 → 1秒），集体学习
+- **三大卖点**：Complete Context、Direct Action、Local-First
 - 截止：2025/1/10
 - 关键文件：`nogicos/PITCH_CONTEXT.md`
 
@@ -93,6 +93,7 @@ Mission → Scan → Think → Act → Observe
 - [ ] 命令是否适配 Windows Git Bash？
 - [ ] 复杂任务是否设置了检查点？
 - [ ] 截图顺序是否按编号排列？（PM Tools）
+- [ ] **被纠正时**：是否自动记录到 `lessons-learned.md`？
 
 ---
 
@@ -120,7 +121,9 @@ Mission → Scan → Think → Act → Observe
 ## 🔗 详细规则
 
 需要时查阅 `.cursor/rules/` 目录：
-- `workflow.md` - **协作协议 v2.0**（MSTAO 循环、/check 命令、工具策略）
+- `workflow.md` - **协作协议 v3.0**（MSTAO 循环、/check 命令、工具策略）
+- `cursor-best-practices.md` - **Cursor 最佳实践**（基于 Boris Cherny 理念）
+- `lessons-learned.md` - **踩过的坑**（复利工程，每次犯错都记录）
 - `design.md` - 完整设计规范、风格词典
 - `tech-stack.md` - 技术栈、动效、代码示例
 - `pm-workflow.md` - PM 工作流程、文件结构、API

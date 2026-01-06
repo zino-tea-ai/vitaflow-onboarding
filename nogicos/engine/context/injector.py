@@ -37,13 +37,14 @@ def _get_memories_from_db(namespace: str = "default", limit: int = 5) -> List[Di
             cursor = conn.cursor()
             # Always include default namespace to get user preferences
             # This ensures memories like "prefers pnpm" are always available
+            # Fully parameterized query to prevent SQL injection
             cursor.execute("""
-                SELECT id, title, content 
-                FROM memories 
-                WHERE namespace IN (?, 'default')
+                SELECT id, title, content
+                FROM memories
+                WHERE namespace IN (?, ?)
                 ORDER BY updated_at DESC
                 LIMIT ?
-            """, (namespace, limit))
+            """, (namespace, "default", limit))
             
             rows = cursor.fetchall()
             memories = [{"id": r[0], "title": r[1], "content": r[2]} for r in rows]
@@ -71,6 +72,7 @@ class ContextConfig:
     include_terminal_info: bool = True
     include_recent_files: bool = True
     include_memories: bool = True
+    include_current_file: bool = True  # NEW: Auto-inject current file context
     
     # Workspace settings
     workspace_path: Optional[str] = None
@@ -80,6 +82,14 @@ class ContextConfig:
     recent_files: List[str] = field(default_factory=list)
     open_files: List[str] = field(default_factory=list)
     focused_file: Optional[str] = None
+    
+    # Current file context (Cursor-style auto-injection)
+    current_file_path: Optional[str] = None  # Path to currently focused file
+    current_file_content: Optional[str] = None  # Full content of current file
+    selected_code: Optional[str] = None  # User-selected code block
+    cursor_line: Optional[int] = None  # Line number where cursor is
+    cursor_column: Optional[int] = None  # Column position
+    visible_range: Optional[tuple] = None  # (start_line, end_line) visible in editor
     
     # Memory/rules
     workspace_rules: Optional[str] = None
@@ -102,11 +112,13 @@ class ContextInjector:
     def __init__(self, default_workspace: Optional[str] = None):
         """
         Initialize context injector.
-        
+
         Args:
             default_workspace: Default workspace path if not provided in config
         """
-        self.default_workspace = default_workspace or os.getcwd()
+        # Cache os.getcwd() to avoid repeated system calls
+        self._cached_cwd = os.getcwd()
+        self.default_workspace = default_workspace or self._cached_cwd
         self.terminal_tracker = get_terminal_tracker()
     
     def inject(
@@ -139,21 +151,29 @@ class ContextInjector:
         if config.include_workspace_layout and config.workspace_path:
             sections.append(self._workspace_layout(config))
         
-        # 3. Open and Recent Files
+        # 3. Current File Context (Cursor-style auto-injection)
+        if config.include_current_file and (
+            config.current_file_path or 
+            config.current_file_content or 
+            config.selected_code
+        ):
+            sections.append(self._current_file_context(config))
+        
+        # 4. Open and Recent Files
         if config.include_recent_files and (config.recent_files or config.open_files):
             sections.append(self._recent_files(config))
         
-        # 4. Terminal Info
+        # 5. Terminal Info
         if config.include_terminal_info:
             terminal_info = self.terminal_tracker.format_for_prompt(session_id)
             if terminal_info:
                 sections.append(terminal_info)
         
-        # 5. Workspace Rules (project-specific)
+        # 6. Workspace Rules (project-specific)
         if config.workspace_rules:
             sections.append(f"<workspace_rules>\n{config.workspace_rules}\n</workspace_rules>")
         
-        # 6. User Memories (from config or auto-loaded from DB)
+        # 7. User Memories (from config or auto-loaded from DB)
         if config.include_memories:
             # Auto-load from database if not provided
             if not config.user_memories:
@@ -236,6 +256,77 @@ Note: This is a snapshot. Run list_directory for current state.
             lines.append(f"- [{title}]: {content}")
         
         lines.append("</memories>")
+        
+        return "\n".join(lines)
+    
+    def _current_file_context(self, config: ContextConfig) -> str:
+        """
+        Generate <current_file_context> section (Cursor-style).
+        
+        This is the KEY differentiator for AI coding assistants:
+        - Cursor automatically injects the file you're looking at
+        - No need for user to say "look at this file"
+        - Dramatically improves task understanding
+        """
+        lines = ["<current_file_context>"]
+        
+        # File path
+        if config.current_file_path:
+            lines.append(f"File: {config.current_file_path}")
+        
+        # Cursor position
+        if config.cursor_line is not None:
+            col_info = f":{config.cursor_column}" if config.cursor_column else ""
+            lines.append(f"Cursor position: Line {config.cursor_line}{col_info}")
+        
+        # Selected code (highest priority - user explicitly selected this)
+        if config.selected_code:
+            lines.append("\n--- Selected Code ---")
+            lines.append(config.selected_code)
+            lines.append("--- End Selection ---")
+        
+        # Visible range with content (if no selection, show what user sees)
+        elif config.current_file_content and config.visible_range:
+            start, end = config.visible_range
+            # 【修复 #20】验证 visible_range 范围有效性
+            if not isinstance(start, int) or not isinstance(end, int):
+                start, end = 1, 50  # 默认值
+            if start < 1:
+                start = 1
+            if end < start:
+                end = start + 50
+            content_lines = config.current_file_content.split('\n')
+            visible_lines = content_lines[max(0, start-1):min(len(content_lines), end)]
+            
+            lines.append(f"\n--- Visible Code (lines {start}-{end}) ---")
+            for i, line in enumerate(visible_lines, start=max(1, start)):
+                # Mark cursor line
+                marker = " <-- cursor" if i == config.cursor_line else ""
+                lines.append(f"{i:4d}|{line}{marker}")
+            lines.append("--- End Visible ---")
+        
+        # Full file content (if small enough and nothing else provided)
+        elif config.current_file_content:
+            content_lines = config.current_file_content.split('\n')
+            if len(content_lines) <= 100:  # Only include if < 100 lines
+                lines.append("\n--- File Content ---")
+                for i, line in enumerate(content_lines, 1):
+                    marker = " <-- cursor" if i == config.cursor_line else ""
+                    lines.append(f"{i:4d}|{line}{marker}")
+                lines.append("--- End File ---")
+            else:
+                lines.append(f"\nFile has {len(content_lines)} lines (too large to include full content)")
+                if config.cursor_line:
+                    # Show context around cursor
+                    ctx_start = max(0, config.cursor_line - 10)
+                    ctx_end = min(len(content_lines), config.cursor_line + 10)
+                    lines.append(f"\n--- Context around cursor (lines {ctx_start+1}-{ctx_end}) ---")
+                    for i, line in enumerate(content_lines[ctx_start:ctx_end], ctx_start + 1):
+                        marker = " <-- cursor" if i == config.cursor_line else ""
+                        lines.append(f"{i:4d}|{line}{marker}")
+                    lines.append("--- End Context ---")
+        
+        lines.append("</current_file_context>")
         
         return "\n".join(lines)
     

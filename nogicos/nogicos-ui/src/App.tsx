@@ -95,17 +95,27 @@ function App() {
       const mostRecent = sessions[0];
       setActiveSessionId(mostRecent.id);
       // Load messages for the most recent session
+      // [P1 FIX] Enhanced type safety for loaded data
       loadSession(mostRecent.id).then(detail => {
-        if (detail?.history) {
-          const chatMessages: ChatMessage[] = detail.history.map((m: any, i) => ({
-            id: `loaded-${mostRecent.id}-${i}`,
-            role: m.role as 'user' | 'assistant',
-            content: m.content,
-            ...(m.parts ? { parts: m.parts } : {}),
-            isHistory: true,
-          }));
+        if (detail?.history && Array.isArray(detail.history)) {
+          const chatMessages: ChatMessage[] = detail.history
+            .filter((m): m is { role: string; content: string; parts?: unknown[] } =>
+              m && typeof m === 'object' &&
+              typeof m.role === 'string' &&
+              (m.role === 'user' || m.role === 'assistant') &&
+              typeof m.content === 'string'
+            )
+            .map((m, i) => ({
+              id: `loaded-${mostRecent.id}-${i}`,
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+              ...(Array.isArray(m.parts) ? { parts: m.parts } : {}),
+              isHistory: true,
+            }));
           setChatSessions(prev => ({ ...prev, [mostRecent.id]: chatMessages }));
         }
+      }).catch(err => {
+        console.error('[App] Failed to load session:', err);
       });
     }
   }, [sessions, loadSession]);
@@ -670,6 +680,13 @@ function App() {
         }),
       });
 
+      // [P1 FIX] Enhanced fetch error handling
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        toast.error(`Server error: ${response.status} - ${errorText.slice(0, 100)}`);
+        return;
+      }
+
       const result = await response.json();
 
       // Note: Don't add assistant message here - WebSocket streams handle it
@@ -678,7 +695,12 @@ function App() {
         toast.error(result.error || 'Task failed');
       }
     } catch (error) {
-      toast.error('Failed to connect to NogicOS server');
+      // [P1 FIX] More specific error handling
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        toast.error('Network error: Failed to connect to NogicOS server');
+      } else {
+        toast.error('Failed to connect to NogicOS server');
+      }
       console.error('Execute error:', error);
     } finally {
       setIsExecuting(false);

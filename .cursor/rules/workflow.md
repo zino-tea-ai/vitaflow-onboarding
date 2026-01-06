@@ -342,7 +342,58 @@ Level 3: 外部调研（/check 触发或复杂任务）
 
 ---
 
-## 10. 协议检查清单
+## 10. 参考驱动开发（Agent 功能专用）
+
+> **适用范围**: NogicOS Agent 相关功能开发
+
+### 10.1 参考文档位置
+
+```
+nogicos/docs/references/
+├── BYTEBOT_REFERENCE.md    ← Agent 循环、工具定义、System Prompt
+├── UFO_REFERENCE.md        ← 双层架构、状态机、MCP 集成
+├── ANTHROPIC_REFERENCE.md  ← 采样循环、工具结果、坐标缩放
+└── REFERENCE_INDEX.md      ← 功能索引表
+```
+
+### 10.2 开发前必读
+
+在开发以下功能前，**必须**先读对应的参考文档：
+
+| 功能 | 参考文档 | 关键代码 |
+|------|---------|----------|
+| Agent 循环 | `BYTEBOT_REFERENCE.md` | `runIteration()` |
+| 工具定义 | `BYTEBOT_REFERENCE.md` | `agentTools` |
+| 双层架构 | `UFO_REFERENCE.md` | `HostAgent`, `AppAgent` |
+| 状态机 | `UFO_REFERENCE.md` | `AgentStatus` |
+| 采样循环 | `ANTHROPIC_REFERENCE.md` | `sampling_loop()` |
+| 工具结果 | `ANTHROPIC_REFERENCE.md` | `ToolResult` |
+
+### 10.3 使用指令
+
+```bash
+# 开发前查阅
+先读一下 ByteBot 的 [具体模块] 是怎么实现的
+
+# 代码对照检查
+对照 ByteBot 检查一下这个实现是否合理
+
+# 强制参考模式
+/check 参考 ByteBot 的 Agent 循环实现
+```
+
+### 10.4 参考驱动流程
+
+```
+1. 查索引 → 找到功能对应的参考项目（REFERENCE_INDEX.md）
+2. 读参考文档 → 理解参考实现
+3. 写代码 → 基于参考实现
+4. 对照检查 → 确保没有遗漏关键设计
+```
+
+---
+
+## 11. 协议检查清单
 
 每次输出前，快速检查：
 
@@ -351,6 +402,7 @@ Level 3: 外部调研（/check 触发或复杂任务）
 - [ ] 是否遵循数据源优先原则？
 - [ ] 复杂任务是否设置了检查点？
 - [ ] 任务完成后是否有 Evolver 复盘？
+- [ ] Agent 功能是否参考了 ByteBot/UFO/Anthropic？（新增）
 
 ---
 
@@ -358,6 +410,7 @@ Level 3: 外部调研（/check 触发或复杂任务）
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v3.1 | 2025-01-07 | 新增参考驱动开发章节（ByteBot/UFO/Anthropic 参考文档体系） |
 | v3.0 | 2025-12-28 | 加入 AI 小队机制、内部讨论、Evolver 复盘 |
 | v2.0 | 2025-12-26 | 融合 Google Agent 白皮书、Anthropic Skills |
 | v1.0 | 2025-12-25 | 初始版本 |

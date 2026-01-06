@@ -2,7 +2,7 @@
 
 > **The AI that works where you work**
 > 
-> Browser. Files. Desktop. One AI, complete context. Gets faster every time.
+> Browser. Files. Desktop. One AI, complete context.
 
 ---
 
@@ -29,16 +29,10 @@ NogicOS sees your complete work environment—and takes action directly in it.
 - Understand desktop state
 - Execute shell commands
 
-### 🚀 Gets Faster Every Time
-```
-First time:  Normal Path (30-60s) → Full AI reasoning
-Second time: Fast Path (1-5s)     → Replay optimized trajectory
-After that:  Skill Path (<1s)     → Instant execution
-```
-
-### 🤝 Collective Learning
-- Knowledge Store captures task trajectories
-- More users = richer skill library = faster for everyone
+### 🔧 ReAct Agent
+- Think → Act → Observe → Repeat
+- Intelligent tool selection
+- Auto-retry on failures
 
 ---
 
@@ -55,8 +49,8 @@ After that:  Skill Path (<1s)     → Instant execution
 ┌───────────────────────────▼─────────────────────────────────┐
 │                    Python Backend                            │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │              ReAct Agent + Smart Router              │    │
-│  │       Think → Act → Observe → Learn → Repeat        │    │
+│  │                    ReAct Agent                       │    │
+│  │           Think → Act → Observe → Repeat            │    │
 │  └─────────────────────────────────────────────────────┘    │
 │                            │                                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
