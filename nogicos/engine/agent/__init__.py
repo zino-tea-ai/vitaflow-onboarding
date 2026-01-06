@@ -54,6 +54,45 @@ from .validators import (
     ValidationResult, ValidationError,
 )
 
+# Phase 2: 双层 Agent 架构
+from .errors import (
+    AgentError, ErrorSeverity, ErrorCategory,
+    LLMError, ClaudeAPIError, RateLimitError, TokenLimitError, LLMResponseError,
+    ToolError, ToolExecutionError, ToolNotFoundError, ToolValidationError, ToolTimeoutError,
+    WindowError, WindowLostError, WindowNotFocusableError, WindowLockedError,
+    StateError, InvalidStateTransitionError, CheckpointError,
+    ConcurrencyError, TooManyTasksError, ResourceLockError,
+    CriticalError, FatalError,
+    RecoveryStrategy, get_recovery_strategy,
+)
+from .blackboard import (
+    Blackboard, SubTask, AgentMessage, RequestStatus,
+)
+from .host_agent import (
+    HostAgent, HostAgentState, AgentConfig, IterationResult,
+)
+from .app_agent import (
+    AppAgent, AppAgentState, AppAgentConfig, AppType,
+    BrowserAppAgent, DesktopAppAgent, IDEAppAgent,
+)
+from .factory import (
+    AgentFactory, get_agent_factory, set_agent_factory,
+    create_app_agent, create_browser_agent, create_desktop_agent, create_ide_agent,
+)
+
+# Phase 3: Agent 循环 + 错误恢复 + 并发控制 + TerminationChecker
+from .concurrency import (
+    ConcurrencyManager, ConcurrencyConfig,
+    TaskSlotInfo, WindowLockInfo,
+    get_concurrency_manager, set_concurrency_manager,
+)
+from .termination import (
+    TerminationChecker, TerminationConfig, TerminationResult,
+    TerminationReason, TerminationType,
+    SuccessVerifier, TaskStatusCall,
+    detect_set_task_status,
+)
+
 __all__ = [
     # Core Agent
     'ReActAgent',
@@ -132,4 +171,72 @@ __all__ = [
     'ToolCallValidator',
     'SecurityValidator',
     'ValidationResult',
+    # Error System (Phase 2)
+    'AgentError',
+    'ErrorSeverity',
+    'ErrorCategory',
+    'LLMError',
+    'ClaudeAPIError',
+    'RateLimitError',
+    'TokenLimitError',
+    'LLMResponseError',
+    'ToolError',
+    'ToolExecutionError',
+    'ToolNotFoundError',
+    'ToolValidationError',
+    'ToolTimeoutError',
+    'WindowError',
+    'WindowLostError',
+    'WindowNotFocusableError',
+    'WindowLockedError',
+    'StateError',
+    'ConcurrencyError',
+    'TooManyTasksError',
+    'ResourceLockError',
+    'CriticalError',
+    'FatalError',
+    'RecoveryStrategy',
+    'get_recovery_strategy',
+    # Blackboard (Phase 2)
+    'Blackboard',
+    'SubTask',
+    'AgentMessage',
+    'RequestStatus',
+    # Host Agent (Phase 2)
+    'HostAgent',
+    'HostAgentState',
+    'AgentConfig',
+    'IterationResult',
+    # App Agent (Phase 2)
+    'AppAgent',
+    'AppAgentState',
+    'AppAgentConfig',
+    'AppType',
+    'BrowserAppAgent',
+    'DesktopAppAgent',
+    'IDEAppAgent',
+    # Agent Factory (Phase 2)
+    'AgentFactory',
+    'get_agent_factory',
+    'set_agent_factory',
+    'create_app_agent',
+    'create_browser_agent',
+    'create_desktop_agent',
+    'create_ide_agent',
+    # Concurrency (Phase 3)
+    'ConcurrencyManager',
+    'ConcurrencyConfig',
+    'TaskSlotInfo',
+    'WindowLockInfo',
+    'get_concurrency_manager',
+    'set_concurrency_manager',
+    # Termination (Phase 3)
+    'TerminationChecker',
+    'TerminationConfig',
+    'TerminationResult',
+    'TerminationReason',
+    'TerminationType',
+    'SuccessVerifier',
+    'TaskStatusCall',
+    'detect_set_task_status',
 ]

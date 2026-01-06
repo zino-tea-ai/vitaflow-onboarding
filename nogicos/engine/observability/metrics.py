@@ -17,10 +17,13 @@ NogicOS 性能指标收集
 import time
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable, Any, TYPE_CHECKING
 from collections import deque
 from enum import Enum
 import asyncio
+
+if TYPE_CHECKING:
+    from ..config import PerformanceSLO
 
 logger = logging.getLogger(__name__)
 
@@ -114,37 +117,6 @@ class LatencyHistogram:
             "min": self.min,
             "max": self.max,
         }
-
-
-@dataclass
-class PerformanceSLO:
-    """
-    性能服务水平目标 (Service Level Objectives)
-    
-    定义系统性能的量化指标，用于监控和告警
-    """
-    
-    # ========== 延迟 SLO ==========
-    tool_execution_p50_ms: int = 200       # 工具执行 P50 延迟
-    tool_execution_p99_ms: int = 2000      # 工具执行 P99 延迟
-    llm_response_p50_ms: int = 3000        # LLM 响应 P50 延迟
-    llm_response_p99_ms: int = 15000       # LLM 响应 P99 延迟
-    screenshot_capture_ms: int = 500       # 截图捕获延迟
-    
-    # ========== 吞吐量 SLO ==========
-    max_concurrent_tasks: int = 3          # 最大并发任务数
-    tool_calls_per_minute: int = 60        # 每分钟工具调用数
-    iterations_per_task: int = 20          # 每任务最大迭代数
-    
-    # ========== 资源 SLO ==========
-    max_memory_mb: int = 500               # 最大内存使用
-    max_cpu_percent: int = 30              # 最大 CPU 使用率
-    max_screenshot_cache_mb: int = 50      # 截图缓存上限
-    
-    # ========== 可靠性 SLO ==========
-    task_success_rate: float = 0.85        # 任务成功率 >= 85%
-    tool_retry_rate: float = 0.10          # 工具重试率 <= 10%
-    event_drop_rate: float = 0.01          # 事件丢弃率 <= 1%
 
 
 class PerformanceMetrics:
@@ -268,7 +240,7 @@ class PerformanceMetrics:
         self._current_memory_mb = memory_mb
         self._peak_memory_mb = max(self._peak_memory_mb, memory_mb)
     
-    def check_slo(self, slo: PerformanceSLO) -> Dict[str, bool]:
+    def check_slo(self, slo: "PerformanceSLO") -> Dict[str, bool]:
         """
         检查 SLO 是否满足
         

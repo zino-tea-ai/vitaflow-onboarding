@@ -122,11 +122,13 @@ class ModuleTracer:
 # Performance metrics (Phase 0.25)
 from .metrics import (
     PerformanceMetrics,
-    PerformanceSLO,
     LatencyHistogram,
     get_metrics,
     set_metrics,
 )
+
+# PerformanceSLO 从 config 导入（唯一定义）
+from ..config import PerformanceSLO
 
 __all__ = [
     # Logging

@@ -19,7 +19,8 @@ from typing import Optional, Dict, Any, List
 from enum import Enum
 from dataclasses import dataclass
 
-from .events import EventBus, AgentEvent, EventType, get_event_bus
+from .events import AgentEvent, EventType
+from .event_bus import EventBus, get_event_bus
 from .async_db import AsyncTaskStore
 
 logger = logging.getLogger(__name__)
