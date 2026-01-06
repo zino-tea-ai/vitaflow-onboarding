@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-NogicOS Observability - Logging and tracing
+NogicOS Observability - Logging, tracing, and metrics
 
 Includes:
 - Basic logging (get_logger, setup_logging)
 - Module tracing (ModuleTracer)
 - LangSmith integration (langsmith_tracer)
+- Performance metrics (PerformanceMetrics, PerformanceSLO)
 """
 
 import logging
@@ -117,3 +118,29 @@ class ModuleTracer:
                 self.logger.debug(f"[DONE] {operation} ({duration:.1f}ms)")
             self._spans.append(span)
 
+
+# Performance metrics (Phase 0.25)
+from .metrics import (
+    PerformanceMetrics,
+    PerformanceSLO,
+    LatencyHistogram,
+    get_metrics,
+    set_metrics,
+)
+
+__all__ = [
+    # Logging
+    'setup_logging',
+    'get_logger',
+    'LOG_DIR',
+    # Tracing
+    'ModuleTracer',
+    'TraceSpan',
+    'get_langsmith_tracer',
+    # Metrics (Phase 0.25)
+    'PerformanceMetrics',
+    'PerformanceSLO',
+    'LatencyHistogram',
+    'get_metrics',
+    'set_metrics',
+]
