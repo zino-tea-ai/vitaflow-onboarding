@@ -383,32 +383,133 @@ class BrowserAppAgent(AppAgent):
         }
     
     async def _tool_navigate(self, url: str) -> ToolResult:
-        """导航到 URL"""
-        # TODO: 实现实际导航
-        logger.info(f"Navigate to: {url}")
-        return ToolResult.success(f"Navigated to {url}", hwnd=self.hwnd)
+        """
+        导航到 URL
+        
+        浏览器导航需要：
+        1. 聚焦地址栏 (Ctrl+L)
+        2. 清空并输入 URL
+        3. 按回车
+        """
+        from ..tools.window_tools import WindowTools
+        
+        tools = WindowTools()
+        
+        try:
+            # 1. 聚焦地址栏
+            hotkey_result = await tools.window_hotkey(self.hwnd, "ctrl+l")
+            if not hotkey_result.success:
+                return ToolResult.failure(f"Failed to focus address bar: {hotkey_result.error}", hwnd=self.hwnd)
+            
+            await asyncio.sleep(0.2)
+            
+            # 2. 输入 URL
+            type_result = await tools.window_type(self.hwnd, url)
+            if not type_result.success:
+                return ToolResult.failure(f"Failed to type URL: {type_result.error}", hwnd=self.hwnd)
+            
+            await asyncio.sleep(0.1)
+            
+            # 3. 按回车
+            enter_result = await tools.window_key_press(self.hwnd, "enter")
+            if not enter_result.success:
+                return ToolResult.failure(f"Failed to press Enter: {enter_result.error}", hwnd=self.hwnd)
+            
+            # 4. 等待页面加载
+            await asyncio.sleep(1.0)
+            
+            # 5. 截图确认
+            screenshot_result = await tools.window_screenshot(self.hwnd)
+            
+            return ToolResult(
+                output=f"Navigated to {url}",
+                error=None,
+                base64_image=screenshot_result.base64_image,
+                hwnd=self.hwnd,
+            )
+            
+        except Exception as e:
+            logger.error(f"Navigate failed: {e}")
+            return ToolResult.failure(str(e), hwnd=self.hwnd)
     
     async def _tool_click(self, x: int, y: int) -> ToolResult:
-        """点击坐标"""
-        # 坐标缩放
-        scaled_x = int(x * self.config.coordinate_scale)
-        scaled_y = int(y * self.config.coordinate_scale)
+        """
+        点击坐标 - 使用 PostMessage (窗口隔离)
         
-        # TODO: 实现实际点击
-        logger.info(f"Click at ({scaled_x}, {scaled_y})")
-        return ToolResult.success(f"Clicked at ({scaled_x}, {scaled_y})", hwnd=self.hwnd)
+        坐标是相对于 1280x800 截图的，会自动转换为客户区坐标
+        """
+        from ..tools.window_tools import WindowTools
+        
+        tools = WindowTools()
+        
+        try:
+            result = await tools.window_click(x, y, self.hwnd, capture_screenshot=True)
+            
+            if result.success:
+                return ToolResult(
+                    output=f"Clicked at ({x}, {y})",
+                    error=None,
+                    base64_image=result.base64_image,
+                    hwnd=self.hwnd,
+                )
+            else:
+                return ToolResult.failure(result.error or "Click failed", hwnd=self.hwnd)
+                
+        except Exception as e:
+            logger.error(f"Click failed: {e}")
+            return ToolResult.failure(str(e), hwnd=self.hwnd)
     
     async def _tool_type(self, text: str) -> ToolResult:
-        """输入文本"""
-        # TODO: 实现实际输入
-        logger.info(f"Type: {text[:50]}...")
-        return ToolResult.success(f"Typed {len(text)} characters", hwnd=self.hwnd)
+        """
+        输入文本 - 使用 PostMessage (窗口隔离)
+        
+        支持中英文混合输入
+        """
+        from ..tools.window_tools import WindowTools
+        
+        tools = WindowTools()
+        
+        try:
+            result = await tools.window_type(text, self.hwnd, capture_screenshot=True)
+            
+            if result.success:
+                return ToolResult(
+                    output=f"Typed {len(text)} characters",
+                    error=None,
+                    base64_image=result.base64_image,
+                    hwnd=self.hwnd,
+                )
+            else:
+                return ToolResult.failure(result.error or "Type failed", hwnd=self.hwnd)
+                
+        except Exception as e:
+            logger.error(f"Type failed: {e}")
+            return ToolResult.failure(str(e), hwnd=self.hwnd)
     
     async def _tool_scroll(self, direction: str, amount: int = 300) -> ToolResult:
-        """滚动"""
-        # TODO: 实现实际滚动
-        logger.info(f"Scroll {direction} by {amount}px")
-        return ToolResult.success(f"Scrolled {direction} by {amount}px", hwnd=self.hwnd)
+        """
+        滚动页面 - 使用 PostMessage (窗口隔离)
+        """
+        from ..tools.window_tools import WindowTools
+        
+        tools = WindowTools()
+        
+        try:
+            result = await tools.window_scroll(self.hwnd, direction, amount, capture_screenshot=True)
+            
+            if result.success:
+                return ToolResult(
+                    output=f"Scrolled {direction} by {amount}px",
+                    error=None,
+                    base64_image=result.base64_image,
+                    hwnd=self.hwnd,
+                )
+            else:
+                return ToolResult.failure(result.error or "Scroll failed", hwnd=self.hwnd)
+                
+        except Exception as e:
+            logger.error(f"Scroll failed: {e}")
+            return ToolResult.failure(str(e), hwnd=self.hwnd)
 
 
 class DesktopAppAgent(AppAgent):
@@ -521,31 +622,124 @@ class DesktopAppAgent(AppAgent):
         button: str = "left",
         clicks: int = 1,
     ) -> ToolResult:
-        """鼠标点击"""
-        # TODO: 实现实际点击
-        logger.info(f"Mouse {button} click at ({x}, {y}) x{clicks}")
-        return ToolResult.success(
-            f"Mouse {button} clicked at ({x}, {y})",
-            hwnd=self.hwnd,
-        )
+        """
+        鼠标点击 - 使用 PostMessage (窗口隔离)
+        
+        坐标是相对于 1280x800 截图的，会自动转换
+        """
+        from ..tools.window_tools import WindowTools
+        
+        tools = WindowTools()
+        
+        try:
+            if clicks == 2:
+                # 双击
+                result = await tools.window_double_click(x, y, self.hwnd, capture_screenshot=True)
+            else:
+                # 单击
+                result = await tools.window_click(x, y, self.hwnd, button=button, capture_screenshot=True)
+            
+            if result.success:
+                click_type = "double" if clicks == 2 else button
+                return ToolResult(
+                    output=f"Mouse {click_type} clicked at ({x}, {y})",
+                    error=None,
+                    base64_image=result.base64_image,
+                    hwnd=self.hwnd,
+                )
+            else:
+                return ToolResult.failure(result.error or "Click failed", hwnd=self.hwnd)
+                
+        except Exception as e:
+            logger.error(f"Mouse click failed: {e}")
+            return ToolResult.failure(str(e), hwnd=self.hwnd)
     
     async def _tool_keyboard_type(self, text: str) -> ToolResult:
-        """键盘输入"""
-        # TODO: 实现实际输入
-        logger.info(f"Keyboard type: {text[:50]}...")
-        return ToolResult.success(f"Typed {len(text)} characters", hwnd=self.hwnd)
+        """
+        键盘输入 - 使用 PostMessage (窗口隔离)
+        
+        支持中英文混合输入（非 ASCII 使用剪贴板）
+        """
+        from ..tools.window_tools import WindowTools
+        
+        tools = WindowTools()
+        
+        try:
+            result = await tools.window_type(text, self.hwnd, capture_screenshot=True)
+            
+            if result.success:
+                return ToolResult(
+                    output=f"Typed {len(text)} characters",
+                    error=None,
+                    base64_image=result.base64_image,
+                    hwnd=self.hwnd,
+                )
+            else:
+                return ToolResult.failure(result.error or "Type failed", hwnd=self.hwnd)
+                
+        except Exception as e:
+            logger.error(f"Keyboard type failed: {e}")
+            return ToolResult.failure(str(e), hwnd=self.hwnd)
     
     async def _tool_hotkey(self, keys: str) -> ToolResult:
-        """快捷键"""
-        # TODO: 实现实际快捷键
-        logger.info(f"Hotkey: {keys}")
-        return ToolResult.success(f"Pressed hotkey: {keys}", hwnd=self.hwnd)
+        """
+        快捷键 - 使用 PostMessage (窗口隔离)
+        
+        格式: "ctrl+c", "alt+tab", "ctrl+shift+s"
+        """
+        from ..tools.window_tools import WindowTools
+        
+        tools = WindowTools()
+        
+        try:
+            result = await tools.window_hotkey(self.hwnd, keys, capture_screenshot=True)
+            
+            if result.success:
+                return ToolResult(
+                    output=f"Pressed hotkey: {keys}",
+                    error=None,
+                    base64_image=result.base64_image,
+                    hwnd=self.hwnd,
+                )
+            else:
+                return ToolResult.failure(result.error or "Hotkey failed", hwnd=self.hwnd)
+                
+        except Exception as e:
+            logger.error(f"Hotkey failed: {e}")
+            return ToolResult.failure(str(e), hwnd=self.hwnd)
     
     async def _tool_window_focus(self) -> ToolResult:
-        """窗口聚焦"""
-        # TODO: 实现实际聚焦
-        logger.info(f"Focus window: {self.hwnd}")
-        return ToolResult.success(f"Window {self.hwnd} focused", hwnd=self.hwnd)
+        """
+        窗口聚焦 - 将窗口置于前台
+        """
+        from ..tools.window_state import get_state_checker
+        from ..tools.window_tools import WindowTools
+        
+        tools = WindowTools()
+        state_checker = get_state_checker()
+        
+        try:
+            # 恢复窗口（如果最小化）并置于前台
+            success = state_checker.bring_to_foreground(self.hwnd)
+            
+            if success:
+                await asyncio.sleep(0.2)  # 等待窗口激活
+                
+                # 截图确认
+                screenshot_result = await tools.window_screenshot(self.hwnd)
+                
+                return ToolResult(
+                    output=f"Window {self.hwnd} focused",
+                    error=None,
+                    base64_image=screenshot_result.base64_image,
+                    hwnd=self.hwnd,
+                )
+            else:
+                return ToolResult.failure(f"Failed to focus window {self.hwnd}", hwnd=self.hwnd)
+                
+        except Exception as e:
+            logger.error(f"Window focus failed: {e}")
+            return ToolResult.failure(str(e), hwnd=self.hwnd)
 
 
 class IDEAppAgent(AppAgent):

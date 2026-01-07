@@ -97,6 +97,35 @@ from .termination import (
     detect_set_task_status,
 )
 
+# Phase 5: LLM 集成
+from .llm_client import (
+    LLMClient, LLMConfig, CacheStats,
+    get_llm_client, generate,
+)
+from .prompts import (
+    AgentMode as PromptAgentMode,
+    PromptBuilder, build_system_prompt, get_prompt_builder,
+    SYSTEM_PROMPT_TEMPLATE, THINKING_TEMPLATES,
+)
+from .tool_descriptions import (
+    ToolDescription, ToolRegistry,
+    get_tool_registry, get_tool_schemas,
+    TOOL_DESCRIPTIONS,
+)
+from .context_manager import (
+    ContextManager, TokenBudget, TokenCounter,
+    ContextCompressor, CompressionResult,
+    get_context_manager,
+)
+
+# Phase 5c: 视觉增强
+from .vision import (
+    VisionEnhancer, EnhancedScreenshot, UIElement,
+    get_vision_enhancer,
+    OCRExtractor, OCRResult, TextRegion,
+    get_ocr_extractor,
+)
+
 __all__ = [
     # Core Agent
     'ReActAgent',
@@ -247,4 +276,39 @@ __all__ = [
     'SuccessVerifier',
     'TaskStatusCall',
     'detect_set_task_status',
+    # LLM Client (Phase 5)
+    'LLMClient',
+    'LLMConfig',
+    'CacheStats',
+    'get_llm_client',
+    'generate',
+    # Prompts (Phase 5a)
+    'PromptAgentMode',
+    'PromptBuilder',
+    'build_system_prompt',
+    'get_prompt_builder',
+    'SYSTEM_PROMPT_TEMPLATE',
+    'THINKING_TEMPLATES',
+    # Tool Descriptions (Phase 5a)
+    'ToolDescription',
+    'ToolRegistry',
+    'get_tool_registry',
+    'get_tool_schemas',
+    'TOOL_DESCRIPTIONS',
+    # Context Manager (Phase 5b)
+    'ContextManager',
+    'TokenBudget',
+    'TokenCounter',
+    'ContextCompressor',
+    'CompressionResult',
+    'get_context_manager',
+    # Vision (Phase 5c)
+    'VisionEnhancer',
+    'EnhancedScreenshot',
+    'UIElement',
+    'get_vision_enhancer',
+    'OCRExtractor',
+    'OCRResult',
+    'TextRegion',
+    'get_ocr_extractor',
 ]

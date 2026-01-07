@@ -16,7 +16,7 @@ NogicOS 事件总线
 """
 
 from typing import Callable, Dict, List, Set, Optional, Union, Awaitable
-from collections import defaultdict
+from collections import defaultdict, deque
 import asyncio
 import logging
 from dataclasses import dataclass, field
@@ -228,13 +228,39 @@ class EventBus:
 # ========== 单例模式 ==========
 
 _default_bus: Optional[EventBus] = None
+_use_backpressure: bool = False  # 是否使用背压总线
+
+
+def configure_event_bus(use_backpressure: bool = False):
+    """
+    配置事件总线类型（必须在首次调用 get_event_bus 前调用）
+    
+    Args:
+        use_backpressure: 是否使用背压事件总线
+    """
+    global _use_backpressure, _default_bus
+    if _default_bus is not None:
+        logger.warning("Event bus already initialized, configuration ignored")
+        return
+    _use_backpressure = use_backpressure
 
 
 def get_event_bus() -> EventBus:
-    """获取默认事件总线（单例）"""
+    """
+    获取默认事件总线（单例）
+    
+    根据配置返回普通 EventBus 或 BackpressureEventBus。
+    使用 configure_event_bus() 在启动时配置。
+    """
     global _default_bus
     if _default_bus is None:
-        _default_bus = EventBus()
+        if _use_backpressure:
+            # 延迟导入避免循环依赖
+            _default_bus = BackpressureEventBus()
+            logger.info("Using BackpressureEventBus")
+        else:
+            _default_bus = EventBus()
+            logger.info("Using standard EventBus")
     return _default_bus
 
 
@@ -317,32 +343,48 @@ class BackpressureEventBus(EventBus):
     """
     
     # 事件优先级映射（数字越小优先级越高）
+    # 完整覆盖所有 EventType，避免使用默认值
     PRIORITY_MAP: Dict[EventType, int] = {
-        # 最高优先级 (0) - 不可丢弃
+        # ========== 最高优先级 (0) - 不可丢弃 ==========
         EventType.TASK_FAILED: 0,
         EventType.USER_TAKEOVER: 0,
         EventType.USER_CONFIRM_REQUIRED: 0,
         EventType.USER_CONFIRM_RESPONSE: 0,
+        EventType.USER_INPUT: 0,  # 用户输入必须处理
+        EventType.LLM_ERROR: 0,   # LLM 错误必须处理
         
-        # 高优先级 (1)
+        # ========== 高优先级 (1) - 任务状态变更 ==========
         EventType.TASK_COMPLETED: 1,
         EventType.TASK_INTERRUPTED: 1,
+        EventType.TASK_PAUSED: 1,
+        EventType.TASK_RESUMED: 1,
+        EventType.TASK_CANCELLED: 1,
         EventType.TOOL_ERROR: 1,
         
-        # 普通优先级 (2)
+        # ========== 普通优先级 (2) - 正常操作 ==========
+        EventType.TASK_CREATED: 2,
         EventType.TASK_STARTED: 2,
         EventType.TOOL_START: 2,
         EventType.TOOL_END: 2,
+        EventType.TOOL_RETRY: 2,
         EventType.AGENT_EXECUTING: 2,
+        EventType.LLM_REQUEST_START: 2,
+        EventType.LLM_RESPONSE_END: 2,
+        EventType.OVERLAY_CONNECTED: 2,
+        EventType.OVERLAY_DISCONNECTED: 2,
+        EventType.OVERLAY_STATUS_UPDATE: 2,
         
-        # 低优先级 (3) - 可丢弃
+        # ========== 低优先级 (3) - 可丢弃 ==========
         EventType.AGENT_THINKING: 3,
         EventType.AGENT_PLANNING: 3,
-        EventType.LLM_RESPONSE_CHUNK: 3,
+        EventType.AGENT_WAITING: 3,
+        EventType.AGENT_IDLE: 3,
+        EventType.LLM_RESPONSE_CHUNK: 3,  # 流式输出可以丢失部分
         
-        # 最低优先级 (4) - 优先丢弃
+        # ========== 最低优先级 (4) - 优先丢弃 ==========
         EventType.SCREENSHOT_CAPTURED: 4,
         EventType.CHECKPOINT_SAVED: 4,
+        EventType.CHECKPOINT_RESTORED: 4,
         EventType.CONTEXT_COMPRESSED: 4,
     }
     
@@ -351,6 +393,9 @@ class BackpressureEventBus(EventBus):
     
     # 批量处理大小
     BATCH_SIZE = 10
+    
+    # 等待时间统计窗口大小
+    WAIT_TIME_WINDOW = 100
     
     def __init__(self, max_queue_size: int = 1000):
         super().__init__(max_queue_size)
@@ -364,7 +409,12 @@ class BackpressureEventBus(EventBus):
         self._events_queued = 0
         self._events_dropped = 0
         self._events_processed = 0
-        self._queue_wait_times: List[float] = []
+        self._overflow_count = 0  # 高优先级事件溢出计数
+        # 使用 deque 限制内存，只保留最近 N 个样本
+        self._queue_wait_times: deque = deque(maxlen=self.WAIT_TIME_WINDOW)
+        
+        # Overflow 回调（用于告警）
+        self._overflow_callback: Optional[Callable] = None
     
     async def start(self):
         """启动 worker"""
@@ -403,10 +453,12 @@ class BackpressureEventBus(EventBus):
             event: 要发布的事件
             
         Returns:
-            是否成功入队（高优先级事件总是成功）
+            是否成功入队
             
-        Raises:
-            EventBusOverflowError: 队列满且事件不可丢弃时抛出
+        Note:
+            队列满时：
+            - 低优先级事件被静默丢弃
+            - 高优先级事件触发 overflow 回调，记录严重错误，但不抛异常
         """
         if self._paused:
             logger.warning(f"EventBus paused, dropping event: {event.type.value}")
@@ -429,10 +481,26 @@ class BackpressureEventBus(EventBus):
                 logger.debug(f"Dropped low-priority event: {event.type.value}")
                 return False
             
-            # 高优先级事件不可丢弃，抛出异常
-            raise EventBusOverflowError(
-                f"Queue full and event {event.type.value} (priority={priority}) cannot be dropped"
+            # 高优先级事件不可丢弃
+            # 策略：记录错误 + 触发回调，但不抛异常以避免中断主循环
+            self._events_dropped += 1
+            self._overflow_count += 1
+            logger.critical(
+                f"CRITICAL: Queue overflow, dropped high-priority event: {event.type.value} "
+                f"(priority={priority}). Consider increasing max_queue_size or optimizing handlers."
             )
+            
+            # 触发 overflow 回调（如果注册了）
+            if self._overflow_callback:
+                try:
+                    if asyncio.iscoroutinefunction(self._overflow_callback):
+                        await self._overflow_callback(event)
+                    else:
+                        self._overflow_callback(event)
+                except Exception as e:
+                    logger.error(f"Overflow callback error: {e}")
+            
+            return False
     
     def _get_priority(self, event: AgentEvent) -> int:
         """获取事件优先级"""
@@ -515,13 +583,24 @@ class BackpressureEventBus(EventBus):
             except Exception as e:
                 logger.error(f"Handler '{handler_info.name}' error: {e}")
     
+    def on_overflow(self, callback: Callable):
+        """
+        注册队列溢出回调（用于告警或降级）
+        
+        Args:
+            callback: 回调函数，接收被丢弃的事件
+        
+        Usage:
+            bus.on_overflow(lambda event: alert_critical(f"Dropped: {event.type}"))
+        """
+        self._overflow_callback = callback
+    
     def get_stats(self) -> Dict:
         """获取统计信息"""
         base_stats = super().get_stats()
         
-        # 计算队列等待时间
-        recent_waits = self._queue_wait_times[-100:] if self._queue_wait_times else []
-        avg_wait = sum(recent_waits) / len(recent_waits) if recent_waits else 0
+        # 计算队列等待时间（deque 已自动限制大小）
+        avg_wait = sum(self._queue_wait_times) / len(self._queue_wait_times) if self._queue_wait_times else 0
         
         return {
             **base_stats,
@@ -530,6 +609,7 @@ class BackpressureEventBus(EventBus):
             "events_queued": self._events_queued,
             "events_dropped": self._events_dropped,
             "events_processed": self._events_processed,
+            "overflow_count": self._overflow_count,  # 高优先级事件溢出
             "drop_rate": self._events_dropped / max(self._events_queued, 1),
             "avg_queue_wait_ms": avg_wait * 1000,
             "running": self._running,

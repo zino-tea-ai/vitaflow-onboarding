@@ -212,10 +212,73 @@ class AgentFactory:
         """
         自动检测应用类型
         
-        TODO: 实现实际的窗口类名检测
+        使用 GetClassName 获取窗口类名，然后匹配到应用类型
         """
-        # 占位实现，默认返回 desktop
-        return "desktop"
+        import ctypes
+        from ctypes import wintypes
+        
+        try:
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            
+            # 获取窗口类名
+            class_buffer = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, class_buffer, 256)
+            class_name = class_buffer.value
+            
+            # 获取窗口标题
+            title_length = user32.GetWindowTextLengthW(hwnd) + 1
+            title_buffer = ctypes.create_unicode_buffer(title_length)
+            user32.GetWindowTextW(hwnd, title_buffer, title_length)
+            title = title_buffer.value.lower()
+            
+            logger.debug(f"Window detection: hwnd={hwnd}, class={class_name}, title={title[:50]}")
+            
+            # 1. 精确类名匹配
+            if class_name in self._WINDOW_CLASS_MAP:
+                return self._WINDOW_CLASS_MAP[class_name]
+            
+            # 2. 浏览器检测 (Electron 应用也使用 Chrome_WidgetWin_1)
+            browser_classes = [
+                "Chrome_WidgetWin_1",  # Chrome, Edge, Electron apps
+                "MozillaWindowClass",  # Firefox
+                "IEFrame",             # IE
+                "ApplicationFrameWindow",  # Edge UWP
+            ]
+            if class_name in browser_classes:
+                return "browser"
+            
+            # 3. 标题关键词检测
+            browser_keywords = ["chrome", "firefox", "edge", "safari", "opera", "brave", "vivaldi"]
+            for keyword in browser_keywords:
+                if keyword in title:
+                    return "browser"
+            
+            ide_keywords = ["visual studio", "vscode", "code", "pycharm", "intellij", "webstorm", "sublime", "atom", "notepad++"]
+            for keyword in ide_keywords:
+                if keyword in title:
+                    return "ide"
+            
+            terminal_keywords = ["terminal", "cmd", "powershell", "bash", "命令提示符", "windows terminal"]
+            for keyword in terminal_keywords:
+                if keyword in title:
+                    return "terminal"
+            
+            # 4. 进程名检测 (可选，更准确但更慢)
+            try:
+                process_id = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+                
+                # 获取进程名需要更多权限，这里简化处理
+                # 可以扩展为使用 psutil 或 CreateToolhelp32Snapshot
+            except Exception:
+                pass
+            
+            # 5. 默认返回 desktop
+            return "desktop"
+            
+        except Exception as e:
+            logger.warning(f"Failed to detect app type for hwnd={hwnd}: {e}")
+            return "desktop"
     
     def get_supported_types(self) -> list:
         """获取支持的应用类型"""

@@ -34,6 +34,12 @@ from .termination import (
     TerminationReason, TerminationType, SuccessVerifier, detect_set_task_status,
 )
 
+# Phase 5: LLM 集成
+from .llm_client import LLMClient, LLMConfig, get_llm_client
+from .prompts import build_system_prompt, AgentMode
+from .tool_descriptions import get_tool_schemas, get_tool_registry
+from .context_manager import ContextManager, TokenBudget, get_context_manager
+
 if TYPE_CHECKING:
     from .app_agent import AppAgent
 
@@ -92,9 +98,15 @@ class AgentConfig:
     
     # 敏感操作
     sensitive_tools: List[str] = field(default_factory=lambda: [
-        "delete_file", "system_command", "send_email", 
+        "delete_file", "system_command", "send_email",
         "make_payment", "modify_settings"
     ])
+    
+    # Vision 增强配置 (Phase 5c)
+    enable_vision_enhancement: bool = True  # 是否启用 OCR 增强
+    vision_ocr_enabled: bool = True         # 是否启用 OCR 文本提取
+    vision_enhancement_timeout_ms: int = 5000  # 增强超时（毫秒）
+    vision_log_timing: bool = True          # 是否记录增强耗时
     
     def to_termination_config(self) -> TerminationConfig:
         """转换为终止配置"""
@@ -246,11 +258,38 @@ class HostAgent:
             min_confidence=self.config.min_verification_confidence,
         )
         
+        # Phase 5: 初始化 LLM 客户端
+        llm_config = LLMConfig(
+            model="claude-sonnet-4-20250514",
+            max_tokens=self.config.max_context_tokens // 20,  # 输出 token 约为输入的 1/20
+            enable_prompt_caching=True,
+            enable_streaming=True,
+        )
+        self._llm_client = LLMClient(llm_config)
+        await self._llm_client.initialize()
+        
+        # Phase 5b: 初始化上下文管理器
+        token_budget = TokenBudget(
+            max_input_tokens=self.config.max_context_tokens,
+            compression_threshold=self.config.context_compress_threshold,
+        )
+        self._context_manager = ContextManager(token_budget, self._llm_client)
+        
+        # Phase 5c: 初始化视觉增强器（根据配置）
+        self._vision_enhancer = None
+        if self.config.enable_vision_enhancement:
+            from .vision import VisionEnhancer, get_vision_enhancer
+            self._vision_enhancer = get_vision_enhancer(
+                use_ocr=self.config.vision_ocr_enabled,
+                use_ui_detection=False,  # UI 检测暂不启用
+            )
+            logger.info(f"Vision enhancement enabled: ocr={self.config.vision_ocr_enabled}")
+        
         # 注册内置工具
         self._register_builtin_tools()
         
         self._initialized = True
-        logger.info("HostAgent initialized with Phase 3 components")
+        logger.info("HostAgent initialized with Phase 5 LLM + Vision integration")
     
     def _register_builtin_tools(self):
         """注册内置工具"""
@@ -638,11 +677,37 @@ class HostAgent:
                 if self._on_thinking:
                     await self._on_thinking(llm_response.content)
             
-            # 5. 执行工具调用
+            # 5. 执行工具调用并将结果添加到消息历史
             tool_results = []
             for tool_call in llm_response.tool_calls:
                 result = await self._execute_tool(tool_call)
+                
+                # 【P2 修复】如果是截图结果，使用 Vision 增强
+                if result.base64_image:
+                    result = await self._enhance_screenshot_result(result)
+                
                 tool_results.append(result)
+                
+                # 【P0 修复】将工具结果添加到消息历史
+                # Claude 需要看到工具执行结果才能继续推理
+                # 使用结构化内容支持图片
+                if result.base64_image:
+                    # 包含截图的结果，使用结构化内容
+                    tool_result_content = self._build_tool_result_message_content(tool_call, result)
+                    self._messages.append(Message(
+                        role=MessageRole.TOOL,
+                        content=tool_result_content,
+                        tool_call_id=tool_call.id,
+                        name=tool_call.name,
+                    ))
+                else:
+                    # 纯文本结果
+                    tool_result_content = self._format_tool_result_content(tool_call, result)
+                    self._messages.append(Message.tool(
+                        tool_call_id=tool_call.id,
+                        name=tool_call.name,
+                        content=tool_result_content,
+                    ))
                 
                 # 截图延迟
                 await asyncio.sleep(self.config.screenshot_delay_ms / 1000)
@@ -688,21 +753,149 @@ class HostAgent:
                     error=str(e),
                 )
     
+    def _determine_prompt_mode(self, windows_info: List[Dict[str, Any]]) -> AgentMode:
+        """
+        根据窗口类型自动选择 Prompt 模式
+        
+        策略：
+        - 全部是浏览器窗口 → BROWSER 模式
+        - 全部是桌面应用窗口 → DESKTOP 模式
+        - 混合或未知 → HYBRID 模式
+        
+        Args:
+            windows_info: 窗口信息列表
+            
+        Returns:
+            最佳的 AgentMode
+        """
+        if not windows_info:
+            return AgentMode.HYBRID
+        
+        app_types = {w.get("app_type", "unknown").lower() for w in windows_info}
+        
+        # 移除 unknown
+        known_types = app_types - {"unknown"}
+        
+        if not known_types:
+            # 全部未知，使用混合模式
+            return AgentMode.HYBRID
+        
+        if known_types == {"browser"}:
+            return AgentMode.BROWSER
+        
+        if known_types <= {"desktop", "ide", "native"}:
+            return AgentMode.DESKTOP
+        
+        # 混合类型
+        return AgentMode.HYBRID
+    
     async def _call_llm(self) -> LLMResponse:
         """
-        调用 LLM
+        调用 LLM - Phase 5 实现
         
-        TODO: 在 Phase 5 实现实际的 Claude API 调用
+        使用 Claude API 调用，支持：
+        - Prompt Caching
+        - 流式输出
+        - Tool Calling
+        - 自动选择 Prompt 模式
         """
-        # 占位实现
-        from .types import StopReason
-        return LLMResponse(
-            content="Thinking about the task...",
-            stop_reason=StopReason.END_TURN,
-            tool_calls=[],
-            input_tokens=0,
-            output_tokens=0,
+        # 构建系统提示词
+        windows_info = [
+            {
+                "hwnd": hwnd,
+                "title": agent.window_title if hasattr(agent, 'window_title') else f"Window {hwnd}",
+                "app_type": agent.app_type if hasattr(agent, 'app_type') else "unknown",
+            }
+            for hwnd, agent in self._app_agents.items()
+        ]
+        
+        # 如果没有注册的 AppAgent，使用目标窗口
+        if not windows_info and self._target_hwnds:
+            windows_info = [
+                {"hwnd": hwnd, "title": f"Window {hwnd}", "app_type": "unknown"}
+                for hwnd in self._target_hwnds
+            ]
+        
+        # 获取任务描述
+        task_text = ""
+        for msg in self._messages:
+            if msg.role == MessageRole.USER and isinstance(msg.content, str):
+                task_text = msg.content
+                break
+        
+        # 自动选择最佳 Prompt 模式
+        prompt_mode = self._determine_prompt_mode(windows_info)
+        logger.debug(f"Selected prompt mode: {prompt_mode.value} based on windows: {[w.get('app_type') for w in windows_info]}")
+        
+        system_prompt = build_system_prompt(
+            task_description=task_text,
+            windows=windows_info,
+            mode=prompt_mode,
         )
+        
+        # 获取工具定义（使用增强版描述）
+        tool_registry = get_tool_registry()
+        
+        # 合并内置工具定义和注册表中的工具
+        all_tools = self._tool_definitions.copy()
+        
+        # 添加注册表中的工具（如果没有重复）
+        registered_tool_names = {t["name"] for t in all_tools}
+        for tool_schema in tool_registry.to_claude_tools():
+            if tool_schema["name"] not in registered_tool_names:
+                all_tools.append(tool_schema)
+        
+        # 流式输出回调
+        async def on_text(text: str):
+            """文本流回调"""
+            if self._on_thinking:
+                await self._on_thinking(text)
+            # 发布思考事件
+            await self._publish_event(EventType.AGENT_THINKING, {
+                "text": text,
+                "iteration": self._iteration_count,
+                "streaming": True,
+            })
+        
+        async def on_tool_call(tool_call: ToolCall):
+            """工具调用回调"""
+            logger.debug(f"Tool call detected: {tool_call.name}")
+        
+        try:
+            # 使用流式调用
+            response = await self._llm_client.stream(
+                messages=self._messages,
+                system_prompt=system_prompt,
+                tools=all_tools,
+                on_text=on_text,
+                on_tool_call=on_tool_call,
+            )
+            
+            # 记录 token 使用
+            logger.info(
+                f"LLM call complete: input={response.input_tokens}, output={response.output_tokens}, "
+                f"tool_calls={len(response.tool_calls)}"
+            )
+            
+            # 添加 assistant 消息到历史
+            self._messages.append(Message.assistant(
+                content=response.content,
+                tool_calls=response.tool_calls,
+            ))
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"LLM call failed: {e}")
+            # 返回错误响应
+            from .types import StopReason
+            return LLMResponse(
+                content=f"Error calling LLM: {e}",
+                stop_reason=StopReason.END_TURN,
+                tool_calls=[],
+                input_tokens=0,
+                output_tokens=0,
+            )
     
     async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
         """
@@ -771,6 +964,188 @@ class HostAgent:
             
             return result
     
+    def _format_tool_result_content(
+        self,
+        tool_call: ToolCall,
+        result: ToolResult,
+    ) -> str:
+        """
+        格式化工具结果为消息内容 - Phase 5 P0 修复
+        
+        处理文本结果和截图结果，转换为 Claude API 可接受的格式
+        
+        Args:
+            tool_call: 工具调用
+            result: 工具执行结果
+            
+        Returns:
+            格式化的内容字符串或内容列表
+        """
+        # 如果有错误，返回错误信息
+        if result.is_error:
+            return f"Error: {result.error}"
+        
+        # 如果有截图，需要特殊处理
+        # 注意：截图会在 _prepare_messages 中转换为图片格式
+        if result.base64_image:
+            # 返回带有截图标记的内容，后续在 _prepare_messages 中处理
+            output_text = result.output or "Screenshot captured"
+            return f"{output_text}\n[SCREENSHOT:{result.base64_image[:50]}...]"
+        
+        # 普通文本结果
+        return result.output or "Success"
+    
+    def _build_tool_result_message_content(
+        self,
+        tool_call: ToolCall,
+        result: ToolResult,
+    ) -> list:
+        """
+        构建包含图片的工具结果消息内容 - Phase 5 P0/P2 修复
+        
+        用于支持截图工具返回图片，并可选地使用 Vision 增强
+        
+        Args:
+            tool_call: 工具调用
+            result: 工具执行结果
+            
+        Returns:
+            Claude API 格式的内容列表
+        """
+        content = []
+        
+        # 添加文本结果
+        if result.is_error:
+            content.append({
+                "type": "text",
+                "text": f"Error: {result.error}",
+            })
+        elif result.output:
+            content.append({
+                "type": "text",
+                "text": result.output,
+            })
+        
+        # 添加截图
+        if result.base64_image:
+            # 确定图片类型
+            media_type = "image/png"
+            if result.base64_image.startswith("/9j/"):
+                media_type = "image/jpeg"
+            
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": result.base64_image,
+                }
+            })
+            
+            # 【P2 修复】使用 Vision 增强器添加 OCR 文本
+            # 这样 LLM 可以更好地理解截图内容
+            if hasattr(self, '_vision_enhancer') and self._vision_enhancer:
+                try:
+                    # 异步增强需要在协程中调用，这里使用同步方式获取 OCR 文本
+                    # 实际使用时应在 _execute_tool 后异步调用
+                    pass  # OCR 增强在下面单独处理
+                except Exception as e:
+                    logger.debug(f"Vision enhancement skipped: {e}")
+        
+        # 如果没有任何内容，返回默认成功消息
+        if not content:
+            content.append({
+                "type": "text",
+                "text": "Success",
+            })
+        
+        return content
+    
+    async def _enhance_screenshot_result(
+        self,
+        result: ToolResult,
+    ) -> ToolResult:
+        """
+        使用 Vision 增强截图结果 - Phase 5c 带性能监控
+        
+        为截图添加 OCR 文本描述，帮助 LLM 更好地理解屏幕内容
+        支持超时控制和性能日志
+
+        Args:
+            result: 原始工具结果
+
+        Returns:
+            增强后的工具结果
+        """
+        if not result.base64_image:
+            return result
+
+        # 检查是否启用 Vision 增强
+        if not self.config.enable_vision_enhancement:
+            return result
+        
+        if not hasattr(self, '_vision_enhancer') or not self._vision_enhancer:
+            return result
+
+        start_time = time.time()
+        
+        try:
+            # 使用超时控制的异步增强
+            timeout_s = self.config.vision_enhancement_timeout_ms / 1000.0
+            
+            enhanced = await asyncio.wait_for(
+                self._vision_enhancer.enhance(
+                    screenshot_b64=result.base64_image,
+                    hwnd=result.hwnd,
+                ),
+                timeout=timeout_s,
+            )
+            
+            elapsed_ms = (time.time() - start_time) * 1000
+            
+            # 记录时延日志
+            if self.config.vision_log_timing:
+                logger.info(
+                    f"Vision enhancement completed in {elapsed_ms:.1f}ms "
+                    f"(ocr_chars={len(enhanced.full_text)}, elements={len(enhanced.text_elements)})"
+                )
+
+            # 构建增强的输出文本
+            enhanced_output = result.output or "Screenshot captured"
+
+            # 添加 OCR 文本
+            if enhanced.full_text:
+                ocr_preview = enhanced.full_text[:500]
+                if len(enhanced.full_text) > 500:
+                    ocr_preview += "..."
+                enhanced_output += f"\n\n[OCR Text]: {ocr_preview}"
+
+            # 添加结构化描述
+            if enhanced.description:
+                enhanced_output += f"\n\n[Description]: {enhanced.description}"
+
+            # 返回增强后的结果
+            return ToolResult(
+                output=enhanced_output,
+                error=result.error,
+                base64_image=result.base64_image,
+                hwnd=result.hwnd,
+                duration_ms=result.duration_ms,
+            )
+        
+        except asyncio.TimeoutError:
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.warning(
+                f"Vision enhancement timed out after {elapsed_ms:.1f}ms "
+                f"(limit={self.config.vision_enhancement_timeout_ms}ms)"
+            )
+            return result
+
+        except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.warning(f"Failed to enhance screenshot after {elapsed_ms:.1f}ms: {e}")
+            return result
+    
     # ========== 状态管理 ==========
     
     async def _complete_task(self, description: str):
@@ -820,18 +1195,35 @@ class HostAgent:
         self, 
         tool_name: str, 
         tool_args: dict,
+        timeout_s: float = 60.0,
     ) -> bool:
         """
         请求用户确认敏感操作
         
+        工作流程:
+        1. 发布 USER_CONFIRM_REQUIRED 事件
+        2. 等待用户通过 approve_action() / deny_action() 响应
+        3. 超时则默认拒绝
+        
         Args:
             tool_name: 工具名称
             tool_args: 工具参数
+            timeout_s: 等待超时时间 (秒)
             
         Returns:
             用户是否批准
         """
         action_id = str(uuid.uuid4())
+        
+        # 存储待确认的操作
+        if not hasattr(self, '_pending_confirmations'):
+            self._pending_confirmations: Dict[str, asyncio.Event] = {}
+            self._confirmation_results: Dict[str, bool] = {}
+        
+        # 创建等待事件
+        confirmation_event = asyncio.Event()
+        self._pending_confirmations[action_id] = confirmation_event
+        self._confirmation_results[action_id] = False  # 默认拒绝
         
         # 发布确认请求事件
         await self._publish_event(EventType.USER_CONFIRM_REQUIRED, {
@@ -839,13 +1231,83 @@ class HostAgent:
             "tool_name": tool_name,
             "tool_args": tool_args,
             "risk_level": "high",
+            "timeout_s": timeout_s,
         })
         
         self.state = HostAgentState.WAITING_CONFIRM
         
-        # TODO: 实现等待用户响应的机制
-        # 暂时默认拒绝
-        logger.warning(f"Sensitive operation '{tool_name}' requires confirmation")
+        logger.info(
+            f"Waiting for user confirmation: action_id={action_id}, "
+            f"tool={tool_name}, timeout={timeout_s}s"
+        )
+        
+        try:
+            # 等待用户响应或超时
+            await asyncio.wait_for(confirmation_event.wait(), timeout=timeout_s)
+            approved = self._confirmation_results.get(action_id, False)
+            
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Confirmation timeout for action {action_id} ({tool_name}), "
+                f"defaulting to deny"
+            )
+            approved = False
+            
+        finally:
+            # 清理
+            self._pending_confirmations.pop(action_id, None)
+            self._confirmation_results.pop(action_id, None)
+            self.state = HostAgentState.EXECUTING
+        
+        if approved:
+            logger.info(f"User approved sensitive operation: {tool_name}")
+        else:
+            logger.info(f"User denied sensitive operation: {tool_name}")
+        
+        return approved
+    
+    async def approve_action(self, action_id: str) -> bool:
+        """
+        批准敏感操作 - 供前端调用
+        
+        Args:
+            action_id: 操作 ID (从 USER_CONFIRM_REQUIRED 事件获取)
+            
+        Returns:
+            是否成功 (action_id 是否存在)
+        """
+        if not hasattr(self, '_pending_confirmations'):
+            return False
+        
+        event = self._pending_confirmations.get(action_id)
+        if event:
+            self._confirmation_results[action_id] = True
+            event.set()
+            return True
+        
+        logger.warning(f"Unknown action_id: {action_id}")
+        return False
+    
+    async def deny_action(self, action_id: str) -> bool:
+        """
+        拒绝敏感操作 - 供前端调用
+        
+        Args:
+            action_id: 操作 ID (从 USER_CONFIRM_REQUIRED 事件获取)
+            
+        Returns:
+            是否成功 (action_id 是否存在)
+        """
+        if not hasattr(self, '_pending_confirmations'):
+            return False
+        
+        event = self._pending_confirmations.get(action_id)
+        if event:
+            self._confirmation_results[action_id] = False
+            event.set()
+            return True
+        
+        logger.warning(f"Unknown action_id: {action_id}")
         return False
     
     # ========== 错误处理 ==========
@@ -886,17 +1348,85 @@ class HostAgent:
         
         return False
     
-    # ========== 上下文管理 ==========
+    # ========== 上下文管理 - Phase 5b 实现 ==========
     
     async def _should_compress_context(self) -> bool:
-        """检查是否需要压缩上下文"""
-        # TODO: 实现 token 计数
-        return False
+        """
+        检查是否需要压缩上下文 - Phase 5b 实现
+        
+        使用 ContextManager 检查 token 使用率
+        """
+        if not hasattr(self, '_context_manager') or self._context_manager is None:
+            return False
+        
+        return self._context_manager.should_compress(self._messages)
     
     async def _compress_context(self):
-        """压缩上下文"""
-        # TODO: 在 Phase 5b 实现
-        pass
+        """
+        压缩上下文 - Phase 5b 实现
+        
+        使用 ContextManager 进行智能压缩：
+        - 保留最近 N 条消息
+        - 使用 Haiku 总结历史
+        - 管理截图数量
+        """
+        if not hasattr(self, '_context_manager') or self._context_manager is None:
+            return
+        
+        # 获取压缩前状态
+        status_before = self._context_manager.get_status(self._messages)
+        logger.info(f"Context before compression: {status_before['usage_percent']} ({status_before['current_tokens']} tokens)")
+        
+        # 管理截图数量
+        self._messages = self._context_manager.manage_screenshots(self._messages)
+        
+        # 压缩消息历史
+        self._messages = await self._context_manager.maybe_compress(self._messages)
+        
+        # 获取压缩后状态
+        status_after = self._context_manager.get_status(self._messages)
+        logger.info(f"Context after compression: {status_after['usage_percent']} ({status_after['current_tokens']} tokens)")
+        
+        # 发布上下文压缩事件
+        await self._publish_event(EventType.CHECKPOINT_SAVED, {
+            "type": "context_compressed",
+            "before_tokens": status_before["current_tokens"],
+            "after_tokens": status_after["current_tokens"],
+            "compression_ratio": 1 - (status_after["current_tokens"] / max(status_before["current_tokens"], 1)),
+        })
+    
+    def get_context_status(self) -> Dict[str, Any]:
+        """
+        获取当前上下文状态 - Phase 5b
+        
+        Returns:
+            上下文状态信息
+        """
+        if not hasattr(self, '_context_manager') or self._context_manager is None:
+            return {"status": "not_initialized"}
+        
+        return self._context_manager.get_status(self._messages)
+    
+    def get_llm_stats(self) -> Dict[str, Any]:
+        """
+        获取 LLM 统计信息 - Phase 5
+        
+        Returns:
+            LLM 调用统计（包括缓存命中率）
+        """
+        if not hasattr(self, '_llm_client') or self._llm_client is None:
+            return {"status": "not_initialized"}
+        
+        cache_stats = self._llm_client.get_cache_stats()
+        return {
+            "total_calls": cache_stats.total_calls,
+            "input_tokens": cache_stats.input_tokens,
+            "output_tokens": cache_stats.output_tokens,
+            "cache_read_tokens": cache_stats.cache_read_tokens,
+            "cache_write_tokens": cache_stats.cache_write_tokens,
+            "cache_hit_rate": f"{cache_stats.cache_hit_rate:.1%}",
+            "estimated_savings": f"{cache_stats.estimated_savings:.1%}",
+        }
     
     # ========== 检查点 ==========
     
@@ -964,10 +1494,126 @@ class HostAgent:
             await self._save_checkpoint(self.current_task_id)
             logger.info("Task paused")
     
-    async def resume(self, task_id: str):
-        """恢复任务"""
-        # TODO: 实现任务恢复
-        pass
+    async def resume(self, task_id: str) -> Dict[str, Any]:
+        """
+        恢复任务 - 从检查点恢复中断的任务
+        
+        Args:
+            task_id: 要恢复的任务 ID
+            
+        Returns:
+            任务结果
+            
+        Raises:
+            ValueError: 任务不存在或无法恢复
+        """
+        if not self._initialized:
+            await self.initialize()
+        
+        if self.is_processing:
+            raise RuntimeError(f"Already processing task: {self.current_task_id}")
+        
+        logger.info(f"Resuming task: {task_id}")
+        
+        # 1. 获取任务信息
+        task_info = await self._task_store.get_task(task_id)
+        if not task_info:
+            raise ValueError(f"Task {task_id} not found")
+        
+        # 2. 检查任务状态是否可恢复
+        resumable_statuses = ["paused", "interrupted", "running"]
+        if task_info["status"] not in resumable_statuses:
+            raise ValueError(
+                f"Task {task_id} is in status '{task_info['status']}', cannot resume. "
+                f"Only tasks in {resumable_statuses} can be resumed."
+            )
+        
+        # 3. 恢复检查点
+        checkpoint = await self._task_store.restore_checkpoint(task_id)
+        if not checkpoint:
+            logger.warning(f"No checkpoint found for task {task_id}, starting from scratch")
+            # 没有检查点，重新开始
+            return await self.process_task(
+                task_id=task_id,
+                task_text=task_info["task_text"],
+                target_hwnds=task_info.get("target_hwnds"),
+            )
+        
+        # 4. 初始化任务状态
+        self.is_processing = True
+        self.current_task_id = task_id
+        self.state = HostAgentState.EXECUTING
+        self._start_time = time.time()
+        self._target_hwnds = set(task_info.get("target_hwnds") or [])
+        self._tool_history = []
+        
+        # 5. 恢复消息历史
+        self._messages = []
+        if "messages" in checkpoint:
+            for msg_dict in checkpoint["messages"]:
+                try:
+                    msg = Message.from_dict(msg_dict)
+                    self._messages.append(msg)
+                except Exception as e:
+                    logger.warning(f"Failed to restore message: {e}")
+        
+        # 6. 恢复迭代计数
+        self._iteration_count = checkpoint.get("iteration", 0)
+        self._retry_count = 0
+        
+        # 7. 恢复黑板状态
+        if "blackboard" in checkpoint and checkpoint["blackboard"]:
+            self.blackboard = Blackboard.from_dict(checkpoint["blackboard"])
+        else:
+            self.blackboard = Blackboard(task_id=task_id)
+        
+        # 8. 初始化终止检查器
+        self._termination_checker = TerminationChecker(self.config.to_termination_config())
+        
+        # 9. 获取并发锁
+        if self._target_hwnds:
+            if not await self._concurrency_manager.acquire_task_slot(task_id, self._target_hwnds):
+                self.is_processing = False
+                raise RuntimeError("Failed to acquire task slot")
+            
+            if not await self._concurrency_manager.acquire_windows(self._target_hwnds, task_id):
+                self._concurrency_manager.release_task_slot(task_id)
+                self.is_processing = False
+                raise RuntimeError("Failed to acquire window locks")
+        
+        try:
+            # 10. 更新任务状态
+            await self._state_manager.transition(task_id, TaskStatus.RUNNING)
+            
+            # 11. 发布恢复事件
+            await self._publish_event(EventType.TASK_STARTED, {
+                "resumed": True,
+                "from_iteration": self._iteration_count,
+                "task_text": task_info["task_text"],
+            })
+            
+            logger.info(f"Resumed task {task_id} from iteration {self._iteration_count}")
+            
+            # 12. 继续运行主循环
+            result = await self._run_loop(task_id, task_info["task_text"])
+            
+            return result
+            
+        except Exception as e:
+            logger.exception(f"Resumed task {task_id} failed: {e}")
+            await self._fail_task(task_id, str(e))
+            raise
+            
+        finally:
+            # 释放资源
+            if self._target_hwnds:
+                self._concurrency_manager.release_windows(self._target_hwnds)
+                self._concurrency_manager.release_task_slot(task_id)
+            
+            self.is_processing = False
+            self.current_task_id = None
+            self.state = HostAgentState.IDLE
+            self._target_hwnds = set()
     
     # ========== 回调设置 ==========
     
@@ -982,6 +1628,61 @@ class HostAgent:
     def on_tool_end(self, callback: Callable[[str, ToolResult], Awaitable[None]]):
         """设置工具结束回调"""
         self._on_tool_end = callback
+    
+    # ========== 资源清理 ==========
+    
+    async def close(self):
+        """
+        关闭并清理资源
+        
+        应在 Agent 不再使用时调用，释放：
+        - LLM 客户端连接
+        - Haiku 压缩客户端
+        - 其他异步资源
+        """
+        logger.info("Closing HostAgent and releasing resources...")
+        
+        # 停止当前任务（如果有）
+        if self.is_processing:
+            await self.stop("Agent closing")
+        
+        # 关闭 LLM 客户端
+        if hasattr(self, '_llm_client') and self._llm_client:
+            try:
+                await self._llm_client.close()
+                logger.debug("LLM client closed")
+            except Exception as e:
+                logger.warning(f"Error closing LLM client: {e}")
+            self._llm_client = None
+        
+        # 关闭 Haiku 压缩客户端（类级别单例）
+        from .context_manager import ContextCompressor
+        if ContextCompressor._haiku_client:
+            try:
+                await ContextCompressor._haiku_client.close()
+                ContextCompressor._haiku_client = None
+                ContextCompressor._haiku_initialized = False
+                logger.debug("Haiku client closed")
+            except Exception as e:
+                logger.warning(f"Error closing Haiku client: {e}")
+        
+        # 清理视觉增强器
+        self._vision_enhancer = None
+        
+        # 重置初始化标记
+        self._initialized = False
+        
+        logger.info("HostAgent closed successfully")
+    
+    async def __aenter__(self):
+        """支持 async with 语法"""
+        await self.initialize()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """支持 async with 语法"""
+        await self.close()
+        return False
     
     def __repr__(self) -> str:
         return (

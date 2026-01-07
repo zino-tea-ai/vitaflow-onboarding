@@ -598,6 +598,148 @@ class WindowInputController:
                 error=str(e)
             )
     
+    async def scroll(self, hwnd: int, direction: str, amount: int = 3) -> InputResult:
+        """
+        滚动操作 - 使用 WM_MOUSEWHEEL
+        
+        Args:
+            hwnd: 窗口句柄
+            direction: "up", "down", "left", "right"
+            amount: 滚动行数 (每行 120 单位)
+        """
+        try:
+            WM_MOUSEWHEEL = 0x020A
+            WM_MOUSEHWHEEL = 0x020E  # 水平滚动
+            
+            # 计算滚动量 (每行 120 单位)
+            WHEEL_DELTA = 120
+            
+            if direction in ("up", "down"):
+                msg = WM_MOUSEWHEEL
+                delta = WHEEL_DELTA * amount if direction == "up" else -WHEEL_DELTA * amount
+            elif direction in ("left", "right"):
+                msg = WM_MOUSEHWHEEL
+                delta = -WHEEL_DELTA * amount if direction == "left" else WHEEL_DELTA * amount
+            else:
+                return InputResult(
+                    success=False,
+                    method_used=InputMethod.POST_MESSAGE,
+                    error=f"Invalid scroll direction: {direction}"
+                )
+            
+            # wParam: HIWORD = wheel delta, LOWORD = key state
+            wparam = (delta & 0xFFFF) << 16
+            
+            # lParam: 鼠标位置 (窗口中心)
+            import ctypes
+            from ctypes import wintypes
+            rect = wintypes.RECT()
+            self.user32.GetClientRect(hwnd, ctypes.byref(rect))
+            center_x = (rect.right - rect.left) // 2
+            center_y = (rect.bottom - rect.top) // 2
+            lparam = (center_y << 16) | (center_x & 0xFFFF)
+            
+            result = self.user32.PostMessageW(hwnd, msg, wparam, lparam)
+            
+            if result:
+                return InputResult(success=True, method_used=InputMethod.POST_MESSAGE)
+            else:
+                return InputResult(
+                    success=False,
+                    method_used=InputMethod.POST_MESSAGE,
+                    error="Failed to send scroll message"
+                )
+                
+        except Exception as e:
+            return InputResult(
+                success=False,
+                method_used=InputMethod.POST_MESSAGE,
+                error=str(e)
+            )
+    
+    async def hotkey(self, hwnd: int, keys: str) -> InputResult:
+        """
+        快捷键操作
+        
+        Args:
+            hwnd: 窗口句柄
+            keys: 快捷键字符串, 如 "ctrl+c", "alt+tab", "ctrl+shift+s"
+        """
+        try:
+            # 解析快捷键
+            key_names = [k.strip().lower() for k in keys.split("+")]
+            
+            # 虚拟键码映射
+            VK_MAP = {
+                "ctrl": 0x11, "control": 0x11,
+                "alt": 0x12, "menu": 0x12,
+                "shift": 0x10,
+                "win": 0x5B, "windows": 0x5B,
+                "tab": 0x09,
+                "enter": 0x0D, "return": 0x0D,
+                "esc": 0x1B, "escape": 0x1B,
+                "space": 0x20,
+                "backspace": 0x08, "back": 0x08,
+                "delete": 0x2E, "del": 0x2E,
+                "insert": 0x2D, "ins": 0x2D,
+                "home": 0x24,
+                "end": 0x23,
+                "pageup": 0x21, "pgup": 0x21,
+                "pagedown": 0x22, "pgdn": 0x22,
+                "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+                "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73,
+                "f5": 0x74, "f6": 0x75, "f7": 0x76, "f8": 0x77,
+                "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+            }
+            
+            # 字母和数字
+            for c in "abcdefghijklmnopqrstuvwxyz":
+                VK_MAP[c] = ord(c.upper())
+            for c in "0123456789":
+                VK_MAP[c] = ord(c)
+            
+            # 转换为虚拟键码
+            vk_codes = []
+            for key in key_names:
+                if key in VK_MAP:
+                    vk_codes.append(VK_MAP[key])
+                else:
+                    return InputResult(
+                        success=False,
+                        method_used=InputMethod.POST_MESSAGE,
+                        error=f"Unknown key: {key}"
+                    )
+            
+            # 按下所有键
+            for vk in vk_codes:
+                self.user32.PostMessageW(hwnd, WM_KEYDOWN, vk, 0)
+                await asyncio.sleep(0.02)
+            
+            # 释放所有键 (逆序)
+            for vk in reversed(vk_codes):
+                self.user32.PostMessageW(hwnd, WM_KEYUP, vk, 0)
+                await asyncio.sleep(0.02)
+            
+            return InputResult(success=True, method_used=InputMethod.POST_MESSAGE)
+            
+        except Exception as e:
+            return InputResult(
+                success=False,
+                method_used=InputMethod.POST_MESSAGE,
+                error=str(e)
+            )
+    
+    async def key_press_by_name(self, hwnd: int, key_name: str) -> InputResult:
+        """
+        按键操作 (按名称)
+        
+        Args:
+            hwnd: 窗口句柄
+            key_name: 按键名称, 如 "enter", "tab", "escape"
+        """
+        # 使用 hotkey 方法处理单个按键
+        return await self.hotkey(hwnd, key_name)
+    
     @staticmethod
     def _make_lparam(x: int, y: int) -> int:
         """构造 lParam: x in low word, y in high word"""

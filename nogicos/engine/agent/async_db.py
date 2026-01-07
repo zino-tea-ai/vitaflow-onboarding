@@ -24,16 +24,21 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# 尝试导入 aiosqlite，如果失败则使用同步回退
+# 尝试导入 aiosqlite
 try:
     import aiosqlite
     HAS_AIOSQLITE = True
-    # 类型别名：aiosqlite 连接
     DBConnection = aiosqlite.Connection
 except ImportError:
     HAS_AIOSQLITE = False
+    aiosqlite = None  # type: ignore
     DBConnection = Any  # type: ignore
-    logger.warning("aiosqlite not installed, using synchronous fallback")
+    logger.warning("aiosqlite not installed - AsyncTaskStore will not work")
+
+
+class AiosqliteNotInstalledError(Exception):
+    """aiosqlite 未安装错误"""
+    pass
 
 
 @dataclass
@@ -76,14 +81,20 @@ class AsyncTaskStore:
         self._initialized = False
     
     async def initialize(self):
-        """初始化连接池和表结构"""
+        """
+        初始化连接池和表结构
+        
+        Raises:
+            AiosqliteNotInstalledError: 如果 aiosqlite 未安装
+        """
         if self._initialized:
             return
         
         if not HAS_AIOSQLITE:
-            logger.warning("aiosqlite not available, using sync SQLite")
-            await self._init_sync()
-            return
+            raise AiosqliteNotInstalledError(
+                "aiosqlite is required for AsyncTaskStore. "
+                "Install it with: pip install aiosqlite"
+            )
         
         # 创建连接池
         for _ in range(self.pool_size):
@@ -137,42 +148,6 @@ class AsyncTaskStore:
         self._flush_task = asyncio.create_task(self._periodic_flush())
         self._initialized = True
         logger.info(f"AsyncTaskStore initialized: {self.db_path}")
-    
-    async def _init_sync(self):
-        """同步初始化（回退方案）"""
-        import sqlite3
-        conn = sqlite3.connect(self.db_path)
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS tasks (
-                id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                task_text TEXT,
-                target_hwnds TEXT,
-                created_at TEXT,
-                updated_at TEXT
-            );
-            
-            CREATE TABLE IF NOT EXISTS checkpoints (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id TEXT NOT NULL,
-                iteration INTEGER,
-                state_json TEXT,
-                screenshot_id TEXT,
-                is_full INTEGER DEFAULT 1,
-                created_at TEXT
-            );
-            
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id TEXT NOT NULL,
-                role TEXT,
-                content TEXT,
-                timestamp TEXT
-            );
-        """)
-        conn.commit()
-        conn.close()
-        self._initialized = True
     
     @asynccontextmanager
     async def _get_connection(self):

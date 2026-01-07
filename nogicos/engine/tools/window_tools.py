@@ -271,6 +271,122 @@ class WindowTools:
                 error="截图失败"
             )
     
+    async def window_scroll(
+        self,
+        hwnd: int,
+        direction: str,
+        amount: int = 3,
+        capture_screenshot: bool = True
+    ) -> WindowToolResult:
+        """
+        滚动窗口
+        
+        Args:
+            hwnd: 窗口句柄
+            direction: "up", "down", "left", "right"
+            amount: 滚动行数
+            capture_screenshot: 是否截图
+        """
+        # 检查
+        operable, reason = self.state_checker.is_operable(hwnd)
+        if not operable:
+            return WindowToolResult(success=False, output="", error=f"窗口无法操作: {reason}")
+        
+        # 执行滚动
+        result = await self.input_controller.scroll(hwnd, direction, amount)
+        
+        # 等待
+        await asyncio.sleep(self.POST_ACTION_DELAY_MS / 1000)
+        
+        # 截图
+        screenshot_b64 = None
+        if capture_screenshot:
+            screenshot_b64 = await self._capture_window(hwnd)
+        
+        return WindowToolResult(
+            success=result.success,
+            output=f"滚动 {direction} {amount} 行",
+            base64_image=screenshot_b64,
+            error=result.error,
+            input_method=result.method_used
+        )
+    
+    async def window_hotkey(
+        self,
+        hwnd: int,
+        keys: str,
+        capture_screenshot: bool = True
+    ) -> WindowToolResult:
+        """
+        发送快捷键
+        
+        Args:
+            hwnd: 窗口句柄
+            keys: 快捷键字符串, 如 "ctrl+c", "alt+tab"
+            capture_screenshot: 是否截图
+        """
+        # 检查
+        operable, reason = self.state_checker.is_operable(hwnd)
+        if not operable:
+            return WindowToolResult(success=False, output="", error=f"窗口无法操作: {reason}")
+        
+        # 执行快捷键
+        result = await self.input_controller.hotkey(hwnd, keys)
+        
+        # 等待
+        await asyncio.sleep(self.POST_ACTION_DELAY_MS / 1000)
+        
+        # 截图
+        screenshot_b64 = None
+        if capture_screenshot:
+            screenshot_b64 = await self._capture_window(hwnd)
+        
+        return WindowToolResult(
+            success=result.success,
+            output=f"快捷键 {keys}",
+            base64_image=screenshot_b64,
+            error=result.error,
+            input_method=result.method_used
+        )
+    
+    async def window_key_press(
+        self,
+        hwnd: int,
+        key: str,
+        capture_screenshot: bool = False
+    ) -> WindowToolResult:
+        """
+        按下单个按键
+        
+        Args:
+            hwnd: 窗口句柄
+            key: 按键名称, 如 "enter", "tab", "escape"
+            capture_screenshot: 是否截图
+        """
+        # 检查
+        operable, reason = self.state_checker.is_operable(hwnd)
+        if not operable:
+            return WindowToolResult(success=False, output="", error=f"窗口无法操作: {reason}")
+        
+        # 执行按键
+        result = await self.input_controller.key_press_by_name(hwnd, key)
+        
+        # 短暂等待
+        await asyncio.sleep(0.1)
+        
+        # 截图
+        screenshot_b64 = None
+        if capture_screenshot:
+            screenshot_b64 = await self._capture_window(hwnd)
+        
+        return WindowToolResult(
+            success=result.success,
+            output=f"按键 {key}",
+            base64_image=screenshot_b64,
+            error=result.error,
+            input_method=result.method_used
+        )
+    
     async def _capture_window(self, hwnd: int) -> Optional[str]:
         """
         截取窗口并返回 base64 编码的图片
