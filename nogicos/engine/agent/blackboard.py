@@ -397,9 +397,19 @@ class Blackboard:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Blackboard":
-        """从字典恢复黑板状态"""
+        """
+        从字典恢复黑板状态
+        
+        对无效枚举值有容错处理，避免恢复失败
+        """
         bb = cls(task_id=data.get("task_id"))
-        bb.request_status = RequestStatus(data.get("request_status", "pending"))
+        
+        # 容错解析 request_status
+        try:
+            bb.request_status = RequestStatus(data.get("request_status", "pending"))
+        except ValueError:
+            bb.request_status = RequestStatus.PENDING
+        
         bb.request_error = data.get("request_error")
         bb._subtask_order = data.get("subtask_order", [])
         bb._results = data.get("results", {})
@@ -408,12 +418,18 @@ class Blackboard:
         
         # 恢复子任务
         for sid, st_data in data.get("subtasks", {}).items():
+            # 容错解析子任务状态
+            try:
+                subtask_status = RequestStatus(st_data.get("status", "pending"))
+            except ValueError:
+                subtask_status = RequestStatus.PENDING
+            
             bb._subtasks[sid] = SubTask(
                 id=st_data["id"],
                 description=st_data["description"],
                 target_hwnd=st_data.get("target_hwnd"),
                 app_type=st_data.get("app_type"),
-                status=RequestStatus(st_data.get("status", "pending")),
+                status=subtask_status,
                 result=st_data.get("result"),
                 error=st_data.get("error"),
                 assigned_agent=st_data.get("assigned_agent"),

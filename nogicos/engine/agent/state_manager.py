@@ -252,12 +252,19 @@ class TaskStateManager:
         else:
             status = await self._get_current_status(task_id) or TaskStatus.PENDING
         
+        # 从缓存获取 agent_status，否则从 task_status 推导
+        if task_id in self._agent_status_cache:
+            agent_status = self._agent_status_cache[task_id]
+        else:
+            agent_status = self._derive_agent_status(status)
+            self._agent_status_cache[task_id] = agent_status  # 回填缓存
+        
         return {
             "task": task,
             "checkpoint": checkpoint,
             "messages": messages,
             "status": status,
-            "agent_status": self._agent_status_cache.get(task_id, AgentStatus.IDLE),
+            "agent_status": agent_status,
         }
     
     async def update_state(self, task_id: str, updates: Dict[str, Any]) -> bool:

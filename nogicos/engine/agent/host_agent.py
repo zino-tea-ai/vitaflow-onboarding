@@ -535,6 +535,27 @@ class HostAgent:
             # 运行单次迭代
             result = await self._run_iteration(task_id)
             
+            # 【P0 修复】检查迭代是否应该继续
+            # LLM 不可用、任务状态异常等情况会设置 should_continue=False
+            if not result.should_continue and not result.tool_calls:
+                if result.error:
+                    logger.error(f"Iteration failed, stopping: {result.error}")
+                    termination_result = TerminationResult(
+                        should_terminate=True,
+                        reason=TerminationReason.CONSECUTIVE_FAILURES,
+                        termination_type=TerminationType.ERROR,
+                        message=result.error,
+                    )
+                else:
+                    logger.info("Iteration indicated stop without tool calls")
+                    termination_result = TerminationResult(
+                        should_terminate=True,
+                        reason=TerminationReason.TASK_COMPLETED,
+                        termination_type=TerminationType.SUCCESS,
+                        message="Task completed by LLM",
+                    )
+                break
+            
             # 记录工具调用历史
             for tc in result.tool_calls:
                 self._tool_history.append({
@@ -593,29 +614,37 @@ class HostAgent:
         检查目标窗口是否存在 - Phase 3 修复
         
         使用 Windows API 检查窗口句柄是否有效
-        
+        同时检查 _target_hwnds 和已注册的 AppAgent 窗口
+
         Returns:
             所有目标窗口是否都存在
         """
-        if not self._target_hwnds:
-            return True
+        # 【P1 修复】合并 _target_hwnds 和 _app_agents 中的窗口
+        all_hwnds = set(self._target_hwnds)
+        all_hwnds.update(self._app_agents.keys())
         
+        if not all_hwnds:
+            return True
+
         try:
             import ctypes
             from ctypes import wintypes
-            
+
             # Windows API: IsWindow 检查窗口句柄是否有效
             user32 = ctypes.windll.user32
             user32.IsWindow.argtypes = [wintypes.HWND]
             user32.IsWindow.restype = wintypes.BOOL
-            
-            for hwnd in self._target_hwnds:
+
+            for hwnd in all_hwnds:
                 if not user32.IsWindow(hwnd):
                     logger.warning(f"Window {hwnd} no longer exists")
+                    # 如果是 AppAgent 窗口，自动注销
+                    if hwnd in self._app_agents:
+                        self.unregister_app_agent(hwnd)
                     return False
-            
+
             return True
-            
+
         except Exception as e:
             # 非 Windows 平台或其他错误，默认返回 True
             logger.debug(f"Window existence check failed: {e}")
@@ -723,8 +752,20 @@ class HostAgent:
             if await self._should_compress_context():
                 await self._compress_context()
             
-            # 3. 调用 LLM (TODO: 实现实际的 LLM 调用)
+            # 3. 调用 LLM
             llm_response = await self._call_llm()
+            
+            # 3.1 检查 LLM 是否可用（不可用时立即终止，避免无效循环）
+            if not self._llm_available:
+                logger.error("LLM unavailable, terminating task immediately")
+                return IterationResult(
+                    iteration=self._iteration_count,
+                    tool_calls=[],
+                    tool_results=[],
+                    llm_response=llm_response,
+                    should_continue=False,
+                    error="LLM client not available",
+                )
             
             # 4. 发布思考事件
             if llm_response.content:

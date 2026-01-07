@@ -52,19 +52,36 @@ class ValidationResult:
     errors: List[ValidationError]
     warnings: List[str]
     is_sensitive: bool = False  # 是否为敏感操作
+    requires_confirmation: bool = False  # 是否需要用户确认
+    filled_arguments: Optional[Dict[str, Any]] = None  # 补全默认值后的参数
     
     @classmethod
-    def success(cls) -> "ValidationResult":
+    def success(cls, filled_arguments: Optional[Dict[str, Any]] = None) -> "ValidationResult":
         """创建成功结果"""
-        return cls(valid=True, errors=[], warnings=[], is_sensitive=False)
+        return cls(valid=True, errors=[], warnings=[], is_sensitive=False, 
+                   requires_confirmation=False, filled_arguments=filled_arguments)
     
     @classmethod
     def failure(cls, errors: List[ValidationError]) -> "ValidationResult":
         """创建失败结果"""
         return cls(valid=False, errors=errors, warnings=[], is_sensitive=False)
     
+    @classmethod
+    def needs_confirmation(cls, tool_name: str, filled_arguments: Optional[Dict[str, Any]] = None) -> "ValidationResult":
+        """创建需要用户确认的结果"""
+        return cls(
+            valid=True,  # 验证通过但需确认
+            errors=[],
+            warnings=[f"Tool '{tool_name}' requires user confirmation"],
+            is_sensitive=True,
+            requires_confirmation=True,
+            filled_arguments=filled_arguments,
+        )
+    
     def to_tool_result(self) -> ToolResult:
         """转换为 ToolResult（用于返回错误给 LLM）"""
+        if self.requires_confirmation:
+            return ToolResult.failure("Operation requires user confirmation before execution")
         if self.valid:
             return ToolResult.success("Validation passed")
         
@@ -120,6 +137,7 @@ class ToolCallValidator:
         if security_config is not None:
             self.sensitive_tools = set(security_config.sensitive_tools)
             self.max_string_length = security_config.max_tool_param_length
+            self.require_confirm_for_sensitive = security_config.require_confirm_for_sensitive
         else:
             # 回退默认值
             self.sensitive_tools = {
@@ -127,6 +145,7 @@ class ToolCallValidator:
                 "execute_command", "modify_system_settings"
             }
             self.max_string_length = 10000
+            self.require_confirm_for_sensitive = True  # 默认强制确认
         
         # 从 ToolDefinition.is_sensitive 补充敏感工具列表
         for name, tool_def in registered_tools.items():
@@ -166,9 +185,13 @@ class ToolCallValidator:
         hwnd_errors = self._validate_hwnd_consistency(tool_call, tool_def)
         errors.extend(hwnd_errors)
         
-        # 3. 验证必需参数
+        # 3. 补全默认值
+        param_map = {p.name: p for p in tool_def.parameters}
+        filled_arguments = self._fill_defaults(tool_call.arguments, param_map)
+        
+        # 4. 验证必需参数（在补全默认值后检查）
         required_params = {p.name for p in tool_def.parameters if p.required}
-        provided_params = set(tool_call.arguments.keys())
+        provided_params = set(filled_arguments.keys())
         missing_params = required_params - provided_params
         
         if missing_params:
@@ -178,9 +201,8 @@ class ToolCallValidator:
                 value=list(provided_params)
             ))
         
-        # 4. 验证参数类型和约束
-        param_map = {p.name: p for p in tool_def.parameters}
-        for param_name, value in tool_call.arguments.items():
+        # 5. 验证参数类型和约束
+        for param_name, value in filled_arguments.items():
             if param_name in param_map:
                 param_def = param_map[param_name]
                 # 类型校验
@@ -192,13 +214,13 @@ class ToolCallValidator:
                 if enum_error:
                     errors.append(enum_error)
         
-        # 5. 验证坐标范围（仅当工具支持窗口隔离时）
+        # 6. 验证坐标范围（仅当工具支持窗口隔离时）
         if window_bounds and tool_def.supports_hwnd:
-            coord_errors = self._validate_coordinates(tool_call.arguments, window_bounds)
+            coord_errors = self._validate_coordinates(filled_arguments, window_bounds)
             errors.extend(coord_errors)
         
-        # 6. 验证字符串长度
-        for param_name, value in tool_call.arguments.items():
+        # 7. 验证字符串长度
+        for param_name, value in filled_arguments.items():
             if isinstance(value, str) and len(value) > self.max_string_length:
                 errors.append(ValidationError(
                     field=param_name,
@@ -206,18 +228,47 @@ class ToolCallValidator:
                     value=f"length={len(value)}"
                 ))
         
-        # 7. 敏感操作警告（合并 ToolDefinition.is_sensitive）
+        # 8. 敏感操作处理
         is_sensitive = tool_call.name in self.sensitive_tools or tool_def.is_sensitive
-        if is_sensitive:
-            warnings.append(f"Tool '{tool_call.name}' is a sensitive operation")
         
         if errors:
             return ValidationResult.failure(errors)
         
-        result = ValidationResult.success()
+        # 敏感操作 + 配置强制确认 -> 返回需要确认的结果
+        if is_sensitive and self.require_confirm_for_sensitive:
+            result = ValidationResult.needs_confirmation(tool_call.name, filled_arguments)
+            result.warnings = warnings
+            return result
+        
+        # 正常通过
+        result = ValidationResult.success(filled_arguments=filled_arguments)
         result.warnings = warnings
-        result.is_sensitive = is_sensitive  # 传递敏感标记
+        result.is_sensitive = is_sensitive  # 传递敏感标记（即使不强制确认）
         return result
+    
+    def _fill_defaults(
+        self,
+        arguments: Dict[str, Any],
+        param_map: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        补全可选参数的默认值
+        
+        Args:
+            arguments: 原始参数
+            param_map: 参数定义映射
+            
+        Returns:
+            补全后的参数字典
+        """
+        filled = dict(arguments)  # 复制原参数
+        
+        for param_name, param_def in param_map.items():
+            # 参数未提供且有默认值
+            if param_name not in filled and param_def.default is not None:
+                filled[param_name] = param_def.default
+        
+        return filled
     
     def _validate_hwnd_consistency(
         self, 
@@ -307,7 +358,10 @@ class ToolCallValidator:
         """
         验证坐标范围
         
-        坐标必须在窗口边界内，不使用默认值以避免误操作。
+        坐标必须在窗口边界内。
+        
+        注意：Windows 多显示器场景下，左/上屏幕坐标可能为负数，
+        因此不对坐标本身做非负约束，只检查是否在 bounds 区间内。
         """
         errors = []
         
@@ -322,13 +376,13 @@ class ToolCallValidator:
             ))
             return errors
         
-        # 窗口边界（不使用默认值）
+        # 窗口边界（支持负坐标，多显示器场景）
         min_x = bounds["x"]
         min_y = bounds["y"]
         max_x = min_x + bounds["width"]
         max_y = min_y + bounds["height"]
         
-        # 验证边界合理性
+        # 验证尺寸合理性（尺寸必须为正）
         if bounds["width"] <= 0 or bounds["height"] <= 0:
             errors.append(ValidationError(
                 field="window_bounds",
@@ -345,16 +399,7 @@ class ToolCallValidator:
             if not isinstance(value, (int, float)):
                 continue
             
-            # 坐标必须为非负整数
-            if value < 0:
-                errors.append(ValidationError(
-                    field=param_name,
-                    message="Coordinate must be non-negative",
-                    value=value
-                ))
-                continue
-            
-            # 检查 X 坐标
+            # 检查 X 坐标（允许负值，多显示器支持）
             if "x" in param_name.lower():
                 if value < min_x or value > max_x:
                     errors.append(ValidationError(
@@ -363,7 +408,7 @@ class ToolCallValidator:
                         value=value
                     ))
             
-            # 检查 Y 坐标
+            # 检查 Y 坐标（允许负值，多显示器支持）
             if "y" in param_name.lower():
                 if value < min_y or value > max_y:
                     errors.append(ValidationError(
