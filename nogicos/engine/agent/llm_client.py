@@ -410,18 +410,22 @@ class LLMClient:
         
         转换 Anthropic API 响应为 LLMResponse
         """
-        content_text = ""
+        text_parts = []  # 收集所有文本块
         tool_calls = []
         
         for block in response.content:
             if block.type == "text":
-                content_text = block.text
+                # 累加多个文本块（Claude 可能返回多个 text 块）
+                text_parts.append(block.text)
             elif block.type == "tool_use":
                 tool_calls.append(ToolCall(
                     id=block.id,
                     name=block.name,
                     arguments=block.input,
                 ))
+        
+        # 合并所有文本块
+        content_text = "\n".join(text_parts) if text_parts else ""
         
         # 解析停止原因
         stop_reason_map = {
@@ -655,8 +659,20 @@ class LLMClient:
         # 流式失败，尝试降级为非流式
         if self.config.fallback_to_non_streaming:
             logger.warning("Streaming failed, falling back to non-streaming mode")
+            
+            # 通知调用方需要重置之前的流式输出
+            # 发送特殊标记让前端清除已显示的部分内容
+            if on_text:
+                try:
+                    await on_text("\n[STREAM_RESET]\n")
+                except Exception:
+                    pass  # 忽略回调错误
+            
             try:
-                return await self.generate(messages, system_prompt, tools)
+                response = await self.generate(messages, system_prompt, tools)
+                # 标记为回退响应，调用方可据此决定是否重置 UI
+                response.is_fallback = True
+                return response
             except Exception as fallback_error:
                 logger.error(f"Fallback to non-streaming also failed: {fallback_error}")
                 # 抛出原始流式错误

@@ -235,6 +235,43 @@ class Message:
     def system(cls, content: str) -> "Message":
         """创建系统消息"""
         return cls(role=MessageRole.SYSTEM, content=content)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Message":
+        """
+        从字典反序列化 - 用于检查点恢复
+        
+        Args:
+            data: 序列化的消息字典
+            
+        Returns:
+            Message 实例
+        """
+        # 解析角色
+        role_str = data.get("role", "user")
+        try:
+            role = MessageRole(role_str)
+        except ValueError:
+            role = MessageRole.USER
+        
+        # 解析内容
+        content = data.get("content", "")
+        
+        # 解析工具调用
+        tool_calls = None
+        if "tool_calls" in data and data["tool_calls"]:
+            tool_calls = [
+                ToolCall.from_dict(tc) if isinstance(tc, dict) else tc
+                for tc in data["tool_calls"]
+            ]
+        
+        return cls(
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tool_call_id=data.get("tool_call_id"),
+            name=data.get("name"),
+        )
 
 
 # ========== 上下文类型 ==========
@@ -357,6 +394,7 @@ class LLMResponse:
     tool_calls: List[ToolCall] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+    is_fallback: bool = False  # 是否为流式失败后的回退响应
     
     @property
     def needs_tool_execution(self) -> bool:

@@ -41,12 +41,12 @@ Trajectory = None
 get_store: Optional[Callable] = None
 
 try:
-    from engine.knowledge import (
+    from ..knowledge import (
         KnowledgeStore as _KnowledgeStore,
         UserProfile as _UserProfile,
         Trajectory as _Trajectory,
     )
-    from engine.knowledge.store import get_store as _get_store
+    from ..knowledge.store import get_store as _get_store
     
     KnowledgeStore = _KnowledgeStore
     UserProfile = _UserProfile
@@ -68,7 +68,7 @@ BackgroundMemoryProcessor = None
 format_memories_for_prompt: Optional[Callable] = None
 
 try:
-    from engine.knowledge import (
+    from ..knowledge import (
         get_memory_store as _get_memory_store,
         SemanticMemorySearch as _SemanticMemorySearch,
         BackgroundMemoryProcessor as _BackgroundMemoryProcessor,
@@ -96,7 +96,7 @@ visualize_task_complete: Optional[Callable] = None
 visualize_task_error: Optional[Callable] = None
 
 try:
-    from engine.visualization import (
+    from ..visualization import (
         visualize_tool_start as _visualize_tool_start,
         visualize_tool_end as _visualize_tool_end,
         visualize_task_start as _visualize_task_start,
@@ -125,7 +125,7 @@ PlanStep = None
 PlanExecuteState = None
 
 try:
-    from engine.agent.planner import (
+    from .planner import (
         TaskPlanner as _TaskPlanner,
         Plan as _Plan,
         PlanStep as _PlanStep,
@@ -152,7 +152,7 @@ ClassifierComplexity = None
 ClassificationResult = None
 
 try:
-    from engine.agent.classifier import (
+    from .classifier import (
         TaskClassifier as _TaskClassifier,
         TaskType as _TaskType,
         TaskComplexity as _ClassifierComplexity,
@@ -177,7 +177,7 @@ get_browser_session: Optional[Callable] = None
 close_browser_session: Optional[Callable] = None
 
 try:
-    from engine.browser import (
+    from ..browser import (
         get_browser_session as _get_browser_session,
         close_browser_session as _close_browser_session,
         PLAYWRIGHT_AVAILABLE,
@@ -263,7 +263,7 @@ AnswerVerifier = None
 verify_answer: Optional[Callable] = None
 
 try:
-    from engine.agent.verification import (
+    from .verification import (
         AnswerVerifier as _AnswerVerifier,
         verify_answer as _verify_answer,
     )
@@ -285,7 +285,7 @@ ContextConfig = None
 get_context_injector: Optional[Callable] = None
 
 try:
-    from engine.context import (
+    from ..context import (
         ContextInjector as _ContextInjector,
         ContextConfig as _ContextConfig,
         get_context_injector as _get_context_injector,

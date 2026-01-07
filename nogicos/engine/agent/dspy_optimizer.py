@@ -30,7 +30,7 @@ from typing import Optional, List, Dict, Any, Literal
 from dataclasses import dataclass
 from pathlib import Path
 
-from engine.observability import get_logger
+from ..observability import get_logger
 logger = get_logger("dspy_optimizer")
 
 # DSPy imports (optional)

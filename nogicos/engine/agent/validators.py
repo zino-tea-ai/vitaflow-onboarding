@@ -22,6 +22,13 @@ import re
 
 from .types import ToolCall, ToolResult, ToolDefinition
 
+# 延迟导入避免循环依赖
+try:
+    from ..config import SecurityConfig, get_config
+except ImportError:
+    SecurityConfig = None  # type: ignore
+    get_config = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,16 +51,17 @@ class ValidationResult:
     valid: bool
     errors: List[ValidationError]
     warnings: List[str]
+    is_sensitive: bool = False  # 是否为敏感操作
     
     @classmethod
     def success(cls) -> "ValidationResult":
         """创建成功结果"""
-        return cls(valid=True, errors=[], warnings=[])
+        return cls(valid=True, errors=[], warnings=[], is_sensitive=False)
     
     @classmethod
     def failure(cls, errors: List[ValidationError]) -> "ValidationResult":
         """创建失败结果"""
-        return cls(valid=False, errors=errors, warnings=[])
+        return cls(valid=False, errors=errors, warnings=[], is_sensitive=False)
     
     def to_tool_result(self) -> ToolResult:
         """转换为 ToolResult（用于返回错误给 LLM）"""
@@ -87,26 +95,43 @@ class ToolCallValidator:
     # 必须为正数的参数
     POSITIVE_PARAMS = {"width", "height", "delay", "timeout"}
     
-    # 字符串长度限制
-    MAX_STRING_LENGTH = 10000
-    
     def __init__(
         self, 
         registered_tools: Dict[str, ToolDefinition],
-        sensitive_tools: Optional[Set[str]] = None,
+        security_config: Optional[Any] = None,
     ):
         """
         初始化验证器
         
         Args:
             registered_tools: 已注册的工具定义
-            sensitive_tools: 敏感工具列表
+            security_config: 安全配置（自动从全局获取）
         """
         self.registered_tools = registered_tools
-        self.sensitive_tools = sensitive_tools or {
-            "delete_file", "send_message", "window_type", 
-            "execute_command", "modify_system_settings"
-        }
+        
+        # 从 SecurityConfig 获取配置
+        if security_config is None and get_config is not None:
+            try:
+                config = get_config()
+                security_config = config.security
+            except Exception:
+                security_config = None
+        
+        if security_config is not None:
+            self.sensitive_tools = set(security_config.sensitive_tools)
+            self.max_string_length = security_config.max_tool_param_length
+        else:
+            # 回退默认值
+            self.sensitive_tools = {
+                "delete_file", "send_message", "window_type", 
+                "execute_command", "modify_system_settings"
+            }
+            self.max_string_length = 10000
+        
+        # 从 ToolDefinition.is_sensitive 补充敏感工具列表
+        for name, tool_def in registered_tools.items():
+            if tool_def.is_sensitive:
+                self.sensitive_tools.add(name)
     
     def validate(
         self, 
@@ -137,7 +162,11 @@ class ToolCallValidator:
         
         tool_def = self.registered_tools[tool_call.name]
         
-        # 2. 验证必需参数
+        # 2. 验证 hwnd 与 supports_hwnd 一致性
+        hwnd_errors = self._validate_hwnd_consistency(tool_call, tool_def)
+        errors.extend(hwnd_errors)
+        
+        # 3. 验证必需参数
         required_params = {p.name for p in tool_def.parameters if p.required}
         provided_params = set(tool_call.arguments.keys())
         missing_params = required_params - provided_params
@@ -149,30 +178,37 @@ class ToolCallValidator:
                 value=list(provided_params)
             ))
         
-        # 3. 验证参数类型
-        param_types = {p.name: p.type for p in tool_def.parameters}
+        # 4. 验证参数类型和约束
+        param_map = {p.name: p for p in tool_def.parameters}
         for param_name, value in tool_call.arguments.items():
-            if param_name in param_types:
-                type_error = self._validate_type(param_name, value, param_types[param_name])
+            if param_name in param_map:
+                param_def = param_map[param_name]
+                # 类型校验
+                type_error = self._validate_type(param_name, value, param_def.type)
                 if type_error:
                     errors.append(type_error)
+                # 枚举约束
+                enum_error = self._validate_enum(param_name, value, param_def)
+                if enum_error:
+                    errors.append(enum_error)
         
-        # 4. 验证坐标范围
-        if window_bounds:
+        # 5. 验证坐标范围（仅当工具支持窗口隔离时）
+        if window_bounds and tool_def.supports_hwnd:
             coord_errors = self._validate_coordinates(tool_call.arguments, window_bounds)
             errors.extend(coord_errors)
         
-        # 5. 验证字符串长度
+        # 6. 验证字符串长度
         for param_name, value in tool_call.arguments.items():
-            if isinstance(value, str) and len(value) > self.MAX_STRING_LENGTH:
+            if isinstance(value, str) and len(value) > self.max_string_length:
                 errors.append(ValidationError(
                     field=param_name,
-                    message=f"String too long (max {self.MAX_STRING_LENGTH})",
+                    message=f"String too long (max {self.max_string_length})",
                     value=f"length={len(value)}"
                 ))
         
-        # 6. 敏感操作警告
-        if tool_call.name in self.sensitive_tools:
+        # 7. 敏感操作警告（合并 ToolDefinition.is_sensitive）
+        is_sensitive = tool_call.name in self.sensitive_tools or tool_def.is_sensitive
+        if is_sensitive:
             warnings.append(f"Tool '{tool_call.name}' is a sensitive operation")
         
         if errors:
@@ -180,7 +216,53 @@ class ToolCallValidator:
         
         result = ValidationResult.success()
         result.warnings = warnings
+        result.is_sensitive = is_sensitive  # 传递敏感标记
         return result
+    
+    def _validate_hwnd_consistency(
+        self, 
+        tool_call: ToolCall, 
+        tool_def: ToolDefinition,
+    ) -> List[ValidationError]:
+        """验证 hwnd 与 supports_hwnd 一致性"""
+        errors = []
+        
+        if tool_def.supports_hwnd:
+            # 工具支持窗口隔离，应提供 hwnd
+            if tool_call.hwnd is None:
+                errors.append(ValidationError(
+                    field="hwnd",
+                    message=f"Tool '{tool_call.name}' requires hwnd (supports_hwnd=True)",
+                    value=None
+                ))
+        else:
+            # 工具不支持窗口隔离，不应提供 hwnd
+            if tool_call.hwnd is not None:
+                errors.append(ValidationError(
+                    field="hwnd",
+                    message=f"Tool '{tool_call.name}' does not support hwnd (supports_hwnd=False)",
+                    value=tool_call.hwnd
+                ))
+        
+        return errors
+    
+    def _validate_enum(
+        self, 
+        param_name: str, 
+        value: Any, 
+        param_def: Any,
+    ) -> Optional[ValidationError]:
+        """验证枚举约束"""
+        if param_def.enum is None:
+            return None
+        
+        if value not in param_def.enum:
+            return ValidationError(
+                field=param_name,
+                message=f"Value must be one of {param_def.enum}",
+                value=value
+            )
+        return None
     
     def _validate_type(
         self, 
@@ -222,14 +304,38 @@ class ToolCallValidator:
         arguments: Dict[str, Any],
         bounds: Dict[str, int],
     ) -> List[ValidationError]:
-        """验证坐标范围"""
+        """
+        验证坐标范围
+        
+        坐标必须在窗口边界内，不使用默认值以避免误操作。
+        """
         errors = []
         
-        # 窗口边界
-        min_x = bounds.get("x", 0)
-        min_y = bounds.get("y", 0)
-        max_x = min_x + bounds.get("width", 1920)
-        max_y = min_y + bounds.get("height", 1080)
+        # 必须提供完整的窗口边界
+        required_keys = {"x", "y", "width", "height"}
+        if not required_keys.issubset(bounds.keys()):
+            missing = required_keys - set(bounds.keys())
+            errors.append(ValidationError(
+                field="window_bounds",
+                message=f"Incomplete window bounds, missing: {missing}",
+                value=bounds
+            ))
+            return errors
+        
+        # 窗口边界（不使用默认值）
+        min_x = bounds["x"]
+        min_y = bounds["y"]
+        max_x = min_x + bounds["width"]
+        max_y = min_y + bounds["height"]
+        
+        # 验证边界合理性
+        if bounds["width"] <= 0 or bounds["height"] <= 0:
+            errors.append(ValidationError(
+                field="window_bounds",
+                message="Window dimensions must be positive",
+                value=bounds
+            ))
+            return errors
         
         for param_name in self.COORDINATE_PARAMS:
             if param_name not in arguments:
@@ -239,12 +345,21 @@ class ToolCallValidator:
             if not isinstance(value, (int, float)):
                 continue
             
+            # 坐标必须为非负整数
+            if value < 0:
+                errors.append(ValidationError(
+                    field=param_name,
+                    message="Coordinate must be non-negative",
+                    value=value
+                ))
+                continue
+            
             # 检查 X 坐标
             if "x" in param_name.lower():
                 if value < min_x or value > max_x:
                     errors.append(ValidationError(
                         field=param_name,
-                        message=f"X coordinate out of bounds [{min_x}, {max_x}]",
+                        message=f"X coordinate out of window bounds [{min_x}, {max_x}]",
                         value=value
                     ))
             
@@ -253,7 +368,7 @@ class ToolCallValidator:
                 if value < min_y or value > max_y:
                     errors.append(ValidationError(
                         field=param_name,
-                        message=f"Y coordinate out of bounds [{min_y}, {max_y}]",
+                        message=f"Y coordinate out of window bounds [{min_y}, {max_y}]",
                         value=value
                     ))
         

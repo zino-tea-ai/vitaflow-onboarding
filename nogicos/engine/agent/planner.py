@@ -29,12 +29,12 @@ except ImportError:
     ANTHROPIC_AVAILABLE = False
     anthropic = None
 
-from engine.observability import get_logger
+from ..observability import get_logger
 logger = get_logger("planner")
 
 # Type checking imports
 if TYPE_CHECKING:
-    from engine.tools.base import ToolRegistry, ToolDefinition
+    from ..tools.base import ToolRegistry, ToolDefinition
 
 
 class TaskComplexity(Enum):
@@ -447,7 +447,7 @@ class TaskPlanner:
         
         # Filter by category if specified
         if category_filter:
-            from engine.tools.base import ToolCategory
+            from ..tools.base import ToolCategory
             try:
                 cat = ToolCategory(category_filter)
                 tools = [t for t in tools if t.category == cat]

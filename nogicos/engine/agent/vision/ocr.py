@@ -40,13 +40,20 @@ except ImportError:
     HAS_EASYOCR = False
     easyocr = None
 
-# Windows OCR
+# Windows OCR - 需要 winsdk 和 numpy
 HAS_WINDOWS_OCR = False
+HAS_NUMPY = False
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None
+
 try:
     import asyncio
     import sys
-    if sys.platform == 'win32':
-        # Windows Runtime OCR
+    if sys.platform == 'win32' and HAS_NUMPY:
+        # Windows Runtime OCR - 需要 winsdk + numpy
         try:
             from winsdk.windows.media.ocr import OcrEngine
             from winsdk.windows.globalization import Language

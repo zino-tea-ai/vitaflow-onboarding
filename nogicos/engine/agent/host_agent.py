@@ -232,6 +232,12 @@ class HostAgent:
         self._on_tool_start: Optional[Callable[[str, dict], Awaitable[None]]] = None
         self._on_tool_end: Optional[Callable[[str, ToolResult], Awaitable[None]]] = None
         
+        # Phase 5: LLM 客户端（延迟初始化）
+        self._llm_client = None
+        self._llm_available = False
+        self._context_manager = None
+        self._vision_enhancer = None
+        
         # 初始化标记
         self._initialized = False
         
@@ -258,15 +264,32 @@ class HostAgent:
             min_confidence=self.config.min_verification_confidence,
         )
         
-        # Phase 5: 初始化 LLM 客户端
-        llm_config = LLMConfig(
-            model="claude-sonnet-4-20250514",
-            max_tokens=self.config.max_context_tokens // 20,  # 输出 token 约为输入的 1/20
-            enable_prompt_caching=True,
-            enable_streaming=True,
-        )
-        self._llm_client = LLMClient(llm_config)
-        await self._llm_client.initialize()
+        # Phase 5: 初始化 LLM 客户端（优雅降级）
+        self._llm_client = None
+        self._llm_available = False
+        try:
+            llm_config = LLMConfig(
+                model="claude-sonnet-4-20250514",
+                max_tokens=self.config.max_context_tokens // 20,
+                enable_prompt_caching=True,
+                enable_streaming=True,
+            )
+            self._llm_client = LLMClient(llm_config)
+            await self._llm_client.initialize()
+            self._llm_available = True
+            logger.info("LLM client initialized successfully")
+        except ImportError as e:
+            logger.warning(
+                f"LLM client unavailable (missing dependency): {e}. "
+                "Install with: pip install anthropic"
+            )
+        except ValueError as e:
+            logger.warning(
+                f"LLM client unavailable (configuration error): {e}. "
+                "Set ANTHROPIC_API_KEY environment variable."
+            )
+        except Exception as e:
+            logger.warning(f"LLM client initialization failed: {e}")
         
         # Phase 5b: 初始化上下文管理器
         token_budget = TokenBudget(
@@ -275,15 +298,23 @@ class HostAgent:
         )
         self._context_manager = ContextManager(token_budget, self._llm_client)
         
-        # Phase 5c: 初始化视觉增强器（根据配置）
+        # Phase 5c: 初始化视觉增强器（优雅降级）
         self._vision_enhancer = None
         if self.config.enable_vision_enhancement:
-            from .vision import VisionEnhancer, get_vision_enhancer
-            self._vision_enhancer = get_vision_enhancer(
-                use_ocr=self.config.vision_ocr_enabled,
-                use_ui_detection=False,  # UI 检测暂不启用
-            )
-            logger.info(f"Vision enhancement enabled: ocr={self.config.vision_ocr_enabled}")
+            try:
+                from .vision import VisionEnhancer, get_vision_enhancer
+                self._vision_enhancer = get_vision_enhancer(
+                    use_ocr=self.config.vision_ocr_enabled,
+                    use_ui_detection=False,
+                )
+                logger.info(f"Vision enhancement enabled: ocr={self.config.vision_ocr_enabled}")
+            except ImportError as e:
+                logger.warning(
+                    f"Vision enhancement unavailable (missing dependency): {e}. "
+                    "Install with: pip install pillow easyocr"
+                )
+            except Exception as e:
+                logger.warning(f"Vision enhancement initialization failed: {e}")
         
         # 注册内置工具
         self._register_builtin_tools()
@@ -530,7 +561,7 @@ class HostAgent:
                 set_task_status_value=set_task_status_call.status if set_task_status_call else None,
                 window_exists=await self._check_windows_exist(),
                 elapsed_time_s=elapsed,
-                current_tokens=0,  # TODO: 实现 token 计数
+                current_tokens=self._context_manager.count_tokens(self._messages) if self._context_manager else 0,
             )
             
             if termination_result.should_terminate:
@@ -558,11 +589,37 @@ class HostAgent:
         return await self._get_task_result(task_id)
     
     async def _check_windows_exist(self) -> bool:
-        """检查目标窗口是否存在"""
+        """
+        检查目标窗口是否存在 - Phase 3 修复
+        
+        使用 Windows API 检查窗口句柄是否有效
+        
+        Returns:
+            所有目标窗口是否都存在
+        """
         if not self._target_hwnds:
             return True
-        # TODO: 实现实际的窗口存在检查
-        return True
+        
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            # Windows API: IsWindow 检查窗口句柄是否有效
+            user32 = ctypes.windll.user32
+            user32.IsWindow.argtypes = [wintypes.HWND]
+            user32.IsWindow.restype = wintypes.BOOL
+            
+            for hwnd in self._target_hwnds:
+                if not user32.IsWindow(hwnd):
+                    logger.warning(f"Window {hwnd} no longer exists")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            # 非 Windows 平台或其他错误，默认返回 True
+            logger.debug(f"Window existence check failed: {e}")
+            return True
     
     async def _handle_termination(
         self,
@@ -579,11 +636,12 @@ class HostAgent:
         if termination_result.termination_type == TerminationType.SUCCESS:
             # 任务声称完成，可选验证
             if self.config.verify_success and final_screenshot and self._success_verifier:
+                # Phase 3 修复: 传入 LLM 客户端进行真正的验证
                 verified = await self._success_verifier.verify(
                     task=task_text,
                     final_screenshot=final_screenshot,
                     tool_history=self._tool_history,
-                    llm_client=None,  # TODO: 传入 LLM 客户端
+                    llm_client=self._llm_client,  # 使用 HostAgent 的 LLM 客户端
                 )
                 if not verified:
                     logger.warning(f"Task {task_id} verification failed")
@@ -792,13 +850,25 @@ class HostAgent:
     async def _call_llm(self) -> LLMResponse:
         """
         调用 LLM - Phase 5 实现
-        
+
         使用 Claude API 调用，支持：
         - Prompt Caching
         - 流式输出
         - Tool Calling
         - 自动选择 Prompt 模式
         """
+        # 检查 LLM 是否可用
+        if not self._llm_available or self._llm_client is None:
+            from .types import StopReason
+            logger.error("LLM client not available, cannot process task")
+            return LLMResponse(
+                content="Error: LLM client is not available. Please ensure anthropic package is installed and ANTHROPIC_API_KEY is set.",
+                stop_reason=StopReason.END_TURN,
+                tool_calls=[],
+                input_tokens=0,
+                output_tokens=0,
+            )
+        
         # 构建系统提示词
         windows_info = [
             {

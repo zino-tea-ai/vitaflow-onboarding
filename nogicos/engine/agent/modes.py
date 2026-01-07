@@ -14,7 +14,7 @@ from enum import Enum
 from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass
 
-from engine.observability import get_logger
+from ..observability import get_logger
 logger = get_logger("modes")
 
 

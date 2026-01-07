@@ -246,11 +246,17 @@ class TaskStateManager:
         checkpoint = await self.task_store.restore_checkpoint(task_id)
         messages = await self.task_store.get_messages(task_id)
         
+        # 从缓存获取状态，否则安全解析
+        if task_id in self._cache:
+            status = self._cache[task_id]
+        else:
+            status = await self._get_current_status(task_id) or TaskStatus.PENDING
+        
         return {
             "task": task,
             "checkpoint": checkpoint,
             "messages": messages,
-            "status": self._cache.get(task_id, TaskStatus(task["status"])),
+            "status": status,
             "agent_status": self._agent_status_cache.get(task_id, AgentStatus.IDLE),
         }
     
@@ -299,20 +305,50 @@ class TaskStateManager:
         """
         self._agent_status_cache[task_id] = agent_status
         
+        # 根据 AgentStatus 选择正确的事件类型
+        event_type_map = {
+            AgentStatus.CONFIRM: EventType.USER_CONFIRM_REQUIRED,  # 明确需要用户确认
+            AgentStatus.IDLE: EventType.AGENT_IDLE,
+            AgentStatus.PAUSED: EventType.AGENT_WAITING,
+            AgentStatus.ACTIVE: EventType.AGENT_EXECUTING,
+        }
+        event_type = event_type_map.get(agent_status, EventType.AGENT_EXECUTING)
+        
         await self.event_bus.publish(AgentEvent.create(
-            event_type=EventType.AGENT_WAITING if agent_status == AgentStatus.CONFIRM else EventType.AGENT_EXECUTING,
+            event_type=event_type,
             task_id=task_id,
             payload={"agent_status": agent_status.value}
         ))
     
     async def _get_current_status(self, task_id: str) -> Optional[TaskStatus]:
-        """从持久化存储获取状态"""
+        """
+        从持久化存储获取状态
+        
+        对未知状态值进行兜底处理，避免版本迁移或数据异常导致崩溃
+        """
         task = await self.task_store.get_task(task_id)
-        if task:
-            status = TaskStatus(task["status"])
-            self._cache[task_id] = status
-            return status
-        return None
+        if not task:
+            return None
+        
+        status_value = task.get("status")
+        if status_value is None:
+            logger.warning(f"Task {task_id} has no status, defaulting to PENDING")
+            status = TaskStatus.PENDING
+        else:
+            try:
+                status = TaskStatus(status_value)
+            except ValueError:
+                # 未知状态值，记录警告并回退到 FAILED
+                logger.warning(
+                    f"Task {task_id} has unknown status '{status_value}', "
+                    f"defaulting to FAILED for safety"
+                )
+                status = TaskStatus.FAILED
+                # 持久化修正后的状态
+                await self.task_store.update_status(task_id, status.value)
+        
+        self._cache[task_id] = status
+        return status
     
     def _status_to_event_type(self, status: TaskStatus) -> EventType:
         """状态映射到事件类型"""

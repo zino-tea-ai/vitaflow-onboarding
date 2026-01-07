@@ -124,22 +124,54 @@ class TokenCounter:
         if isinstance(message.content, str):
             tokens += self.count(message.content)
         elif isinstance(message.content, list):
-            for item in message.content:
-                if isinstance(item, dict):
-                    if item.get("type") == "text":
-                        tokens += self.count(item.get("text", ""))
-                    elif item.get("type") == "image":
-                        # 动态估算图片 token
-                        # 根据 Anthropic 文档：token ≈ (width * height) / 750
-                        # 但有最小值约 1000 tokens
-                        tokens += self._estimate_image_tokens(item)
-                    elif item.get("type") == "tool_result":
-                        tokens += self.count(str(item.get("content", "")))
+            tokens += self._count_content_list(message.content)
         
         if message.tool_calls:
             for tc in message.tool_calls:
                 tokens += self.count(tc.name)
                 tokens += self.count(json.dumps(tc.arguments))
+        
+        return tokens
+    
+    def _count_content_list(self, content_list: List[Any]) -> int:
+        """
+        递归计算内容列表的 token 数
+        
+        处理 text、image、tool_result 等类型，支持嵌套内容
+        """
+        tokens = 0
+        
+        for item in content_list:
+            if isinstance(item, str):
+                tokens += self.count(item)
+            elif isinstance(item, dict):
+                item_type = item.get("type", "")
+                
+                if item_type == "text":
+                    tokens += self.count(item.get("text", ""))
+                    
+                elif item_type == "image":
+                    tokens += self._estimate_image_tokens(item)
+                    
+                elif item_type == "tool_result":
+                    # tool_result 的 content 可能是字符串或列表（含图片）
+                    content = item.get("content", "")
+                    if isinstance(content, str):
+                        tokens += self.count(content)
+                    elif isinstance(content, list):
+                        # 递归处理嵌套内容（可能包含图片）
+                        tokens += self._count_content_list(content)
+                    elif isinstance(content, dict):
+                        # 单个内容块
+                        tokens += self._count_content_list([content])
+                        
+                elif item_type == "tool_use":
+                    tokens += self.count(item.get("name", ""))
+                    tokens += self.count(json.dumps(item.get("input", {})))
+                    
+                else:
+                    # 未知类型，使用 JSON 估算
+                    tokens += self.count(json.dumps(item))
         
         return tokens
     

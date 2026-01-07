@@ -28,12 +28,12 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable, Awaitable
 from dataclasses import dataclass, field
 
 # Logging
-from engine.observability import get_logger
+from ..observability import get_logger
 logger = get_logger("react_agent")
 
 # LangSmith integration (optional)
 try:
-    from engine.observability.langsmith_tracer import (
+    from ..observability.langsmith_tracer import (
         is_enabled as langsmith_enabled,
         trace_agent_run,
         trace_tool_call,
@@ -59,14 +59,14 @@ except ImportError:
     get_metrics = None
 
 # Import tool registry
-from engine.tools.base import ToolRegistry, ToolCategory
-from engine.tools import create_full_registry
+from ..tools.base import ToolRegistry, ToolCategory
+from ..tools import create_full_registry
 
 # Import mode router
-from engine.agent.modes import AgentMode, ModeRouter, get_mode_router
+from .modes import AgentMode, ModeRouter, get_mode_router
 
 # Centralized optional imports (reduces ~80 lines of try/except boilerplate)
-from engine.agent.imports import (
+from .imports import (
     # Anthropic
     ANTHROPIC_AVAILABLE,
     anthropic,
@@ -1562,7 +1562,7 @@ class ReActAgent:
         Returns:
             AgentResult with plan in response (JSON format)
         """
-        from engine.agent.planner import EditablePlan
+        from .planner import EditablePlan
         
         logger.info(f"[Plan Mode] Generating editable plan for: {task[:50]}...")
         
@@ -1582,7 +1582,7 @@ class ReActAgent:
                 )
             else:
                 # Fallback: create simple plan
-                from engine.agent.planner import EditablePlanStep, TaskComplexity
+                from .planner import EditablePlanStep, TaskComplexity
                 editable_plan = EditablePlan(
                     summary=task,
                     steps=[EditablePlanStep(
@@ -1840,7 +1840,7 @@ class ReActAgent:
         
         # Hook system context injection (browser/desktop/file awareness)
         try:
-            from engine.context import get_context_store
+            from ..context import get_context_store
             hook_store = get_context_store()
             hook_context = hook_store.format_context_prompt()
             
@@ -2142,7 +2142,7 @@ class ReActAgent:
                                 timeout=15.0  # 15 second timeout per tool
                             )
                         except asyncio.TimeoutError:
-                            from engine.tools.base import ToolResult
+                            from ..tools.base import ToolResult
                             result = ToolResult(success=False, output="", error="Tool execution timed out (15s)")
                         
                         # Stream tool result
@@ -2271,7 +2271,7 @@ class ReActAgent:
                                 timeout=timeout
                             )
                         except asyncio.TimeoutError:
-                            from engine.tools.base import ToolResult
+                            from ..tools.base import ToolResult
                             result = ToolResult(
                                 success=False, 
                                 output="", 

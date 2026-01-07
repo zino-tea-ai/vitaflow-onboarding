@@ -16,7 +16,7 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Set
 
-from engine.observability import get_logger
+from ..observability import get_logger
 
 logger = get_logger("classifier")
 
