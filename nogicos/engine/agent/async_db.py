@@ -17,7 +17,7 @@ NogicOS 异步数据库封装
 import asyncio
 import json
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union, TYPE_CHECKING
 from contextlib import asynccontextmanager
 from datetime import datetime
 from dataclasses import dataclass
@@ -28,8 +28,11 @@ logger = logging.getLogger(__name__)
 try:
     import aiosqlite
     HAS_AIOSQLITE = True
+    # 类型别名：aiosqlite 连接
+    DBConnection = aiosqlite.Connection
 except ImportError:
     HAS_AIOSQLITE = False
+    DBConnection = Any  # type: ignore
     logger.warning("aiosqlite not installed, using synchronous fallback")
 
 
@@ -65,11 +68,11 @@ class AsyncTaskStore:
         """
         self.db_path = db_path
         self.pool_size = pool_size
-        self._pool: List[Any] = []
+        self._pool: List[DBConnection] = []
         self._pool_lock = asyncio.Lock()
         self._write_buffer: List[tuple] = []
         self._buffer_lock = asyncio.Lock()
-        self._flush_task: Optional[asyncio.Task] = None
+        self._flush_task: Optional[asyncio.Task[None]] = None
         self._initialized = False
     
     async def initialize(self):
@@ -325,40 +328,101 @@ class AsyncTaskStore:
     
     # ========== 缓冲区管理 ==========
     
-    async def _flush_buffer(self):
-        """刷新写入缓冲区"""
+    # 重试配置
+    MAX_RETRY_ATTEMPTS = 3
+    RETRY_DELAY_BASE = 0.5  # 基础延迟（秒）
+    
+    async def _flush_buffer(self, max_retries: int = None) -> bool:
+        """
+        刷新写入缓冲区（带重试机制）
+        
+        Args:
+            max_retries: 最大重试次数（默认使用类常量）
+            
+        Returns:
+            是否成功刷新
+        """
+        max_retries = max_retries or self.MAX_RETRY_ATTEMPTS
+        
         async with self._buffer_lock:
             if not self._write_buffer:
-                return
+                return True
             
             buffer = self._write_buffer.copy()
             self._write_buffer.clear()
         
-        async with self._get_connection() as conn:
-            for item_type, data in buffer:
-                if item_type == "checkpoint":
-                    await conn.execute(
-                        """INSERT INTO checkpoints 
-                           (task_id, iteration, state_json, screenshot_id, is_full, created_at) 
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        data
-                    )
-                elif item_type == "message":
-                    await conn.execute(
-                        """INSERT INTO messages (task_id, role, content, timestamp)
-                           VALUES (?, ?, ?, ?)""",
-                        data
-                    )
-            await conn.commit()
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                async with self._get_connection() as conn:
+                    for item_type, data in buffer:
+                        if item_type == "checkpoint":
+                            await conn.execute(
+                                """INSERT INTO checkpoints 
+                                   (task_id, iteration, state_json, screenshot_id, is_full, created_at) 
+                                   VALUES (?, ?, ?, ?, ?, ?)""",
+                                data
+                            )
+                        elif item_type == "message":
+                            await conn.execute(
+                                """INSERT INTO messages (task_id, role, content, timestamp)
+                                   VALUES (?, ?, ?, ?)""",
+                                data
+                            )
+                    await conn.commit()
+                    return True
+                    
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Flush attempt {attempt + 1}/{max_retries} failed: {e}")
+                
+                if attempt < max_retries - 1:
+                    # 指数退避
+                    delay = self.RETRY_DELAY_BASE * (2 ** attempt)
+                    await asyncio.sleep(delay)
+        
+        # 所有重试都失败了，把数据放回缓冲区
+        async with self._buffer_lock:
+            self._write_buffer = buffer + self._write_buffer
+            
+        logger.error(f"Flush failed after {max_retries} attempts: {last_error}")
+        return False
     
     async def _periodic_flush(self):
-        """定期刷新缓冲区（每 5 秒）"""
+        """定期刷新缓冲区（每 5 秒，带重试和背压控制）"""
+        consecutive_failures = 0
+        max_consecutive_failures = 5
+        
         while True:
-            await asyncio.sleep(5)
+            # 动态调整间隔：失败时增加间隔
+            interval = 5 * (1 + consecutive_failures)
+            await asyncio.sleep(min(interval, 30))  # 最大 30 秒
+            
             try:
-                await self._flush_buffer()
+                success = await self._flush_buffer()
+                
+                if success:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.error(
+                            f"Periodic flush failed {consecutive_failures} times consecutively. "
+                            f"Buffer size: {len(self._write_buffer)}"
+                        )
+                        # 不中断，继续尝试
+                        
+            except asyncio.CancelledError:
+                # 正常取消，尝试最后一次刷新
+                logger.info("Periodic flush cancelled, attempting final flush...")
+                await self._flush_buffer(max_retries=1)
+                raise
+                
             except Exception as e:
-                logger.error(f"Periodic flush error: {e}")
+                consecutive_failures += 1
+                logger.error(f"Unexpected error in periodic flush: {e}")
     
     async def close(self):
         """关闭连接池"""

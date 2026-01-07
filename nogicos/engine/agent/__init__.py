@@ -23,7 +23,11 @@ from .events import (
     tool_start_event, tool_end_event, tool_error_event,
     confirm_required_event, llm_chunk_event,
 )
-from .event_bus import EventBus, get_event_bus, set_event_bus, on_event, on_all_events
+from .event_bus import (
+    EventBus, get_event_bus, set_event_bus, on_event, on_all_events,
+    BackpressureEventBus, get_backpressure_bus, init_backpressure_bus,
+    EventBusOverflowError,
+)
 from .ws_adapter import (
     WebSocketEventAdapter, get_ws_adapter, set_ws_adapter,
     SecurityError, ValidationError,
@@ -37,12 +41,12 @@ from .incremental_checkpoint import IncrementalCheckpointer, create_checkpointer
 # Phase 0.5: 状态真相源
 from .state_manager import (
     TaskStateManager, get_state_manager, set_state_manager,
-    TaskStatus, AgentStatus, TaskState,
-    InvalidTransitionError, TaskNotFoundError,
+    TaskState, InvalidTransitionError, TaskNotFoundError,
 )
 
-# Phase 1: 核心数据结构
+# Phase 1: 核心数据结构（TaskStatus/AgentStatus 统一在此定义）
 from .types import (
+    TaskStatus, AgentStatus,  # 状态枚举（统一定义位置）
     ToolResult, ToolCall, ToolDefinition, ToolParameter,
     Message, MessageRole, MessageHistory,
     WindowContext, AgentContext,
@@ -123,6 +127,10 @@ __all__ = [
     'set_event_bus',
     'on_event',
     'on_all_events',
+    'BackpressureEventBus',
+    'get_backpressure_bus',
+    'init_backpressure_bus',
+    'EventBusOverflowError',
     'WebSocketEventAdapter',
     'get_ws_adapter',
     'set_ws_adapter',

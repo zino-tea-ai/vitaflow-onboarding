@@ -5,6 +5,8 @@ NogicOS 核心数据类型
 定义 Agent 系统的核心数据结构。
 
 类型:
+- TaskStatus: 任务状态（参考 ByteBot）
+- AgentStatus: Agent 状态（参考 UFO）
 - ToolResult: 工具执行结果（参考 Anthropic）
 - ToolCall: 工具调用请求
 - Message: 消息格式
@@ -13,12 +15,49 @@ NogicOS 核心数据类型
 - Anthropic Computer Use ToolResult
 - ByteBot TaskStatus
 - LangGraph Message
+- UFO Agent Status
 """
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Union
 from enum import Enum
 import json
+
+
+# ========== 状态枚举（统一定义位置）==========
+
+class TaskStatus(Enum):
+    """
+    任务状态 - 参考 ByteBot
+    
+    状态流转:
+    PENDING -> RUNNING -> COMPLETED/FAILED/NEEDS_HELP
+    RUNNING -> PAUSED -> RUNNING
+    RUNNING -> INTERRUPTED -> RUNNING/CANCELLED
+    """
+    PENDING = "pending"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    NEEDS_HELP = "needs_help"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+    CANCELLED = "cancelled"
+
+
+class AgentStatus(Enum):
+    """
+    Agent 状态 - 参考 UFO
+    
+    IDLE: 空闲，等待任务
+    ACTIVE: 正在执行
+    PAUSED: 暂停中
+    CONFIRM: 等待用户确认
+    """
+    IDLE = "idle"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    CONFIRM = "confirm"
 
 
 # ========== 工具相关类型 ==========

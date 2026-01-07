@@ -16,48 +16,14 @@ NogicOS 状态管理器
 
 import logging
 from typing import Optional, Dict, Any, List
-from enum import Enum
 from dataclasses import dataclass
 
 from .events import AgentEvent, EventType
 from .event_bus import EventBus, get_event_bus
 from .async_db import AsyncTaskStore
+from .types import TaskStatus, AgentStatus  # 从 types.py 统一导入
 
 logger = logging.getLogger(__name__)
-
-
-class TaskStatus(Enum):
-    """
-    任务状态 - 参考 ByteBot
-    
-    状态流转:
-    PENDING -> RUNNING -> COMPLETED/FAILED/NEEDS_HELP
-    RUNNING -> PAUSED -> RUNNING
-    RUNNING -> INTERRUPTED -> RUNNING/CANCELLED
-    """
-    PENDING = "pending"
-    RUNNING = "running"
-    PAUSED = "paused"
-    COMPLETED = "completed"
-    NEEDS_HELP = "needs_help"
-    FAILED = "failed"
-    INTERRUPTED = "interrupted"
-    CANCELLED = "cancelled"
-
-
-class AgentStatus(Enum):
-    """
-    Agent 状态 - 参考 UFO
-    
-    IDLE: 空闲，等待任务
-    ACTIVE: 正在执行
-    PAUSED: 暂停中
-    CONFIRM: 等待用户确认
-    """
-    IDLE = "idle"
-    ACTIVE = "active"
-    PAUSED = "paused"
-    CONFIRM = "confirm"
 
 
 class InvalidTransitionError(Exception):

@@ -182,7 +182,7 @@ def register_vision_tools(registry):
     Args:
         registry: ToolRegistry instance
     """
-    from engine.tools.base import ToolCategory
+    from .base import ToolCategory
     
     # Shared analyzer instance
     analyzer = VisionAnalyzer()

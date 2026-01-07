@@ -102,14 +102,23 @@ def register_desktop_tools(registry):
     Args:
         registry: ToolRegistry instance
     """
-    from engine.tools.base import ToolCategory
+    from .base import ToolCategory
     
     # ========================================================================
     # C1: Basic Desktop Tools
     # ========================================================================
     
     @registry.action(
-        description="Click at screen coordinates or current mouse position",
+        description="""Click at SCREEN coordinates (全屏坐标).
+
+⚠️ 选择正确的工具:
+- window_click: 针对特定窗口操作，使用 PostMessage 不抢焦点 (推荐)
+- desktop_click: 全屏操作，使用 pyautogui 会抢焦点
+
+仅在以下情况使用 desktop_click:
+- 需要点击系统托盘、任务栏等系统 UI
+- 需要点击不在任何窗口内的位置
+- window_click 无法工作时的 fallback""",
         category=ToolCategory.LOCAL,
     )
     async def desktop_click(
@@ -145,7 +154,15 @@ def register_desktop_tools(registry):
             return f"Error clicking: {str(e)}"
     
     @registry.action(
-        description="Type text at current cursor position",
+        description="""Type text at current cursor position (全局输入).
+
+⚠️ 选择正确的工具:
+- window_type: 针对特定窗口，使用 PostMessage 不抢焦点 (推荐)
+- desktop_type: 全局输入，需要窗口有焦点
+
+仅在以下情况使用 desktop_type:
+- 目标窗口已经有焦点
+- window_type 无法工作时的 fallback""",
         category=ToolCategory.LOCAL,
     )
     async def desktop_type(
