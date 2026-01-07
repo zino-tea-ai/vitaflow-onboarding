@@ -113,9 +113,40 @@ class TokenCounter:
         if self._encoder:
             return len(self._encoder.encode(text))
         else:
-            # 估算：英文 ~4 字符/token，中文 ~1.5 字符/token
-            # 使用保守估算
-            return len(text) // 3
+            # 无 tiktoken 时使用改进的估算
+            return self._estimate_tokens(text)
+    
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        改进的 token 估算（无 tiktoken 时使用）
+        
+        规则：
+        - 英文/数字/标点: ~4 字符/token
+        - 中文/日文/韩文: ~1.5 字符/token（CJK 字符占更多 token）
+        - 混合文本按比例加权
+        """
+        if not text:
+            return 0
+        
+        # 统计 CJK 字符数量
+        cjk_count = 0
+        for char in text:
+            # CJK 统一汉字范围
+            if '\u4e00' <= char <= '\u9fff':  # 中文
+                cjk_count += 1
+            elif '\u3040' <= char <= '\u30ff':  # 日文平假名/片假名
+                cjk_count += 1
+            elif '\uac00' <= char <= '\ud7af':  # 韩文
+                cjk_count += 1
+        
+        non_cjk_count = len(text) - cjk_count
+        
+        # CJK 字符约 1.5 字符/token，非 CJK 约 4 字符/token
+        cjk_tokens = cjk_count / 1.5
+        non_cjk_tokens = non_cjk_count / 4
+        
+        # 加 10% 安全边际
+        return int((cjk_tokens + non_cjk_tokens) * 1.1)
     
     def count_message(self, message: Message) -> int:
         """计算消息的 token 数"""

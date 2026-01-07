@@ -360,12 +360,14 @@ class TaskStateManager:
     def _status_to_event_type(self, status: TaskStatus) -> EventType:
         """状态映射到事件类型"""
         mapping = {
+            TaskStatus.PENDING: EventType.TASK_CREATED,
             TaskStatus.RUNNING: EventType.TASK_STARTED,
             TaskStatus.COMPLETED: EventType.TASK_COMPLETED,
             TaskStatus.FAILED: EventType.TASK_FAILED,
             TaskStatus.INTERRUPTED: EventType.TASK_INTERRUPTED,
             TaskStatus.PAUSED: EventType.TASK_PAUSED,
             TaskStatus.CANCELLED: EventType.TASK_CANCELLED,
+            TaskStatus.NEEDS_HELP: EventType.USER_CONFIRM_REQUIRED,  # 需要帮助 -> 用户确认
         }
         return mapping.get(status, EventType.TASK_STARTED)
     

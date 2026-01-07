@@ -43,6 +43,11 @@ from .context_manager import ContextManager, TokenBudget, get_context_manager
 if TYPE_CHECKING:
     from .app_agent import AppAgent
 
+# 延迟导入避免循环依赖
+def _get_agent_factory():
+    from .factory import get_agent_factory
+    return get_agent_factory()
+
 logger = logging.getLogger(__name__)
 
 
@@ -474,19 +479,22 @@ class HostAgent:
         
         # 创建黑板
         self.blackboard = Blackboard(task_id=task_id)
-        
+
         try:
             # 1. 创建任务记录
             await self._state_manager.create_task(task_id, task_text, target_hwnds)
             await self._state_manager.transition(task_id, TaskStatus.RUNNING)
-            
+
             # 2. 发布任务开始事件
             await self._publish_event(EventType.TASK_STARTED, {
                 "task_text": task_text,
                 "target_hwnds": target_hwnds or [],
             })
-            
-            # 3. 添加初始消息
+
+            # 3. 【Phase 2 修复】自动为目标窗口创建 AppAgent
+            await self._auto_create_app_agents(target_hwnds)
+
+            # 4. 添加初始消息
             self._messages.append(Message.user(task_text))
             
             # 4. 运行主循环
@@ -902,6 +910,8 @@ class HostAgent:
         if not self._llm_available or self._llm_client is None:
             from .types import StopReason
             logger.error("LLM client not available, cannot process task")
+            # 标记不可用，避免迭代继续
+            self._llm_available = False
             return LLMResponse(
                 content="Error: LLM client is not available. Please ensure anthropic package is installed and ANTHROPIC_API_KEY is set.",
                 stop_reason=StopReason.END_TURN,
@@ -959,6 +969,17 @@ class HostAgent:
         # 流式输出回调
         async def on_text(text: str):
             """文本流回调"""
+            # 处理流式重置标记（流式失败回退时清空已展示内容）
+            if "[STREAM_RESET]" in text:
+                logger.warning("Stream reset detected, notifying frontend to clear content")
+                await self._publish_event(EventType.AGENT_THINKING, {
+                    "text": "",
+                    "iteration": self._iteration_count,
+                    "streaming": True,
+                    "reset": True,  # 前端应据此清空已显示的部分内容
+                })
+                return
+            
             if self._on_thinking:
                 await self._on_thinking(text)
             # 发布思考事件
@@ -1765,6 +1786,7 @@ class HostAgent:
             except Exception as e:
                 logger.warning(f"Error closing LLM client: {e}")
             self._llm_client = None
+            self._llm_available = False
         
         # 关闭 Haiku 压缩客户端（类级别单例）
         from .context_manager import ContextCompressor

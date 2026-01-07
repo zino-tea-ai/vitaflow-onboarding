@@ -87,6 +87,45 @@ class ValidationResult:
         
         error_msg = "; ".join(str(e) for e in self.errors)
         return ToolResult.failure(f"Validation failed: {error_msg}")
+    
+    def to_confirmation_payload(self, tool_call: Any) -> Dict[str, Any]:
+        """
+        生成确认事件的 payload
+        
+        用于发布 USER_CONFIRM_REQUIRED 事件
+        """
+        return {
+            "tool_name": tool_call.name,
+            "tool_id": tool_call.id,
+            "arguments": self.filled_arguments or tool_call.arguments,
+            "hwnd": tool_call.hwnd,
+            "warnings": self.warnings,
+            "reason": "sensitive_operation",
+        }
+    
+    def get_filled_tool_call(self, tool_call: Any) -> Any:
+        """
+        获取补全默认值后的 ToolCall
+        
+        确保下游使用补全后的参数执行工具。
+        
+        Usage:
+            result = validator.validate(tool_call, bounds)
+            if result.valid:
+                filled_call = result.get_filled_tool_call(tool_call)
+                # 使用 filled_call 执行工具
+        """
+        if self.filled_arguments is None:
+            return tool_call
+        
+        # 延迟导入避免循环依赖
+        from .types import ToolCall as TC
+        return TC(
+            id=tool_call.id,
+            name=tool_call.name,
+            arguments=self.filled_arguments,
+            hwnd=tool_call.hwnd,
+        )
 
 
 class ToolCallValidator:
@@ -215,9 +254,19 @@ class ToolCallValidator:
                     errors.append(enum_error)
         
         # 6. 验证坐标范围（仅当工具支持窗口隔离时）
-        if window_bounds and tool_def.supports_hwnd:
-            coord_errors = self._validate_coordinates(filled_arguments, window_bounds)
-            errors.extend(coord_errors)
+        has_coordinate_params = any(
+            p in filled_arguments for p in self.COORDINATE_PARAMS
+        )
+        if tool_def.supports_hwnd and has_coordinate_params:
+            if window_bounds:
+                coord_errors = self._validate_coordinates(filled_arguments, window_bounds)
+                errors.extend(coord_errors)
+            else:
+                # window_bounds 缺失但有坐标参数 -> 降级为警告
+                warnings.append(
+                    f"Window bounds not provided, coordinate validation skipped. "
+                    f"Please obtain window bounds before executing coordinate-based operations."
+                )
         
         # 7. 验证字符串长度
         for param_name, value in filled_arguments.items():
@@ -426,6 +475,58 @@ class ToolCallValidator:
     def get_available_tools(self) -> List[str]:
         """获取所有可用工具名"""
         return list(self.registered_tools.keys())
+    
+    async def handle_confirmation(
+        self,
+        tool_call: ToolCall,
+        result: ValidationResult,
+        task_id: str,
+        event_bus: Any,
+        state_manager: Any = None,
+    ) -> None:
+        """
+        处理需要确认的工具调用
+        
+        1. 切换任务状态到 NEEDS_HELP
+        2. 发布 USER_CONFIRM_REQUIRED 事件
+        3. 等待上层处理确认逻辑
+        
+        Args:
+            tool_call: 工具调用
+            result: 验证结果（应为 requires_confirmation=True）
+            task_id: 任务 ID
+            event_bus: 事件总线
+            state_manager: 状态管理器（可选，用于切换状态）
+            
+        Usage:
+            result = validator.validate(tool_call, bounds)
+            if result.requires_confirmation:
+                await validator.handle_confirmation(tool_call, result, task_id, event_bus)
+                # 此时应暂停工具执行，等待用户确认
+        """
+        if not result.requires_confirmation:
+            return
+        
+        # 延迟导入避免循环依赖
+        from .events import AgentEvent, EventType
+        
+        # 1. 切换状态（如果提供了 state_manager）
+        if state_manager is not None:
+            try:
+                from .types import TaskStatus
+                await state_manager.transition(task_id, TaskStatus.NEEDS_HELP, 
+                                               reason=f"Sensitive tool: {tool_call.name}")
+            except Exception as e:
+                logger.warning(f"Failed to transition to NEEDS_HELP: {e}")
+        
+        # 2. 发布确认事件
+        await event_bus.publish(AgentEvent.create(
+            event_type=EventType.USER_CONFIRM_REQUIRED,
+            task_id=task_id,
+            payload=result.to_confirmation_payload(tool_call)
+        ))
+        
+        logger.info(f"Confirmation required for tool '{tool_call.name}' in task {task_id}")
 
 
 # ========== 安全验证器 ==========
