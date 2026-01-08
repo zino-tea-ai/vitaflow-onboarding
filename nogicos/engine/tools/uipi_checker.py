@@ -13,16 +13,23 @@ Windows Vista+ 有 UI 权限隔离 (User Interface Privilege Isolation):
 - MEDIUM_PLUS: 0x2100
 - HIGH: 0x3000 (管理员)
 - SYSTEM: 0x4000 (系统服务)
+
+NOTE: UIPI check is DISABLED by default due to ctypes segfault issues.
+Set NOGICOS_ENABLE_UIPI_CHECK=1 to enable (at your own risk).
 """
 
 import ctypes
 from ctypes import wintypes
 import logging
+import os
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Optional
 
 logger = logging.getLogger("nogicos.tools.uipi_checker")
+
+# UIPI check disabled by default due to ctypes segfault on some Windows configurations
+UIPI_CHECK_ENABLED = os.environ.get("NOGICOS_ENABLE_UIPI_CHECK", "0") == "1"
 
 
 class IntegrityLevel(IntEnum):
@@ -103,25 +110,35 @@ class UIPIChecker:
     def check_window_accessibility(self, hwnd: int) -> UIAccessibility:
         """
         检查窗口是否可被操作
-        
+
         Args:
             hwnd: 目标窗口句柄
-            
+
         Returns:
             UIAccessibility 包含可访问性信息
         """
+        # Skip UIPI check if disabled (default) - prevents ctypes segfault
+        if not UIPI_CHECK_ENABLED:
+            return UIAccessibility(
+                accessible=True,
+                our_level=IntegrityLevel.MEDIUM,
+                target_level=IntegrityLevel.MEDIUM,
+                reason="UIPI check disabled",
+                suggestion=""
+            )
+
         # 获取目标窗口的进程 ID
         process_id = wintypes.DWORD()
         self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
-        
+
         # 获取我们的完整性级别
         our_level = self._get_current_integrity_level()
-        
+
         # 获取目标进程的完整性级别
         target_level = self._get_process_integrity_level(process_id.value)
-        
+
         accessible = our_level >= target_level
-        
+
         if accessible:
             return UIAccessibility(
                 accessible=True,

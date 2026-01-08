@@ -23,6 +23,32 @@ from io import BytesIO
 
 logger = logging.getLogger("nogicos.tools.desktop")
 
+# #region agent log helper (debug mode)
+import json as _json
+from pathlib import Path as _Path
+_DEBUG_LOG_PATH = _Path(r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log")
+
+def _desktop_dbg_log(hypothesis_id: str, location: str, message: str, data: dict):
+    """Write a single NDJSON debug line to debug.log (append-only)."""
+    try:
+        payload = {
+            "sessionId": "debug-session",
+            "runId": "pre-fix-1",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+# #endregion
+
 # ============================================================================
 # C1.6: DPI Awareness (must be set before importing pyautogui)
 # ============================================================================
@@ -181,6 +207,9 @@ def register_desktop_tools(registry):
         Returns:
             Success message
         """
+        # #region agent log
+        import json as _json; open(r'c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log','a',encoding='utf-8').write(_json.dumps({"hypothesisId":"C","location":"desktop.py:desktop_type:entry","message":"desktop_type called","data":{"text":text[:50],"interval":interval,"use_clipboard":use_clipboard},"timestamp":__import__('time').time()})+'\n')
+        # #endregion
         if not PYAUTOGUI_AVAILABLE:
             return "Error: pyautogui not installed"
         
@@ -206,28 +235,50 @@ def register_desktop_tools(registry):
         description="Press keyboard hotkey combination",
         category=ToolCategory.LOCAL,
     )
-    async def desktop_hotkey(*keys: str) -> str:
+    async def desktop_hotkey(keys: str) -> str:
         """
         C1.4: Press hotkey combination.
         
         Args:
-            keys: Keys to press together (e.g., "ctrl", "c")
+            keys: Keys to press, either single key or '+' separated combination
+                  Examples: "enter", "ctrl+c", "ctrl+shift+s", "alt+f4"
             
         Returns:
             Success message
             
         Examples:
-            desktop_hotkey("ctrl", "c")  # Copy
-            desktop_hotkey("ctrl", "v")  # Paste
-            desktop_hotkey("alt", "f4")  # Close window
+            desktop_hotkey("enter")        # Press Enter
+            desktop_hotkey("ctrl+c")       # Copy
+            desktop_hotkey("ctrl+v")       # Paste
+            desktop_hotkey("alt+f4")       # Close window
+            desktop_hotkey("ctrl+shift+s") # Save as
         """
         if not PYAUTOGUI_AVAILABLE:
             return "Error: pyautogui not installed"
         
+        # #region agent log G1
+        _desktop_dbg_log("G1", "desktop_hotkey:start", "desktop_hotkey called", {"keys": keys})
+        # #endregion
+        
         try:
-            pyautogui.hotkey(*keys)
-            return f"Pressed hotkey: {'+'.join(keys)}"
+            # Parse keys: support "ctrl+c" format or single key "enter"
+            key_list = [k.strip().lower() for k in keys.split('+')]
+            
+            # #region agent log G1
+            _desktop_dbg_log("G1", "desktop_hotkey:parsed", "Keys parsed", {"key_list": key_list})
+            # #endregion
+            
+            pyautogui.hotkey(*key_list)
+            
+            # #region agent log G1
+            _desktop_dbg_log("G1", "desktop_hotkey:success", "Hotkey pressed", {"key_list": key_list})
+            # #endregion
+            
+            return f"Pressed hotkey: {'+'.join(key_list)}"
         except Exception as e:
+            # #region agent log G1
+            _desktop_dbg_log("G1", "desktop_hotkey:error", "Hotkey error", {"error": str(e)})
+            # #endregion
             return f"Error pressing hotkey: {str(e)}"
     
     @registry.action(
@@ -464,26 +515,42 @@ DO NOT USE FOR:
     # ========================================================================
     
     @registry.action(
-        description="Find image on screen and return coordinates",
+        description="Find image on screen and return coordinates. Use 'image_path' parameter for the path to the image file.",
         category=ToolCategory.LOCAL,
     )
     async def desktop_locate_image(
-        image_path: str,
+        image_path: Optional[str] = None,
         confidence: float = 0.8,
+        # Common aliases AI might use
+        filename: Optional[str] = None,
+        path: Optional[str] = None,
+        image: Optional[str] = None,
+        file: Optional[str] = None,
+        image_pattern: Optional[str] = None,
+        pattern: Optional[str] = None,
+        name: Optional[str] = None,
+        target: Optional[str] = None,
+        template: Optional[str] = None,
     ) -> str:
         """
         C3.1: Find image on screen.
-        
+
         Args:
             image_path: Path to image file to find
             confidence: Match confidence (0.0-1.0)
-            
+
         Returns:
             Center coordinates if found, error otherwise
         """
+        # Support multiple parameter names
+        actual_path = image_path or filename or path or image or file or image_pattern or pattern or name or target or template
+        if not actual_path:
+            return "Error: Must provide image_path (or filename/path/image/file)"
+        image_path = actual_path
+
         if not PYAUTOGUI_AVAILABLE:
             return "Error: pyautogui not installed"
-        
+
         if not os.path.exists(image_path):
             return f"Error: Image not found: {image_path}"
         
@@ -497,28 +564,43 @@ DO NOT USE FOR:
             return f"Error locating image: {str(e)}"
     
     @registry.action(
-        description="Wait for image to appear on screen",
+        description="Wait for image to appear on screen. Use 'image_path' parameter for the path to the image file.",
         category=ToolCategory.LOCAL,
     )
     async def desktop_wait_for_image(
-        image_path: str,
+        image_path: Optional[str] = None,
         timeout: float = 10.0,
         confidence: float = 0.8,
+        # Common aliases AI might use
+        image: Optional[str] = None,
+        filename: Optional[str] = None,
+        path: Optional[str] = None,
+        file: Optional[str] = None,
+        name: Optional[str] = None,
+        target: Optional[str] = None,
+        template: Optional[str] = None,
+        pattern: Optional[str] = None,
     ) -> str:
         """
         C3.2: Wait for image to appear.
-        
+
         Args:
             image_path: Path to image file
             timeout: Maximum wait time in seconds
             confidence: Match confidence
-            
+
         Returns:
             Center coordinates when found, timeout error otherwise
         """
+        # Support multiple parameter names
+        actual_path = image_path or image or filename or path or file or name or target or template or pattern
+        if not actual_path:
+            return "Error: Must provide image_path (or image/filename/path/file)"
+        image_path = actual_path
+
         if not PYAUTOGUI_AVAILABLE:
             return "Error: pyautogui not installed"
-        
+
         if not os.path.exists(image_path):
             return f"Error: Image not found: {image_path}"
         
@@ -536,28 +618,51 @@ DO NOT USE FOR:
             return f"Error: {str(e)}"
     
     @registry.action(
-        description="Find image and click on it",
+        description="Find image and click on it. Use 'image_path' for image file path and 'confidence' (0.0-1.0) for match threshold.",
         category=ToolCategory.LOCAL,
     )
     async def desktop_click_image(
-        image_path: str,
+        image_path: Optional[str] = None,
         confidence: float = 0.8,
         timeout: float = 5.0,
+        # Common aliases AI might use
+        image: Optional[str] = None,
+        filename: Optional[str] = None,
+        path: Optional[str] = None,
+        file: Optional[str] = None,
+        image_match_threshold: Optional[float] = None,
+        threshold: Optional[float] = None,
+        match_confidence: Optional[float] = None,
+        name: Optional[str] = None,
+        target: Optional[str] = None,
+        template: Optional[str] = None,
+        pattern: Optional[str] = None,
     ) -> str:
         """
         C3.3: Click on image when found.
-        
+
         Args:
             image_path: Path to image file
-            confidence: Match confidence
+            confidence: Match confidence (0.0-1.0)
             timeout: Maximum wait time
-            
+
         Returns:
             Success message with click location
         """
+        # Support multiple parameter names for image path
+        actual_path = image_path or image or filename or path or file or name or target or template or pattern
+        if not actual_path:
+            return "Error: Must provide image_path (or image/filename/path/file)"
+        image_path = actual_path
+
+        # Support multiple parameter names for confidence
+        actual_confidence = image_match_threshold or threshold or match_confidence
+        if actual_confidence is not None:
+            confidence = actual_confidence
+
         if not PYAUTOGUI_AVAILABLE:
             return "Error: pyautogui not installed"
-        
+
         if not os.path.exists(image_path):
             return f"Error: Image not found: {image_path}"
         

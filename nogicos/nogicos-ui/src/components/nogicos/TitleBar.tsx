@@ -38,8 +38,8 @@ export function TitleBar({
     else window.electronAPI?.close?.();
   };
 
-  // Get status indicator
-  const getStatusIndicator = () => {
+  // Get status indicator (reserved for future use)
+  const _getStatusIndicator = () => {
     if (isConnected) {
       return (
         <>
@@ -76,6 +76,7 @@ export function TitleBar({
     }
     return null;
   };
+  void _getStatusIndicator; // Suppress unused warning - reserved for future use
 
   return (
     <header className="electron-titlebar h-11 flex items-center justify-between px-4 bg-black border-b border-neutral-900">

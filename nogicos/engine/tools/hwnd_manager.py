@@ -190,7 +190,9 @@ class HwndManager:
             return True
         
         try:
-            self.user32.EnumWindows(self.WNDENUMPROC(enum_callback), 0)
+            # 【Segfault 修复】必须保持回调实例的引用，否则会被 GC 导致崩溃
+            callback_instance = self.WNDENUMPROC(enum_callback)
+            self.user32.EnumWindows(callback_instance, 0)
         except Exception as e:
             logger.debug(f"EnumWindows exception (expected): {e}")
         

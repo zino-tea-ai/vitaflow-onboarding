@@ -37,6 +37,7 @@ export function ThinkingIndicator({ state, className }: ThinkingIndicatorProps) 
   // Auto-expand when thinking starts
   useEffect(() => {
     if (state.isThinking && state.content.length > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: expand on thinking start
       setIsExpanded(true);
     }
   }, [state.isThinking, state.content]);

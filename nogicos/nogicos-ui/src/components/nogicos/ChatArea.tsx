@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import type { KeyboardEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Send, Paperclip, Mic, StopCircle, Sparkles } from 'lucide-react';
@@ -12,6 +12,26 @@ import { ThinkingIndicator } from './ThinkingIndicator';
 import type { ThinkingState } from './ThinkingIndicator';
 import { cn } from '@/lib/utils';
 
+// Phase 7: Agent 组件导入
+import {
+  AgentStatusIndicator,
+  TaskProgressBar,
+  SensitiveActionDialog,
+  ErrorDisplay,
+  HotkeyHints,
+  AgentToast,
+} from '@/components/agent';
+import { useAgentHotkeys } from '@/hooks/useAgentHotkeys';
+import type { AgentStatus, AgentProgress, AgentError, AgentController } from '@/types/agent';
+import type { SensitiveAction } from '@/types/sensitive-action';
+
+// Phase 7: Toast 类型
+interface AgentToastItem {
+  id: string;
+  message: string;
+  timestamp: number;
+}
+
 interface ChatAreaProps {
   messages: Message[];
   tools: ToolExecution[];
@@ -19,6 +39,17 @@ interface ChatAreaProps {
   thinkingState?: ThinkingState;
   onSendMessage: (content: string) => void;
   onStopExecution?: () => void;
+  // Phase 7: Agent 状态属性
+  agentStatus?: AgentStatus;
+  agentProgress?: AgentProgress | null;
+  agentError?: AgentError | null;
+  pendingAction?: SensitiveAction | null;
+  onConfirmAction?: (actionId: string, approved: boolean) => void;
+  onRecoverFromError?: (handler: string) => void;
+  agentController?: AgentController | null;
+  // Phase 7: Toast 队列（用于显示无 hwnd 操作提示）
+  toastQueue?: AgentToastItem[];
+  onDismissToast?: (id: string) => void;
 }
 
 export function ChatArea({
@@ -28,11 +59,51 @@ export function ChatArea({
   thinkingState,
   onSendMessage,
   onStopExecution,
+  // Phase 7: Agent 状态
+  agentStatus = 'idle',
+  agentProgress = null,
+  agentError = null,
+  pendingAction = null,
+  onConfirmAction,
+  onRecoverFromError,
+  agentController = null,
+  // Phase 7: Toast
+  toastQueue = [],
+  onDismissToast,
 }: ChatAreaProps) {
   const [input, setInput] = useState('');
+  const [showHotkeyHints, setShowHotkeyHints] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Phase 7: 敏感操作确认处理
+  const handleConfirmAction = useCallback((actionId: string) => {
+    onConfirmAction?.(actionId, true);
+  }, [onConfirmAction]);
+
+  const handleCancelAction = useCallback((actionId: string) => {
+    onConfirmAction?.(actionId, false);
+  }, [onConfirmAction]);
+
+  // Phase 7: 错误恢复处理
+  const handleErrorAction = useCallback((handler: string) => {
+    onRecoverFromError?.(handler);
+  }, [onRecoverFromError]);
+
+  // Phase 7: 快捷键支持
+  useAgentHotkeys(agentController, {
+    enabled: agentStatus !== 'idle' && agentStatus !== 'completed',
+    onEmergencyStop: () => onStopExecution?.(),
+    onConfirmAction: pendingAction ? () => handleConfirmAction(pendingAction.id) : undefined,
+  });
+
+  // 显示快捷键提示（Agent 执行时）
+  useEffect(() => {
+    const isAgentActive = agentStatus !== 'idle' && agentStatus !== 'completed' && agentStatus !== 'failed';
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: sync with agent status
+    setShowHotkeyHints(isAgentActive);
+  }, [agentStatus]);
 
   // Smooth scroll to bottom when new messages arrive
   useEffect(() => {
@@ -63,8 +134,60 @@ export function ChatArea({
 
   const isEmpty = messages.length === 0;
 
+  // 判断是否显示 Agent 状态区域
+  const showAgentStatus = agentStatus !== 'idle' || agentProgress || agentError;
+
   return (
     <main className="flex-1 flex flex-col min-w-0 bg-gradient-to-b from-transparent to-black/20">
+      {/* Phase 7: Agent 状态区域 */}
+      <AnimatePresence>
+        {showAgentStatus && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="border-b border-white/[0.06] bg-black/20 overflow-hidden"
+          >
+            <div className="max-w-3xl mx-auto px-6 py-3 space-y-3">
+              {/* 状态指示器 */}
+              <div className="flex items-center justify-between">
+                <AgentStatusIndicator 
+                  status={agentStatus} 
+                  detail={agentProgress?.currentWindow}
+                />
+                {agentStatus !== 'idle' && agentStatus !== 'completed' && agentStatus !== 'failed' && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={onStopExecution}
+                    className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                  >
+                    <StopCircle className="w-4 h-4 mr-1.5" />
+                    停止
+                  </Button>
+                )}
+              </div>
+
+              {/* 进度条 */}
+              {agentProgress && (
+                <TaskProgressBar 
+                  progress={agentProgress} 
+                  showDetails={true}
+                />
+              )}
+
+              {/* 错误显示 */}
+              {agentError && (
+                <ErrorDisplay
+                  error={agentError}
+                  onAction={handleErrorAction}
+                />
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Messages Area */}
       <ScrollArea className="flex-1" ref={scrollRef}>
         <div className="max-w-3xl mx-auto px-6 py-8">
@@ -236,6 +359,26 @@ export function ChatArea({
           </motion.div>
         </div>
       </div>
+
+      {/* Phase 7: 敏感操作确认对话框 */}
+      <SensitiveActionDialog
+        action={pendingAction}
+        onConfirm={handleConfirmAction}
+        onCancel={handleCancelAction}
+        open={!!pendingAction}
+      />
+
+      {/* Phase 7: 快捷键提示 */}
+      <HotkeyHints visible={showHotkeyHints} position="bottom-right" />
+
+      {/* Phase 7: Agent Toast 提示（无 hwnd 操作通知） */}
+      {toastQueue.length > 0 && (
+        <AgentToast 
+          toasts={toastQueue} 
+          onDismiss={onDismissToast}
+          position="bottom-center"
+        />
+      )}
     </main>
   );
 }

@@ -51,7 +51,7 @@ export function CommandPalette({
 
   // Electron IPC 监听
   useEffect(() => {
-    const api = (window as any).electronAPI
+    const api = (window as Window & { electronAPI?: { onToggleCommandPalette?: (cb: () => void) => () => void } }).electronAPI
     if (api?.onToggleCommandPalette) {
       const cleanup = api.onToggleCommandPalette(() => {
         setOpen((prev) => !prev)

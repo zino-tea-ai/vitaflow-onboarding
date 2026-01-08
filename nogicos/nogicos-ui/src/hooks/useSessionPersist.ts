@@ -81,9 +81,9 @@ export function useSessionPersist(options: UseSessionPersistOptions = {}) {
       // 转换为前端格式 with validation
       const formattedSessions: SessionSummary[] = rawSessions
         .filter((s: unknown): s is Record<string, unknown> =>
-          s !== null && typeof s === 'object' && 'id' in s && typeof (s as any).id === 'string'
+          s !== null && typeof s === 'object' && 'id' in s && typeof (s as Record<string, unknown>).id === 'string'
         )
-        .map((s) => ({
+        .map((s: Record<string, unknown>) => ({
           id: String(s.id),
           title: typeof s.title === 'string' ? s.title : 'Untitled',
           preview: typeof s.preview === 'string' ? s.preview : '',
@@ -123,12 +123,15 @@ export function useSessionPersist(options: UseSessionPersistOptions = {}) {
 
       // [P1 FIX] Validate history array
       const history = Array.isArray(data.history)
-        ? data.history.filter((m: unknown): m is Message =>
-            m !== null && typeof m === 'object' &&
-            'role' in m && typeof (m as any).role === 'string' &&
-            ['user', 'assistant', 'system'].includes((m as any).role) &&
-            'content' in m && typeof (m as any).content === 'string'
-          )
+        ? data.history.filter((m: unknown): m is Message => {
+            if (m === null || typeof m !== 'object') return false;
+            const msg = m as Record<string, unknown>;
+            return (
+              'role' in msg && typeof msg.role === 'string' &&
+              ['user', 'assistant', 'system'].includes(msg.role) &&
+              'content' in msg && typeof msg.content === 'string'
+            );
+          })
         : [];
 
       return {

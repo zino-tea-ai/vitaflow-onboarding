@@ -5,7 +5,6 @@ import {
   Search, 
   Trash2,
   MoreHorizontal,
-  Clock
 } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
@@ -16,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
-import { ConnectorPanel } from './ConnectorPanel';
+import { ConnectorPanel, type ConnectedApp } from './ConnectorPanel';
 
 export interface Session {
   id: string;
@@ -33,7 +32,12 @@ interface SidebarProps {
   onSelectSession: (id: string) => void;
   onDeleteSession: (id: string) => void;
   onOpenSettings?: () => void;
+  /** 当连接的应用列表变化时回调 */
+  onConnectedAppsChange?: (apps: ConnectedApp[]) => void;
 }
+
+// 导出类型供 App.tsx 使用
+export type { ConnectedApp };
 
 export function Sidebar({
   sessions,
@@ -41,7 +45,8 @@ export function Sidebar({
   onNewSession,
   onSelectSession,
   onDeleteSession,
-  onOpenSettings,
+  // onOpenSettings, // Available but not currently used
+  onConnectedAppsChange,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -155,7 +160,10 @@ export function Sidebar({
 
       {/* Connector Panel */}
       <div className="border-t border-neutral-900 mt-auto">
-        <ConnectorPanel defaultExpanded={true} />
+        <ConnectorPanel 
+          defaultExpanded={true} 
+          onConnectedAppsChange={onConnectedAppsChange}
+        />
       </div>
 
     </aside>

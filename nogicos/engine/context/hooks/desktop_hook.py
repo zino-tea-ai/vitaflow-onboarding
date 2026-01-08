@@ -262,10 +262,12 @@ class DesktopHook(BaseHook):
                             })
                 return True
             
-            # 【修复 #18】复用缓存的 WNDENUMPROC 类型
+            # 【修复 #18 + Segfault 修复】
+            # 关键：必须保持回调实例的引用，否则会被 GC 导致 Segfault
             if not hasattr(DesktopHook, '_WNDENUMPROC'):
                 DesktopHook._WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
-            user32.EnumWindows(DesktopHook._WNDENUMPROC(enum_callback), 0)
+            callback_instance = DesktopHook._WNDENUMPROC(enum_callback)
+            user32.EnumWindows(callback_instance, 0)
 
             return windows[:20]  # 最多返回 20 个窗口
             
@@ -369,11 +371,13 @@ def get_all_windows() -> List[WindowInfo]:
             
             return True
         
-        # 【修复 #18】缓存 WNDENUMPROC 类型避免重复创建（全局缓存）
+        # 【修复 #18 + Segfault 修复】
+        # 关键：必须保持回调实例的引用，否则会被 GC 导致 Segfault
         global _WNDENUMPROC_CACHED
         if '_WNDENUMPROC_CACHED' not in globals():
             _WNDENUMPROC_CACHED = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
-        user32.EnumWindows(_WNDENUMPROC_CACHED(enum_callback), 0)
+        callback_instance = _WNDENUMPROC_CACHED(enum_callback)
+        user32.EnumWindows(callback_instance, 0)
         
         # 获取当前前台窗口，放到列表最前面
         foreground_hwnd = user32.GetForegroundWindow()
@@ -399,35 +403,31 @@ def _is_system_window_static(title: str, app_name: str = "") -> bool:
         "NVIDIA GeForce Overlay",
         "AMD Software",
     ]
-    
-    # 过滤 NogicOS 自己的窗口
-    nogicos_keywords = [
-        "NogicOS",
-        "nogicos",
-        "Electron",
-    ]
-    
-    # 过滤自己的进程
+
+    # 过滤自己的进程（NogicOS 的 Electron 进程）
     self_processes = [
-        "electron.exe",
         "nogicos.exe",
     ]
     
+    # 精确匹配 NogicOS 窗口标题（不要用模糊匹配，否则会过滤掉打开 nogicos 项目的 Cursor）
+    nogicos_exact_titles = [
+        "NogicOS",
+    ]
+
     if title in system_titles:
         return True
     
-    # 检查是否是 NogicOS 窗口
-    for keyword in nogicos_keywords:
-        if keyword.lower() in title.lower():
-            return True
-    
+    # 精确匹配 NogicOS 窗口（只过滤主窗口，不过滤包含 nogicos 关键字的其他应用）
+    if title in nogicos_exact_titles:
+        return True
+
     # 检查是否是自己的进程
     if app_name and app_name.lower() in self_processes:
         return True
-    
+
     if len(title) < 2:
         return True
-    
+
     return False
 
 

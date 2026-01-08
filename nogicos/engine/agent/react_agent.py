@@ -24,6 +24,7 @@ import os
 import json
 import time
 import asyncio
+import copy
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable, Awaitable
 from dataclasses import dataclass, field
 
@@ -115,6 +116,59 @@ from .imports import (
     ContextConfig,
     get_context_injector,
 )
+
+# Event system (Phase 0-0.5 architecture upgrade)
+try:
+    from .events import AgentEvent, EventType, task_started_event, task_completed_event, task_failed_event, tool_start_event, tool_end_event
+    from .event_bus import EventBus, get_event_bus
+    from .async_db import AsyncTaskStore, get_task_store, HAS_AIOSQLITE
+    from .state_manager import TaskStateManager, get_state_manager, TaskStatus
+    from .types import AgentStatus
+    EVENT_SYSTEM_AVAILABLE = True
+except ImportError as e:
+    EVENT_SYSTEM_AVAILABLE = False
+    logger.warning(f"Event system not available: {e}")
+
+# Plan Cache (YC Demo - "AI that learns")
+try:
+    from .plan_cache import PlanCache, CachedPlan, get_plan_cache
+    PLAN_CACHE_AVAILABLE = True
+except ImportError as e:
+    PLAN_CACHE_AVAILABLE = False
+    logger.warning(f"Plan Cache not available: {e}")
+
+# #region agent log helper (debug mode)
+import json as _json
+import os as _os
+from pathlib import Path as _Path
+_DEBUG_LOG_PATH = _Path(r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log")
+
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict):
+    """
+    Write a single NDJSON debug line to debug.log (append-only). Keep tiny payload; avoid secrets.
+    Uses os.fsync to ensure immediate disk write (prevent segfault data loss).
+    """
+    try:
+        payload = {
+            "sessionId": "debug-session",
+            "runId": "pre-fix-1",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fd = _os.open(str(_DEBUG_LOG_PATH), _os.O_WRONLY | _os.O_CREAT | _os.O_APPEND)
+        try:
+            line = _json.dumps(payload, ensure_ascii=False) + "\n"
+            _os.write(fd, line.encode("utf-8"))
+            _os.fsync(fd)  # Force flush to disk immediately
+        finally:
+            _os.close(fd)
+    except Exception:
+        pass
+# #endregion
 
 
 @dataclass
@@ -757,7 +811,50 @@ class ReActAgent:
         # P2: Browser failure tracking for fast-fail mechanism
         self._browser_consecutive_failures: int = 0
         self._browser_max_consecutive_failures: int = 2  # Fail fast after 2 consecutive failures
-    
+
+        # Event system (Phase 0-0.5 architecture upgrade)
+        # Provides: event bus for decoupled communication, async task store, state management
+        self._event_bus: Optional[EventBus] = None
+        self._task_store: Optional[AsyncTaskStore] = None
+        self._state_manager: Optional[TaskStateManager] = None
+        self._current_task_id: Optional[str] = None
+
+        if EVENT_SYSTEM_AVAILABLE:
+            try:
+                self._event_bus = get_event_bus()
+                logger.info("[Agent] Event system initialized")
+            except Exception as e:
+                logger.warning(f"[Agent] Failed to initialize event system: {e}")
+
+        # Plan Cache (YC Demo - "AI that learns")
+        self._plan_cache: Optional[PlanCache] = None
+        if PLAN_CACHE_AVAILABLE:
+            try:
+                self._plan_cache = get_plan_cache()
+                stats = self._plan_cache.get_stats()
+                logger.info(f"[Agent] Plan Cache initialized ({stats['total_plans']} plans cached)")
+            except Exception as e:
+                logger.warning(f"[Agent] Failed to initialize Plan Cache: {e}")
+
+    async def _ensure_task_store(self) -> Optional[AsyncTaskStore]:
+        """Lazy initialize async task store (requires await)"""
+        if self._task_store is None and EVENT_SYSTEM_AVAILABLE and HAS_AIOSQLITE:
+            try:
+                self._task_store = await get_task_store()
+                self._state_manager = await get_state_manager(self._task_store)
+                logger.info("[Agent] Task store and state manager initialized")
+            except Exception as e:
+                logger.warning(f"[Agent] Failed to initialize task store: {e}")
+        return self._task_store
+
+    async def _publish_event(self, event: AgentEvent) -> None:
+        """Publish event to event bus (non-blocking)"""
+        if self._event_bus is not None:
+            try:
+                await self._event_bus.publish(event)
+            except Exception as e:
+                logger.debug(f"[Agent] Failed to publish event: {e}")
+
     def _refresh_tool_categories(self) -> None:
         """Refresh tool categories cache from registry"""
         self._tool_categories_cache.clear()
@@ -845,7 +942,137 @@ class ReActAgent:
         """
         # Always enable thinking for intelligent feel
         return True
-    
+
+    def _strip_thinking_blocks(self, messages: List[Dict]) -> List[Dict]:
+        """
+        Strip thinking blocks from message history.
+
+        Required when switching from Opus (with thinking) to Haiku (without thinking).
+        Anthropic API rejects requests with thinking blocks when thinking is disabled.
+
+        IMPORTANT: Content items can be either:
+        - Dictionaries with a "type" key (e.g., {"type": "thinking", ...})
+        - Anthropic SDK objects with a .type attribute (e.g., ThinkingBlock, ToolUseBlock)
+        We need to handle both cases.
+        """
+        stripped = []
+        thinking_blocks_removed = 0
+
+        def is_thinking_block(block) -> bool:
+            """Check if a block is a thinking block (dict or SDK object)"""
+            if isinstance(block, dict):
+                return block.get("type") == "thinking"
+            # SDK objects have a .type attribute
+            block_type = getattr(block, "type", None)
+            return block_type == "thinking"
+
+        def get_block_type(block) -> str:
+            """Get the type of a block (dict or SDK object)"""
+            if isinstance(block, dict):
+                return block.get("type", "?")
+            return getattr(block, "type", type(block).__name__)
+
+        # Debug: log input messages structure
+        logger.info(f"[Agent] _strip_thinking_blocks INPUT: {len(messages)} messages")
+        for i, m in enumerate(messages):
+            role = m.get("role", "?")
+            content = m.get("content", "N/A")
+            if isinstance(content, list):
+                types = [get_block_type(b) for b in content]
+                logger.info(f"[Agent]   msg[{i}] role={role}, content types: {types}")
+            else:
+                logger.info(f"[Agent]   msg[{i}] role={role}, content type: {type(content).__name__}")
+
+        for msg in copy.deepcopy(messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    original_len = len(content)
+                    # Filter out thinking blocks (both dict and SDK object types)
+                    filtered_content = [
+                        block for block in content
+                        if not is_thinking_block(block)
+                    ]
+                    thinking_blocks_removed += original_len - len(filtered_content)
+                    if filtered_content:
+                        msg["content"] = filtered_content
+                        stripped.append(msg)
+                    # If no content remains, skip this message entirely
+                    else:
+                        logger.info(f"[Agent] Skipping assistant message with empty content after strip")
+                else:
+                    stripped.append(msg)
+            else:
+                stripped.append(msg)
+        logger.info(f"[Agent] _strip_thinking_blocks OUTPUT: {len(stripped)} messages, removed {thinking_blocks_removed} thinking blocks")
+        return stripped
+
+    def _prune_old_screenshots(self, messages: List[Dict], max_screenshots: int = 2) -> List[Dict]:
+        """
+        Prune old screenshot images from message history to prevent token overflow.
+        
+        Keeps only the most recent `max_screenshots` images in the conversation.
+        This is critical because each 1280x800 screenshot can consume ~80K+ tokens,
+        and the API limit is 200K tokens.
+        
+        Args:
+            messages: The conversation history
+            max_screenshots: Maximum number of screenshots to keep (default: 2)
+            
+        Returns:
+            Pruned messages with old screenshots replaced by text placeholders
+        """
+        # Count total images and find their locations
+        image_locations = []  # [(msg_idx, content_idx, is_tool_result)]
+        
+        for msg_idx, msg in enumerate(messages):
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for content_idx, block in enumerate(content):
+                    if isinstance(block, dict):
+                        # Direct image block
+                        if block.get("type") == "image":
+                            image_locations.append((msg_idx, content_idx, False))
+                        # Tool result with image content
+                        elif block.get("type") == "tool_result":
+                            inner_content = block.get("content", [])
+                            if isinstance(inner_content, list):
+                                for inner_idx, inner_block in enumerate(inner_content):
+                                    if isinstance(inner_block, dict) and inner_block.get("type") == "image":
+                                        image_locations.append((msg_idx, content_idx, True, inner_idx))
+        
+        # If within limit, no pruning needed
+        if len(image_locations) <= max_screenshots:
+            return messages
+        
+        # Prune old screenshots (keep only the last max_screenshots)
+        images_to_remove = len(image_locations) - max_screenshots
+        locations_to_remove = image_locations[:images_to_remove]
+        
+        logger.info(f"[Agent] Pruning {images_to_remove} old screenshots from message history (keeping {max_screenshots})")
+        
+        # Create a deep copy to avoid modifying original
+        pruned = copy.deepcopy(messages)
+        
+        for location in locations_to_remove:
+            msg_idx = location[0]
+            content_idx = location[1]
+            is_tool_result = location[2]
+            
+            if is_tool_result and len(location) > 3:
+                # Replace image inside tool_result
+                inner_idx = location[3]
+                inner_content = pruned[msg_idx]["content"][content_idx].get("content", [])
+                if isinstance(inner_content, list) and inner_idx < len(inner_content):
+                    inner_content[inner_idx] = {"type": "text", "text": "[Previous screenshot removed to save context space]"}
+            else:
+                # Replace direct image block
+                content = pruned[msg_idx].get("content", [])
+                if isinstance(content, list) and content_idx < len(content):
+                    content[content_idx] = {"type": "text", "text": "[Previous screenshot removed to save context space]"}
+        
+        return pruned
+
     async def cleanup_browser_session(self) -> None:
         """
         Cleanup browser session after task completion.
@@ -1271,7 +1498,13 @@ class ReActAgent:
         error_type = "unknown"
         
         for attempt in range(max_retries + 1):
+            # #region agent log H8
+            _agent_debug_log("H8", "execute_with_retry:pre", f"About to execute {tool_name}", {"tool_name": tool_name, "attempt": attempt})
+            # #endregion
             result = await self.registry.execute(tool_name, args)
+            # #region agent log H8
+            _agent_debug_log("H8", "execute_with_retry:post", f"Executed {tool_name}", {"tool_name": tool_name, "success": result.success})
+            # #endregion
             
             if result.success:
                 # Mark if this was a retry success
@@ -1453,13 +1686,10 @@ class ReActAgent:
         Returns:
             Tool result in Claude's multimodal format
         """
-        # Handle dict output from new browser_screenshot
         if isinstance(output, dict):
             if output.get("type") == "browser_screenshot":
-                # Build multimodal content blocks
                 content_blocks = []
-                
-                # Add image block (Claude vision format)
+
                 if output.get("image_base64"):
                     content_blocks.append({
                         "type": "image",
@@ -1469,8 +1699,7 @@ class ReActAgent:
                             "data": output["image_base64"],
                         }
                     })
-                
-                # Add text context block
+
                 text_context = []
                 if output.get("url"):
                     text_context.append(f"URL: {output['url']}")
@@ -1478,33 +1707,73 @@ class ReActAgent:
                     text_context.append(f"Title: {output['title']}")
                 if output.get("page_content"):
                     text_context.append(f"\nPage Content:\n{output['page_content']}")
-                
+
                 if text_context:
                     content_blocks.append({
                         "type": "text",
                         "text": "\n".join(text_context),
                     })
-                
+
                 logger.info(f"[Agent] Formatted screenshot with {len(content_blocks)} content blocks")
-                
+
                 return {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": content_blocks,
                 }
-            
-            elif output.get("type") == "error":
+
+            if output.get("type") == "error":
                 return {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": f"Screenshot failed: {output.get('message', 'Unknown error')}",
                 }
-        
-        # Fallback: treat as string (old format)
+
         return {
             "type": "tool_result",
             "tool_use_id": tool_use_id,
             "content": str(output),
+        }
+
+    def _format_window_screenshot_result(self, tool_use_id: str, output: Any, kind: str = "window_screenshot") -> Dict[str, Any]:
+        """
+        Format window/desktop screenshot (local tools) to multimodal blocks.
+        Avoid dumping base64 as plain text to LLM (prevents 400 / oversize).
+        """
+        image_b64 = ""
+        title = ""
+        size = None
+        if isinstance(output, dict):
+            image_b64 = output.get("image_base64") or output.get("base64_image") or ""
+            title = output.get("window_title", "") or output.get("title", "")
+            size = output.get("window_size") or output.get("size") or output.get("dimensions")
+
+        content_blocks: List[Dict[str, Any]] = []
+        if image_b64:
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",  # JPEG for smaller token footprint
+                    "data": image_b64,
+                }
+            })
+
+        meta_parts = []
+        if title:
+            meta_parts.append(f"title: {title}")
+        if size:
+            meta_parts.append(f"size: {size}")
+        if meta_parts:
+            content_blocks.append({"type": "text", "text": f"{kind} meta -> " + ", ".join(map(str, meta_parts))})
+
+        if not content_blocks:
+            content_blocks.append({"type": "text", "text": str(output)})
+
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content_blocks,
         }
     
     def _detect_loop(self, tool_calls: List[Dict[str, Any]], window: int = 3) -> bool:
@@ -1677,6 +1946,9 @@ class ReActAgent:
         Returns:
             AgentResult with success status and response
         """
+        # #region agent log
+        import json as _json; open(r'c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log','a',encoding='utf-8').write(_json.dumps({"hypothesisId":"B","location":"react_agent.py:run:entry","message":"run() method called","data":{"task":task[:100],"mode":mode.value if hasattr(mode,'value') else str(mode),"has_context":bool(context)},"timestamp":__import__('time').time()})+'\n')
+        # #endregion
         if not self.client:
             return AgentResult(
                 success=False,
@@ -1687,7 +1959,23 @@ class ReActAgent:
         # Generate unique message ID
         import uuid
         message_id = str(uuid.uuid4())[:8]
-        
+
+        # Event system: Initialize task tracking
+        self._current_task_id = f"task-{message_id}"
+        if EVENT_SYSTEM_AVAILABLE:
+            await self._ensure_task_store()
+            if self._state_manager:
+                try:
+                    await self._state_manager.create_task(
+                        self._current_task_id,
+                        task,
+                        target_hwnds=None  # Will be populated from context if available
+                    )
+                except Exception as e:
+                    logger.debug(f"[Agent] Failed to create task record: {e}")
+            # Publish task started event
+            await self._publish_event(task_started_event(self._current_task_id, task))
+
         # ===========================================
         # PHASE 0: Mode-specific handling
         # ===========================================
@@ -1708,7 +1996,51 @@ class ReActAgent:
         # If we have a confirmed plan (from Plan mode), use it
         if confirmed_plan is not None:
             logger.info(f"[Agent] Executing confirmed plan with {len(confirmed_plan.steps)} steps")
-        
+
+        # ===========================================
+        # PHASE 0.5: Plan Cache Check (YC Demo - "AI that learns")
+        # Check if we have a similar task cached for faster execution
+        # ===========================================
+        cached_plan_info = None
+        cached_speedup = 1.0
+        task_start_time = time.time()  # Track for caching later
+
+        if self._plan_cache and PLAN_CACHE_AVAILABLE:
+            try:
+                cache_result = self._plan_cache.find_similar(task, threshold=0.80)
+                if cache_result:
+                    cached_plan, similarity = cache_result
+                    cached_speedup = max(1.0, cached_plan.execution_time / 2.0)  # Estimate 2x faster
+                    cached_plan_info = {
+                        "task_hash": cached_plan.task_hash,
+                        "original_task": cached_plan.task[:50],
+                        "execution_time": cached_plan.execution_time,
+                        "similarity": similarity,
+                        "use_count": cached_plan.use_count,
+                    }
+
+                    # Record usage
+                    self._plan_cache.record_use(cached_plan.task_hash)
+
+                    logger.info(f"[PlanCache] Pattern matched! similarity={similarity:.2f}, prev_time={cached_plan.execution_time:.1f}s")
+
+                    # Broadcast "Pattern recognized" to frontend (key demo moment!)
+                    if self.status_server:
+                        await self.status_server.broadcast({
+                            "type": "plan_cache_hit",
+                            "message_id": message_id,
+                            "data": {
+                                "pattern_matched": True,
+                                "similarity": similarity,
+                                "original_time": cached_plan.execution_time,
+                                "expected_speedup": f"{cached_speedup:.1f}x",
+                                "use_count": cached_plan.use_count + 1,
+                                "message": f"Pattern recognized! Using optimized approach ({cached_speedup:.1f}x faster)",
+                            }
+                        })
+            except Exception as e:
+                logger.warning(f"[PlanCache] Error checking cache: {e}")
+
         # ===========================================
         # PHASE 1: Task Classification
         # All tasks go through full pipeline for "intelligent" feel
@@ -1839,6 +2171,7 @@ class ReActAgent:
                 logger.warning(f"[Context] Failed to inject context: {e}")
         
         # Hook system context injection (browser/desktop/file awareness)
+        # This tells the agent which window is connected (HWND) so it doesn't need to enumerate
         try:
             from ..context import get_context_store
             hook_store = get_context_store()
@@ -1847,7 +2180,17 @@ class ReActAgent:
             if hook_context:
                 # Inject hook context at the beginning of user content
                 user_content = f"{hook_context}\n\n{user_content}"
-                logger.debug("[Context] Injected Hook system context")
+                logger.info(f"[Context] Injected Hook context with connected window info")
+                # #region agent log
+                _agent_debug_log(
+                    hypothesis_id="H6",
+                    location="react_agent:hook_context",
+                    message="Hook context injected",
+                    data={"hook_context_preview": hook_context[:300] if hook_context else "empty"},
+                )
+                # #endregion
+            else:
+                logger.debug("[Context] No Hook context available (no connected windows)")
         except ImportError:
             pass  # Hook system not available
         except Exception as e:
@@ -1900,6 +2243,10 @@ class ReActAgent:
         while iteration < effective_max_iterations:
             iteration += 1
             
+            # #region agent log D1
+            _agent_debug_log("D1", "react_agent:loop_start", f"Iteration {iteration} START", {"iteration": iteration, "max_iterations": effective_max_iterations, "messages_count": len(messages)})
+            # #endregion
+            
             try:
                 # Call Claude with streaming for real-time feedback
                 text_content = ""
@@ -1913,16 +2260,59 @@ class ReActAgent:
                 # TTFT Optimization: Most tool tasks don't need extended thinking
                 use_thinking = self._needs_extended_thinking(task, classification)
 
+                # Simple "send message" tasks:禁用thinking并收窄工具集，加速&稳态
+                simple_send_keywords = ("发送", "发一条", "发消息", "send message", "send a message")
+                is_simple_send = any(k in task for k in simple_send_keywords)
+                if is_simple_send:
+                    use_thinking = False
+                    allowed_tools = {
+                        "find_window", "list_windows", "window_screenshot", "desktop_screenshot",
+                        "desktop_click", "desktop_type", "desktop_hotkey", "desktop_focus_window",
+                        "window_drag", "get_window_info",
+                    }
+                    tools = [t for t in tools if t.get("name") in allowed_tools or t.get("name", "").startswith(("desktop_", "window_"))]
+
                 logger.info(f"[Agent] Task '{task[:30]}...' needs_thinking={use_thinking}")
 
-                # Model selection: Opus for tool tasks (need tool calling capability)
-                use_model = self.model  # Opus
-                max_tokens = 16384
+                # MODEL CASCADE: Opus for planning (iteration 1), Haiku for execution (iteration 2+)
+                # This provides 5-10x speedup for tool execution while keeping planning quality
+                HAIKU_MODEL = "claude-3-5-haiku-20241022"
+                OPUS_MODEL = "claude-opus-4-5-20251101"
+
+                if iteration == 1:
+                    # First iteration: Use Opus for high-quality planning/reasoning
+                    use_model = OPUS_MODEL
+                    max_tokens = 16384
+                    logger.info(f"[Agent] Iteration {iteration}: Using OPUS for planning")
+                else:
+                    # Subsequent iterations: Use Haiku for fast tool execution
+                    use_model = HAIKU_MODEL
+                    max_tokens = 8192
+                    use_thinking = False  # Haiku doesn't need thinking for tool calls
+                    logger.info(f"[Agent] Iteration {iteration}: Using HAIKU for execution (5-10x faster)")
+
+                # CRITICAL: Prune old screenshots to prevent token overflow (200K limit)
+                # Each 1280x800 screenshot can consume 80K+ tokens
+                messages_for_api = self._prune_old_screenshots(messages, max_screenshots=2)
+                
+                # When thinking is disabled, strip thinking blocks from message history
+                # This is required because Haiku can't process thinking blocks from Opus
+                if not use_thinking:
+                    messages_for_api = self._strip_thinking_blocks(messages_for_api)
+                    # Debug: verify thinking blocks were removed
+                    for i, msg in enumerate(messages_for_api):
+                        if msg.get("role") == "assistant":
+                            content = msg.get("content", [])
+                            if isinstance(content, list):
+                                types = [b.get("type") for b in content if isinstance(b, dict)]
+                                has_thinking = any(t == "thinking" for t in types)
+                                logger.info(f"[Agent] msg[{i}] assistant content: {types}, has_thinking={has_thinking}")
+                    logger.info(f"[Agent] Stripped thinking blocks: {len(messages)} -> {len(messages_for_api)} messages")
 
                 api_params = {
                     "model": use_model,
                     "max_tokens": max_tokens,
-                    "messages": messages,
+                    "messages": messages_for_api,
                 }
 
                 # Only enable Extended Thinking for tasks that benefit from it
@@ -1941,6 +2331,32 @@ class ReActAgent:
                         api_params["tools"] = tools
                 
                 logger.info(f"[Agent] Tool task: {use_model}, thinking={use_thinking}, max_tokens={max_tokens}, tools={len(tools) if tools else 0}")
+
+                # Broadcast model cascade info to frontend (for demo visual effect)
+                if self.status_server:
+                    model_display = "Opus (Planning)" if iteration == 1 else "Haiku (Execution)"
+                    await self.status_server.broadcast({
+                        "type": "model_cascade",
+                        "message_id": message_id,
+                        "iteration": iteration,
+                        "model": use_model,
+                        "model_display": model_display,
+                        "is_fast_mode": iteration > 1,
+                    })
+
+                # #region agent log
+                _agent_debug_log(
+                    hypothesis_id="H1",
+                    location="react_agent:api_call_start",
+                    message="Anthropic stream call start",
+                    data={
+                        "tool_count": len(tools) if tools else 0,
+                        "use_thinking": use_thinking,
+                        "msg_count": len(messages),
+                        "session": session_id,
+                    },
+                )
+                # #endregion
                 
                 # System prompt selection based on whether thinking is enabled
                 if use_thinking:
@@ -1971,12 +2387,21 @@ class ReActAgent:
                 current_block_type = None  # Track current block type
                 
                 # Use ASYNC streaming API for true real-time feedback
+                # #region agent log H10
+                _agent_debug_log("H10", "stream:enter", "Entering stream context", {"iteration": iteration})
+                # #endregion
                 async with self.async_client.messages.stream(**api_params) as stream:
+                    # #region agent log H10
+                    _agent_debug_log("H10", "stream:started", "Stream context started", {})
+                    # #endregion
                     async for event in stream:
                         # Record TTFT on first event
                         if not ttft_recorded:
                             ttft_ms = (time.time() - task_start_time) * 1000
                             ttft_recorded = True
+                            # #region agent log H10
+                            _agent_debug_log("H10", "stream:first_event", "First event received", {"ttft_ms": ttft_ms})
+                            # #endregion
                             if self.status_server:
                                 await self.status_server.broadcast_performance(
                                     message_id=message_id,
@@ -2090,7 +2515,10 @@ class ReActAgent:
                     
                     # Get final message for stop_reason (async)
                     response = await stream.get_final_message()
-                
+                    # #region agent log H10
+                    _agent_debug_log("H10", "stream:final_msg", "Got final message", {"stop_reason": getattr(response, 'stop_reason', None)})
+                    # #endregion
+
                 # Signal end of streaming content
                 if text_content and self.status_server:
                     await self.status_server.broadcast({
@@ -2101,7 +2529,18 @@ class ReActAgent:
                 # Check if we're done (no tool calls)
                 has_tool_use = len(tool_uses) > 0
                 
+                # #region agent log H9
+                _agent_debug_log("H9", "after_stream", "Stream finished, checking tool uses", {"has_tool_use": has_tool_use, "num_tools": len(tool_uses), "tool_names": [tu.get("name") for tu in tool_uses]})
+                # #endregion
+                
+                # #region agent log D4
+                _agent_debug_log("D4", "react_agent:tool_check", f"Tool check: has_tool_use={has_tool_use}", {"has_tool_use": has_tool_use, "tool_count": len(tool_uses), "tool_names": [tu.get("name") for tu in tool_uses], "iteration": iteration})
+                # #endregion
+                
                 if not has_tool_use:
+                    # #region agent log D6
+                    _agent_debug_log("D6", "react_agent:no_tool_break", "BREAKING due to no tool use", {"iteration": iteration, "text_len": len(text_content)})
+                    # #endregion
                     # Agent decided to respond without tools
                     final_response = text_content
                     break
@@ -2195,9 +2634,11 @@ class ReActAgent:
                             })
                         
                         # Format result for Claude
-                        # Special handling for browser_screenshot: convert to multimodal format
+                        # Special handling for screenshots: avoid dumping base64 as plain text
                         if result.success and tool_name == "browser_screenshot":
                             tool_result = self._format_screenshot_result(tool_id, result.output)
+                        elif result.success and tool_name in {"window_screenshot", "desktop_screenshot"}:
+                            tool_result = self._format_window_screenshot_result(tool_id, result.output, kind=tool_name)
                         elif result.success:
                             tool_result = {
                                 "type": "tool_result",
@@ -2217,6 +2658,7 @@ class ReActAgent:
                     # P0: Category-based timeout optimization
                     BROWSER_TIMEOUT = 20.0  # Browser tools: 20s (was 30s)
                     DEFAULT_TIMEOUT = 30.0  # Other tools: 30s
+                    UFO_TIMEOUT = 300.0     # UFO desktop automation: 300s (match UFOExecutor.timeout)
                     
                     # P2: Check for browser fast-fail before execution
                     if has_browser_tools and self._browser_consecutive_failures >= self._browser_max_consecutive_failures:
@@ -2244,6 +2686,10 @@ class ReActAgent:
                         tool_args = tool_use["input"]
                         tool_id = tool_use["id"]
                         
+                        # #region agent log H9
+                        _agent_debug_log("H9", "sequential_tool:start", f"Starting tool {tool_name}", {"tool_name": tool_name, "tool_index": tool_index})
+                        # #endregion
+                        
                         # Stream tool start with args
                         if on_tool_start:
                             await on_tool_start(tool_id, tool_name, tool_args)
@@ -2262,7 +2708,16 @@ class ReActAgent:
                             )
                         
                         # P0: Use category-based timeout
-                        timeout = BROWSER_TIMEOUT if tool_name in browser_tool_names else DEFAULT_TIMEOUT
+                        if tool_name == "ufo_desktop_task":
+                            timeout = UFO_TIMEOUT  # UFO needs more time for screen analysis + LLM reasoning
+                        elif tool_name in browser_tool_names:
+                            timeout = BROWSER_TIMEOUT
+                        else:
+                            timeout = DEFAULT_TIMEOUT
+                        
+                        # #region agent log H9
+                        _agent_debug_log("H9", "sequential_tool:pre_execute", f"About to execute {tool_name}", {"timeout": timeout})
+                        # #endregion
                         
                         # Execute tool with smart retry + timeout
                         try:
@@ -2278,6 +2733,23 @@ class ReActAgent:
                                 error=f"Tool '{tool_name}' timed out after {timeout}s"
                             )
                             logger.warning(f"[Agent] Tool {tool_name} timed out after {timeout}s")
+                        
+                        # #region agent log
+                        _agent_debug_log(
+                            hypothesis_id="H3",
+                            location="react_agent:tool_result",
+                            message="Tool execution result",
+                            data={
+                                "tool": tool_name,
+                                "success": result.success,
+                                "error": result.error if not result.success else None,
+                                "args_keys": list(tool_args.keys()),
+                            },
+                        )
+                        # #endregion
+                        # #region agent log
+                        import json as _json2; open(r'c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log','a',encoding='utf-8').write(_json2.dumps({"hypothesisId":"ABC","location":"react_agent.py:tool_execution","message":"Tool executed","data":{"tool":tool_name,"success":result.success,"error":str(result.error) if result.error else None,"output_preview":str(result.output)[:200] if result.output else None,"args":str(tool_args)[:200]},"timestamp":__import__('time').time()})+'\n')
+                        # #endregion
                         
                         # Stream tool result
                         if on_tool_end:
@@ -2337,9 +2809,11 @@ class ReActAgent:
                             })
                         
                         # Format result for Claude
-                        # Special handling for browser_screenshot: convert to multimodal format
+                        # Special handling for screenshots: avoid dumping base64 as plain text
                         if result.success and tool_name == "browser_screenshot":
                             tool_result = self._format_screenshot_result(tool_id, result.output)
+                        elif result.success and tool_name in {"window_screenshot", "desktop_screenshot"}:
+                            tool_result = self._format_window_screenshot_result(tool_id, result.output, kind=tool_name)
                         elif result.success:
                             tool_result = {
                                 "type": "tool_result",
@@ -2365,15 +2839,69 @@ class ReActAgent:
                     "content": tool_results,
                 })
                 
+                # #region agent log D2
+                _agent_debug_log("D2", "react_agent:stop_reason_check", f"Checking stop_reason", {"stop_reason": response.stop_reason, "has_tool_use": has_tool_use, "iteration": iteration, "text_len": len(text_content)})
+                # #endregion
+                
                 # Check stop reason
                 if response.stop_reason == "end_turn":
+                    # #region agent log D3
+                    _agent_debug_log("D3", "react_agent:end_turn_break", "BREAKING due to end_turn", {"stop_reason": response.stop_reason, "has_tool_use": has_tool_use, "iteration": iteration})
+                    # #endregion
                     final_response = text_content
                     break
                     
             except Exception as e:
+                error_type = type(e).__name__
+                error_msg = str(e)
+                
+                # #region agent log D5
+                _agent_debug_log("D5", "react_agent:exception", f"EXCEPTION in iteration {iteration}", {"error_type": error_type, "error_msg": error_msg[:500], "iteration": iteration})
+                # #endregion
+                
+                # Log the error with full details
+                logger.error(f"[Agent] {error_type} at iteration {iteration}: {error_msg}")
+                
+                # Check if it's an Anthropic API error (400, 401, 429, etc.)
+                is_api_error = "BadRequest" in error_type or "APIError" in error_type or "APIStatusError" in error_type
+                
+                # Build user-friendly error message
+                if "400" in error_msg or "BadRequest" in error_type:
+                    friendly_error = "API请求格式错误，可能是消息内容过长或包含不支持的格式。请简化请求后重试。"
+                elif "401" in error_msg or "Unauthorized" in error_type:
+                    friendly_error = "API密钥无效或已过期，请检查配置。"
+                elif "429" in error_msg or "RateLimit" in error_type:
+                    friendly_error = "API请求过于频繁，请稍后重试。"
+                elif "500" in error_msg or "502" in error_msg or "503" in error_msg:
+                    friendly_error = "API服务暂时不可用，请稍后重试。"
+                else:
+                    friendly_error = f"执行出错: {error_msg[:200]}"
+                
                 # Visualization: task error
                 if VISUALIZATION_AVAILABLE and self.status_server:
                     await visualize_task_error(self.status_server)
+                
+                # Broadcast error to frontend via WebSocket
+                if self.status_server:
+                    await self.status_server.broadcast({
+                        "type": "error",
+                        "message_id": message_id,
+                        "error": friendly_error,
+                        "error_type": error_type,
+                    })
+                
+                # #region agent log
+                _agent_debug_log(
+                    hypothesis_id="H2",
+                    location="react_agent:exception",
+                    message="Agent exception caught",
+                    data={
+                        "error_type": error_type,
+                        "friendly_error": friendly_error,
+                        "task_snippet": task[:80],
+                    },
+                )
+                # #endregion
                 
                 # Record Prometheus metrics for error
                 if metrics:
@@ -2385,12 +2913,21 @@ class ReActAgent:
                         duration_seconds=elapsed,
                         iterations=iteration,
                     )
-                    metrics.record_error(type(e).__name__)
-                
+                    metrics.record_error(error_type)
+
+                # Event system: Publish task failed event
+                if EVENT_SYSTEM_AVAILABLE and self._current_task_id:
+                    await self._publish_event(task_failed_event(self._current_task_id, error_msg))
+                    if self._state_manager:
+                        try:
+                            await self._state_manager.transition(self._current_task_id, TaskStatus.FAILED, reason=error_msg)
+                        except Exception as e:
+                            logger.debug(f"[Agent] Failed to update task status: {e}")
+
                 return AgentResult(
                     success=False,
-                    response="",
-                    error=f"Agent error: {str(e)}",
+                    response=friendly_error,
+                    error=f"Agent error: {error_msg}",
                     iterations=iteration,
                     tool_calls=tool_calls_made,
                 )
@@ -2405,29 +2942,37 @@ class ReActAgent:
                 tool_calls=len(tool_calls_made),
                 iterations=iteration,
             )
-        
-        # B2.2: Save execution history to knowledge store
+
+        # IMPORTANT: Send task_complete IMMEDIATELY so frontend unlocks input
+        # All post-processing happens after this in background tasks
+        if VISUALIZATION_AVAILABLE and self.status_server:
+            await visualize_task_complete(self.status_server)
+
+        # B2.2: Save execution history to knowledge store (NON-BLOCKING)
+        # Wrap in create_task to avoid blocking the response
         if self.knowledge_store and KNOWLEDGE_AVAILABLE:
-            try:
-                trajectory = Trajectory(
-                    session_id=session_id,
-                    task=task,
-                    tool_calls=tool_calls_made,
-                    success=True,
-                    duration_ms=total_time_ms,
-                    iterations=iteration,
-                )
-                self.knowledge_store.save_trajectory(trajectory)
-                
-                # B2.4: Update user preferences from execution
-                self.knowledge_store.update_profile_from_execution(
-                    profile_id=session_id,
-                    task=task,
-                    tool_calls=tool_calls_made,
-                )
-            except Exception as e:
-                # Don't fail if saving fails
-                pass
+            async def _save_knowledge_async():
+                try:
+                    trajectory = Trajectory(
+                        session_id=session_id,
+                        task=task,
+                        tool_calls=tool_calls_made,
+                        success=True,
+                        duration_ms=total_time_ms,
+                        iterations=iteration,
+                    )
+                    self.knowledge_store.save_trajectory(trajectory)
+
+                    # B2.4: Update user preferences from execution
+                    self.knowledge_store.update_profile_from_execution(
+                        profile_id=session_id,
+                        task=task,
+                        tool_calls=tool_calls_made,
+                    )
+                except Exception as e:
+                    # Don't fail if saving fails
+                    logger.debug(f"Knowledge store save failed: {e}")
+            asyncio.create_task(_save_knowledge_async())
         
         # Long-term memory: Extract memories from this conversation (background)
         if self.memory_processor and MEMORY_AVAILABLE:
@@ -2449,10 +2994,8 @@ class ReActAgent:
                 # Don't fail if memory extraction fails
                 logger.warning(f"Failed to schedule memory extraction: {e}")
         
-        # Visualization: task complete
-        if VISUALIZATION_AVAILABLE and self.status_server:
-            await visualize_task_complete(self.status_server)
-        
+        # NOTE: visualize_task_complete already called earlier for faster UX
+
         # Record Prometheus metrics
         if metrics:
             elapsed = time.time() - task_start_time
@@ -2463,7 +3006,50 @@ class ReActAgent:
                 duration_seconds=elapsed,
                 iterations=iteration,
             )
-        
+
+        # Event system: Publish task completed event
+        if EVENT_SYSTEM_AVAILABLE and self._current_task_id:
+            await self._publish_event(task_completed_event(self._current_task_id, final_response or ""))
+            if self._state_manager:
+                try:
+                    await self._state_manager.transition(self._current_task_id, TaskStatus.COMPLETED)
+                except Exception as e:
+                    logger.debug(f"[Agent] Failed to update task status: {e}")
+
+        # ===========================================
+        # Plan Cache: Save successful execution for future reuse
+        # ===========================================
+        if self._plan_cache and PLAN_CACHE_AVAILABLE and tool_calls_made:
+            try:
+                execution_time = time.time() - task_start_time
+                # Convert tool calls to plan steps format
+                plan_steps = [
+                    {"tool": tc.get("name", "unknown"), "args": tc.get("args", {})}
+                    for tc in tool_calls_made
+                ]
+                cached = self._plan_cache.cache_plan(
+                    task=task,
+                    plan_steps=plan_steps,
+                    execution_time=execution_time,
+                    success=True,
+                )
+                if cached:
+                    logger.info(f"[PlanCache] Saved successful plan (time={execution_time:.1f}s, steps={len(plan_steps)})")
+
+                    # Broadcast learning to frontend
+                    if self.status_server:
+                        stats = self._plan_cache.get_stats()
+                        await self.status_server.broadcast({
+                            "type": "plan_cached",
+                            "message_id": message_id,
+                            "execution_time": execution_time,
+                            "steps_count": len(plan_steps),
+                            "total_patterns": stats["total_plans"],
+                            "message": f"Learned new pattern! ({stats['total_plans']} patterns cached)",
+                        })
+            except Exception as e:
+                logger.warning(f"[PlanCache] Error caching plan: {e}")
+
         # Return result
         return AgentResult(
             success=True,
@@ -2477,6 +3063,11 @@ class ReActAgent:
         task: str,
         session_id: str = "default",
         context: Optional[str] = None,
+        # 流式回调参数（传递给内部的 run() 调用）
+        on_text_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_thinking_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_tool_start: Optional[Callable[[str, str, dict], Awaitable[None]]] = None,
+        on_tool_end: Optional[Callable[[str, bool, str], Awaitable[None]]] = None,
     ) -> AgentResult:
         """
         Execute a task with optional planning for complex tasks.
@@ -2491,24 +3082,52 @@ class ReActAgent:
             task: User's task/question
             session_id: Session ID for message grouping
             context: Optional additional context
+            on_text_delta: Callback for streaming text output
+            on_thinking_delta: Callback for streaming reasoning/thinking
+            on_tool_start: Callback when tool execution starts
+            on_tool_end: Callback when tool execution ends
             
         Returns:
             AgentResult with success status and response
         """
+        # #region agent log
+        import json as _json; open(r'c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log','a',encoding='utf-8').write(_json.dumps({"hypothesisId":"D","location":"react_agent.py:run_with_planning:entry","message":"run_with_planning called","data":{"task":task[:100],"planner_available":bool(self.planner and PLANNER_AVAILABLE)},"timestamp":__import__('time').time()})+'\n')
+        # #endregion
         if not self.planner or not PLANNER_AVAILABLE:
+            # #region agent log
+            open(r'c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log','a',encoding='utf-8').write(_json.dumps({"hypothesisId":"D","location":"react_agent.py:run_with_planning:no_planner","message":"No planner, fallback to run()","data":{},"timestamp":__import__('time').time()})+'\n')
+            # #endregion
             # Fallback to regular execution
-            return await self.run(task, session_id, context)
+            return await self.run(
+                task, session_id, context,
+                on_text_delta=on_text_delta,
+                on_thinking_delta=on_thinking_delta,
+                on_tool_start=on_tool_start,
+                on_tool_end=on_tool_end,
+            )
         
         # Generate plan
         try:
             plan = await self.planner.plan(task)
+            # #region agent log
+            open(r'c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log','a',encoding='utf-8').write(_json.dumps({"hypothesisId":"D","location":"react_agent.py:run_with_planning:plan_generated","message":"Plan generated","data":{"complexity":plan.complexity.value,"steps":len(plan),"plan_steps":plan.steps[:3] if hasattr(plan,'steps') else []},"timestamp":__import__('time').time()})+'\n')
+            # #endregion
         except Exception as e:
             raise
         
         # Simple task: execute directly
         if plan.complexity.value == "simple" or len(plan) <= 1:
+            # #region agent log
+            open(r'c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log','a',encoding='utf-8').write(_json.dumps({"hypothesisId":"D","location":"react_agent.py:run_with_planning:simple_task","message":"Simple task, direct execution","data":{"complexity":plan.complexity.value,"steps":len(plan)},"timestamp":__import__('time').time()})+'\n')
+            # #endregion
             logger.debug(f"Simple task, executing directly")
-            return await self.run(task, session_id, context)
+            return await self.run(
+                task, session_id, context,
+                on_text_delta=on_text_delta,
+                on_thinking_delta=on_thinking_delta,
+                on_tool_start=on_tool_start,
+                on_tool_end=on_tool_end,
+            )
         
         # Complex task: execute step by step
         logger.info(f"Complex task with {len(plan)} steps, executing with planning")
@@ -2541,11 +3160,15 @@ class ReActAgent:
             
             logger.info(f"Executing step {step_num}: {current_step[:50]}...")
             
-            # Execute step using regular run()
+            # Execute step using regular run() with streaming callbacks
             step_result = await self.run(
                 task=current_step,
                 session_id=session_id,
-                context=f"This is step {step_num} of a larger task: {task[:100]}"
+                context=f"This is step {step_num} of a larger task: {task[:100]}",
+                on_text_delta=on_text_delta,
+                on_thinking_delta=on_thinking_delta,
+                on_tool_start=on_tool_start,
+                on_tool_end=on_tool_end,
             )
             
             total_iterations += step_result.iterations

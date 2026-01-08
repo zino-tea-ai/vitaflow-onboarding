@@ -38,8 +38,10 @@ export function useElectron() {
   useEffect(() => {
     const api = window.electronAPI
     if (api?.isElectron) {
+      /* eslint-disable react-hooks/set-state-in-effect -- intentional: one-time initialization */
       setIsElectron(true)
       setPlatform(api.platform || 'unknown')
+      /* eslint-enable react-hooks/set-state-in-effect */
     }
   }, [])
 

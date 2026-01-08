@@ -181,7 +181,8 @@ export function CursorChatArea({
                     key={message.id}
                     id={message.id}
                     role={message.role as 'user' | 'assistant'}
-                    content={message.content}
+                    content={(message as unknown as { content?: string }).content || ''}
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- UIMessage parts to MessagePart compatibility
                     parts={message.parts as any}
                     isStreaming={isLoading && index === messages.length - 1 && message.role === 'assistant'}
                   />

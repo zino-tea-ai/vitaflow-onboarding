@@ -21,6 +21,48 @@ from typing import Optional
 
 logger = logging.getLogger("nogicos.tools.windows_compat")
 
+# ============================================================================
+# DPI 感知设置 - 必须在任何 pyautogui/UIA 操作之前设置
+# 否则高 DPI 屏幕 (如 1.75x 缩放) 上坐标会错误
+# ============================================================================
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+    logger.info("DPI awareness set to PROCESS_PER_MONITOR_DPI_AWARE")
+except Exception as e:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()  # 旧版 Windows 回退
+        logger.info("DPI awareness set via SetProcessDPIAware (legacy)")
+    except Exception:
+        logger.warning(f"Failed to set DPI awareness: {e}")
+
+# #region agent log helper (debug mode)
+import json as _json
+import os as _os
+import time as _time
+from pathlib import Path as _Path
+_DEBUG_LOG_PATH = _Path(r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log")
+
+def _win_compat_dbg_log(hypothesis_id: str, location: str, message: str, data: dict):
+    """Write a single NDJSON debug line to debug.log (append-only)."""
+    try:
+        payload = {
+            "sessionId": "debug-session",
+            "runId": "pre-fix-1",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(_time.time() * 1000),
+        }
+        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+            f.flush()
+            _os.fsync(f.fileno())
+    except Exception:
+        pass
+# #endregion
+
 
 class InputMethod(Enum):
     """输入方式枚举"""
@@ -85,6 +127,26 @@ class WindowInputController:
         self.user32.SetForegroundWindow.argtypes = [wintypes.HWND]
         self.user32.SetForegroundWindow.restype = wintypes.BOOL
         
+        # AllowSetForegroundWindow - allows background process to set foreground window
+        self.user32.AllowSetForegroundWindow.argtypes = [wintypes.DWORD]
+        self.user32.AllowSetForegroundWindow.restype = wintypes.BOOL
+        
+        # AttachThreadInput - attach our thread to another thread's input queue
+        self.user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+        self.user32.AttachThreadInput.restype = wintypes.BOOL
+        
+        # GetForegroundWindow - get the current foreground window
+        self.user32.GetForegroundWindow.argtypes = []
+        self.user32.GetForegroundWindow.restype = wintypes.HWND
+        
+        # GetWindowThreadProcessId - get thread ID of window
+        self.user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        self.user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        
+        # BringWindowToTop - bring window to top of Z-order
+        self.user32.BringWindowToTop.argtypes = [wintypes.HWND]
+        self.user32.BringWindowToTop.restype = wintypes.BOOL
+        
         # ClientToScreen
         self.user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
         self.user32.ClientToScreen.restype = wintypes.BOOL
@@ -92,6 +154,16 @@ class WindowInputController:
         # IsWindow
         self.user32.IsWindow.argtypes = [wintypes.HWND]
         self.user32.IsWindow.restype = wintypes.BOOL
+
+        # SetCursorPos / mouse_event for pointer control
+        self.user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+        self.user32.SetCursorPos.restype = wintypes.BOOL
+
+        # Note: dwExtraInfo uses ULONG_PTR in WinAPI; use DWORD for compatibility
+        self.user32.mouse_event.argtypes = [
+            wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD
+        ]
+        self.user32.mouse_event.restype = None
         
         # Clipboard APIs
         self.user32.OpenClipboard.argtypes = [wintypes.HWND]
@@ -118,7 +190,10 @@ class WindowInputController:
     
     async def click(self, hwnd: int, x: int, y: int, button: str = "left") -> InputResult:
         """
-        点击操作 - 自动 Fallback
+        点击操作 - 直接使用 pyautogui (最可靠)
+        
+        对于现代应用 (WhatsApp/Electron 等)，PostMessage 无效
+        直接使用 pyautogui 全局点击
         
         Args:
             hwnd: 窗口句柄
@@ -126,6 +201,8 @@ class WindowInputController:
             y: 客户区 Y 坐标
             button: "left", "right", "middle"
         """
+        import pyautogui
+        
         # 验证窗口有效性
         if not self.user32.IsWindow(hwnd):
             return InputResult(
@@ -134,34 +211,43 @@ class WindowInputController:
                 error="Invalid window handle"
             )
         
-        # 1. 尝试 PostMessage (非侵入式)
-        success = await self._try_post_message_click(hwnd, x, y, button)
-        if success:
-            return InputResult(success=True, method_used=InputMethod.POST_MESSAGE)
-        
-        # 2. Fallback: SetForegroundWindow + SendInput
-        success = await self._fallback_send_input_click(hwnd, x, y, button)
-        if success:
+        try:
+            # 获取窗口屏幕位置
+            rect = wintypes.RECT()
+            if not self.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return InputResult(
+                    success=False,
+                    method_used=InputMethod.SEND_INPUT,
+                    error="Failed to get window rect"
+                )
+            
+            # 转换客户区坐标为屏幕坐标
+            screen_x = rect.left + x
+            screen_y = rect.top + y
+            
+            # #region agent log J1
+            _win_compat_dbg_log("J1", "click:pyautogui", "Using pyautogui click", {
+                "hwnd": hwnd, "client_x": x, "client_y": y, 
+                "screen_x": screen_x, "screen_y": screen_y,
+                "rect": {"left": rect.left, "top": rect.top, "right": rect.right, "bottom": rect.bottom}
+            })
+            # #endregion
+            
+            # 使用 pyautogui 点击
+            pyautogui.click(screen_x, screen_y, button=button)
+            await asyncio.sleep(0.1)
+            
+            return InputResult(success=True, method_used=InputMethod.SEND_INPUT)
+            
+        except Exception as e:
+            # #region agent log J1
+            _win_compat_dbg_log("J1", "click:error", "pyautogui click failed", {"error": str(e)})
+            # #endregion
             return InputResult(
-                success=True, 
-                method_used=InputMethod.SEND_INPUT, 
-                fallback_count=1
+                success=False,
+                method_used=InputMethod.SEND_INPUT,
+                error=f"pyautogui click failed: {str(e)}"
             )
-        
-        # 3. Fallback: UI Automation (最后手段)
-        success = await self._fallback_uia_click(hwnd, x, y, button)
-        if success:
-            return InputResult(
-                success=True, 
-                method_used=InputMethod.UI_AUTOMATION, 
-                fallback_count=2
-            )
-        
-        return InputResult(
-            success=False, 
-            method_used=InputMethod.POST_MESSAGE,
-            error="All input methods failed"
-        )
     
     async def _try_post_message_click(
         self, hwnd: int, x: int, y: int, button: str = "left"
@@ -204,15 +290,31 @@ class WindowInputController:
     ) -> bool:
         """Fallback: 使用 SendInput (需要窗口焦点)"""
         try:
+            # 0. 验证窗口仍然有效 (防止 TOCTOU)
+            if not self.user32.IsWindow(hwnd):
+                logger.debug("Window closed before SendInput fallback")
+                return False
+
             # 1. 获取窗口焦点 (会打扰用户!)
             self.user32.SetForegroundWindow(hwnd)
             await asyncio.sleep(0.1)  # 等待窗口激活
-            
+
+            # 再次验证
+            if not self.user32.IsWindow(hwnd):
+                return False
+
             # 2. 转换客户区坐标到屏幕坐标
             point = wintypes.POINT(x, y)
-            self.user32.ClientToScreen(hwnd, ctypes.byref(point))
-            
-            # 3. 使用 pyautogui
+            if not self.user32.ClientToScreen(hwnd, ctypes.byref(point)):
+                logger.debug("ClientToScreen failed")
+                return False
+
+            # 3. 验证坐标合理性
+            if point.x < -10000 or point.x > 50000 or point.y < -10000 or point.y > 50000:
+                logger.debug(f"Invalid screen coordinates: ({point.x}, {point.y})")
+                return False
+
+            # 4. 使用 pyautogui
             try:
                 import pyautogui
                 pyautogui.click(point.x, point.y, button=button)
@@ -221,9 +323,13 @@ class WindowInputController:
             except ImportError:
                 logger.warning("pyautogui not available for SendInput fallback")
                 return False
-            
+            except Exception as e:
+                # CRITICAL: Log the actual error instead of hiding it
+                logger.warning(f"pyautogui.click failed at ({point.x}, {point.y}): {e}")
+                return False
+
         except Exception as e:
-            logger.debug(f"SendInput fallback exception: {e}")
+            logger.warning(f"SendInput fallback exception: {e}")
             return False
     
     async def _fallback_uia_click(
@@ -231,24 +337,47 @@ class WindowInputController:
     ) -> bool:
         """
         Fallback: 使用 pywinauto (如果可用)
-        
+
         pywinauto 对现代应用有更好的支持
         """
         try:
+            # 0. 验证窗口仍然有效 (防止 pywinauto 在无效 HWND 上崩溃)
+            if not self.user32.IsWindow(hwnd):
+                logger.debug("Window closed before pywinauto fallback")
+                return False
+
             # 尝试使用 pywinauto
             from pywinauto import Desktop
             from pywinauto.controls.hwndwrapper import HwndWrapper
-            
-            # 包装窗口
+
+            # 包装窗口 (在 try 块内，捕获任何 pywinauto 异常)
             wrapper = HwndWrapper(hwnd)
-            
+
+            # 再次验证窗口有效
+            if not self.user32.IsWindow(hwnd):
+                return False
+
             # 获取窗口矩形
             rect = wrapper.rectangle()
-            
-            # 计算屏幕坐标
-            screen_x = rect.left + x
-            screen_y = rect.top + y
-            
+
+            # 验证矩形合理性
+            if rect.width() <= 0 or rect.height() <= 0:
+                logger.debug(f"Invalid window rect: {rect}")
+                return False
+
+            # 验证坐标在窗口范围内 (with tolerance for edge cases)
+            tolerance = 10  # Allow 10px outside window bounds
+            if x < -tolerance or x > rect.width() + tolerance or y < -tolerance or y > rect.height() + tolerance:
+                logger.debug(f"Coordinates ({x}, {y}) far outside window bounds (w={rect.width()}, h={rect.height()})")
+                return False
+
+            # Clamp coordinates to valid range (handle edge clicks gracefully)
+            clamped_x = max(1, min(x, rect.width() - 1))
+            clamped_y = max(1, min(y, rect.height() - 1))
+            if clamped_x != x or clamped_y != y:
+                logger.debug(f"Coordinates clamped: ({x}, {y}) -> ({clamped_x}, {clamped_y})")
+                x, y = clamped_x, clamped_y
+
             # 使用 pywinauto 点击
             if button == "left":
                 wrapper.click_input(coords=(x, y))
@@ -256,10 +385,10 @@ class WindowInputController:
                 wrapper.right_click_input(coords=(x, y))
             else:
                 wrapper.click_input(coords=(x, y), button='middle')
-            
+
             logger.debug(f"pywinauto click success at ({x}, {y})")
             return True
-            
+
         except ImportError:
             logger.debug("pywinauto not available for UIA fallback")
             return False
@@ -285,28 +414,148 @@ class WindowInputController:
     
     async def type_text(self, hwnd: int, text: str) -> InputResult:
         """
-        输入文字 - 智能选择输入方式
+        输入文字 - 使用 pyautogui (最可靠)
         
-        - ASCII 字符: 使用 PostMessage WM_CHAR (更快)
-        - 非 ASCII 字符 (中文等): 使用剪贴板 + Ctrl+V (更可靠)
+        对于现代应用 (Electron/WhatsApp 等)，PostMessage 无效
+        直接使用 pyautogui 全局键盘模拟
         """
+        return await self._type_via_pyautogui(hwnd, text)
+    
+    async def _type_via_pyautogui(self, hwnd: int, text: str) -> InputResult:
+        """
+        最简单直接的方案：pywinauto 直接操作控件 (不依赖任何鼠标坐标)
+        """
+        import pyperclip
+        
         try:
-            # 检查是否包含非 ASCII 字符
-            has_non_ascii = any(ord(c) > 127 for c in text)
+            from pywinauto import Desktop
+            from pywinauto.keyboard import send_keys
             
-            if has_non_ascii:
-                # 使用剪贴板方式输入中文
-                return await self._type_via_clipboard(hwnd, text)
-            else:
-                # ASCII 字符使用 WM_CHAR
-                return await self._type_via_wm_char(hwnd, text)
+            _win_compat_dbg_log("SIMPLE", "start", "Direct control method", {"hwnd": hwnd})
+            
+            # 1. 激活窗口
+            self.user32.SetForegroundWindow(hwnd)
+            await asyncio.sleep(0.2)
+            
+            # 2. 用 pywinauto 找到窗口和输入控件
+            desktop = Desktop(backend='uia')
+            target_window = None
+            for win in desktop.windows():
+                if win.handle == hwnd:
+                    target_window = win
+                    break
+            
+            if target_window:
+                # 找 Edit 控件
+                edits = list(target_window.descendants(control_type='Edit'))
+                _win_compat_dbg_log("SIMPLE", "edits", f"Found {len(edits)} Edit controls", {})
+                
+                if edits:
+                    # 用最底部的 Edit
+                    bottom_edit = max(edits, key=lambda e: e.rectangle().top)
+                    rect = bottom_edit.rectangle()
+                    # #region agent log
+                    _win_compat_dbg_log("F2", "edit_info", f"Selected Edit control", {"left": rect.left, "top": rect.top, "right": rect.right, "bottom": rect.bottom, "class_name": getattr(bottom_edit, 'class_name', lambda: 'unknown')()})
+                    # #endregion
+                    
+                    # 直接设置焦点到控件（不需要点击）
+                    try:
+                        bottom_edit.set_focus()
+                        await asyncio.sleep(0.1)
+                        # #region agent log
+                        _win_compat_dbg_log("F2", "focus", "Focus set successfully", {})
+                        # #endregion
+                    except Exception as focus_err:
+                        # #region agent log
+                        _win_compat_dbg_log("F2", "focus_fail", str(focus_err), {})
+                        # #endregion
+                    
+                    # ====== 修复：跳过 set_edit_text，直接使用剪贴板（对 Electron 应用更可靠）======
+                    # set_edit_text 对 Electron/Chromium 应用（如 WhatsApp）通常无效
+                    # #region agent log
+                    _win_compat_dbg_log("F2", "strategy", "Using clipboard paste (more reliable for Electron apps)", {})
+                    # #endregion
+                    
+                    # 剪贴板粘贴（对所有应用都可靠）
+                    try:
+                        original = pyperclip.paste()
+                    except:
+                        original = ""
+                    
+                    pyperclip.copy(text)
+                    # #region agent log
+                    _win_compat_dbg_log("F2", "clipboard", f"Copied to clipboard", {"text_len": len(text), "text_preview": text[:50] if len(text) > 50 else text})
+                    # #endregion
+                    await asyncio.sleep(0.05)
+                    
+                    # 确保目标窗口有焦点
+                    try:
+                        target_window.set_focus()
+                        await asyncio.sleep(0.3)  # 增加延迟，让窗口真正激活
+                        # #region agent log
+                        _win_compat_dbg_log("F2", "window_focus", "Window focus set before paste", {})
+                        # #endregion
+                    except Exception as wf_err:
+                        # #region agent log
+                        _win_compat_dbg_log("F2", "window_focus_fail", str(wf_err), {})
+                        # #endregion
+                    
+                    # 点击输入框确保它真正获得焦点（对 Electron 应用关键）
+                    try:
+                        import pyautogui
+                        edit_rect = bottom_edit.rectangle()
+                        click_x = (edit_rect.left + edit_rect.right) // 2
+                        click_y = (edit_rect.top + edit_rect.bottom) // 2
+                        pyautogui.click(click_x, click_y)
+                        await asyncio.sleep(0.2)
+                        # #region agent log
+                        _win_compat_dbg_log("F3", "click_edit", "Clicked edit control to ensure focus", {"x": click_x, "y": click_y})
+                        # #endregion
+                    except Exception as click_err:
+                        # #region agent log
+                        _win_compat_dbg_log("F3", "click_fail", str(click_err), {})
+                        # #endregion
+                    
+                    # 使用 pyautogui.hotkey 代替 send_keys（更可靠）
+                    import pyautogui
+                    pyautogui.hotkey('ctrl', 'v')
+                    # #region agent log
+                    _win_compat_dbg_log("F3", "paste_sent", "Ctrl+V sent via pyautogui.hotkey", {})
+                    # #endregion
+                    await asyncio.sleep(0.2)
+                    
+                    try:
+                        pyperclip.copy(original)
+                    except:
+                        pass
+                    
+                    # #region agent log
+                    _win_compat_dbg_log("F2", "done", "Clipboard paste completed", {"text": text})
+                    return InputResult(success=True, method_used=InputMethod.UI_AUTOMATION)
+            
+            # 回退：直接发送键盘（假设窗口已有焦点）
+            _win_compat_dbg_log("SIMPLE", "fallback", "No Edit found, using direct keyboard", {})
+            
+            try:
+                original = pyperclip.paste()
+            except:
+                original = ""
+            
+            pyperclip.copy(text)
+            await asyncio.sleep(0.05)
+            send_keys('^v')
+            await asyncio.sleep(0.15)
+            
+            try:
+                pyperclip.copy(original)
+            except:
+                pass
+            
+            return InputResult(success=True, method_used=InputMethod.SEND_INPUT)
             
         except Exception as e:
-            return InputResult(
-                success=False,
-                method_used=InputMethod.POST_MESSAGE,
-                error=str(e)
-            )
+            _win_compat_dbg_log("SIMPLE", "error", str(e), {})
+            return InputResult(success=False, method_used=InputMethod.SEND_INPUT, error=str(e))
     
     async def _type_via_wm_char(self, hwnd: int, text: str) -> InputResult:
         """使用 WM_CHAR 输入 ASCII 文字"""
@@ -370,8 +619,49 @@ class WindowInputController:
         
         try:
             # 1. 激活目标窗口 (SendInput 需要窗口有焦点)
-            self.user32.SetForegroundWindow(hwnd)
-            await asyncio.sleep(0.05)  # 等待窗口激活
+            # #region agent log H1
+            _win_compat_dbg_log("H1", "send_ctrl_v:focus", "Setting foreground window", {"hwnd": hwnd})
+            # #endregion
+            
+            # Use AttachThreadInput trick to bypass Windows focus stealing prevention
+            # This works by temporarily attaching our thread to the foreground window's thread
+            current_thread = ctypes.windll.kernel32.GetCurrentThreadId()
+            foreground_hwnd = self.user32.GetForegroundWindow()
+            foreground_thread = self.user32.GetWindowThreadProcessId(foreground_hwnd, None)
+            target_thread = self.user32.GetWindowThreadProcessId(hwnd, None)
+            
+            attached = False
+            try:
+                # Attach to foreground thread to get permission to set foreground window
+                if current_thread != foreground_thread:
+                    attached = bool(self.user32.AttachThreadInput(current_thread, foreground_thread, True))
+                
+                # Also attach to target thread
+                if current_thread != target_thread:
+                    self.user32.AttachThreadInput(current_thread, target_thread, True)
+                
+                # Now we should be able to set foreground window
+                self.user32.AllowSetForegroundWindow(-1)  # ASFW_ANY = -1
+                result = self.user32.SetForegroundWindow(hwnd)
+                
+                # Also try BringWindowToTop for good measure
+                self.user32.BringWindowToTop(hwnd)
+                
+            finally:
+                # Detach threads
+                if attached and current_thread != foreground_thread:
+                    self.user32.AttachThreadInput(current_thread, foreground_thread, False)
+                if current_thread != target_thread:
+                    self.user32.AttachThreadInput(current_thread, target_thread, False)
+            
+            # #region agent log H1
+            _win_compat_dbg_log("H1", "send_ctrl_v:focus_result", "SetForegroundWindow result", {"success": bool(result), "hwnd": hwnd, "attached": attached})
+            # #endregion
+            
+            if not result:
+                logger.warning(f"SetForegroundWindow failed for hwnd {hwnd}")
+            
+            await asyncio.sleep(0.15)  # 等待窗口激活 (增加到 150ms)
             
             # 2. 构造输入序列: Ctrl↓ V↓ V↑ Ctrl↑
             inputs = (INPUT * 4)()
@@ -423,10 +713,31 @@ class WindowInputController:
                 logger.error(f"PostMessage Ctrl+V fallback also failed: {e2}")
                 return False
     
+    async def _open_clipboard_with_retry(self, hwnd: int, max_retries: int = 5, delay: float = 0.1) -> bool:
+        """
+        打开剪贴板，带重试机制防止死锁
+
+        Args:
+            hwnd: 窗口句柄 (可以为 0)
+            max_retries: 最大重试次数
+            delay: 每次重试间隔 (秒)
+
+        Returns:
+            是否成功打开
+        """
+        for attempt in range(max_retries):
+            if self.user32.OpenClipboard(hwnd):
+                return True
+            if hwnd != 0 and self.user32.OpenClipboard(0):
+                return True
+            if attempt < max_retries - 1:
+                await asyncio.sleep(delay)
+        return False
+
     async def _type_via_clipboard(self, hwnd: int, text: str) -> InputResult:
         """
         使用剪贴板 + Ctrl+V 输入文字 (支持中文)
-        
+
         流程:
         1. 保存原剪贴板内容
         2. 设置新文字到剪贴板
@@ -435,23 +746,30 @@ class WindowInputController:
         """
         import ctypes
         from ctypes import wintypes
-        
+
         # 剪贴板 API
         CF_UNICODETEXT = 13
         GMEM_MOVEABLE = 0x0002
-        
+
         kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
         
+        # CRITICAL: Must set correct types for 64-bit compatibility
+        # Without this, handles (pointers) overflow on 64-bit systems
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype = wintypes.HANDLE
+        kernel32.GlobalLock.argtypes = [wintypes.HANDLE]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [wintypes.HANDLE]
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
+
         try:
-            # 1. 打开剪贴板
-            if not self.user32.OpenClipboard(hwnd):
-                # 如果无法用 hwnd 打开，尝试用 0
-                if not self.user32.OpenClipboard(0):
-                    return InputResult(
-                        success=False,
-                        method_used=InputMethod.POST_MESSAGE,
-                        error="Failed to open clipboard"
-                    )
+            # 1. 打开剪贴板 (带重试)
+            if not await self._open_clipboard_with_retry(hwnd):
+                return InputResult(
+                    success=False,
+                    method_used=InputMethod.POST_MESSAGE,
+                    error="Failed to open clipboard after retries"
+                )
             
             try:
                 # 2. 保存原剪贴板内容

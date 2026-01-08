@@ -324,7 +324,8 @@ interface StepCardProps {
 
 function StepCard({
   step,
-  index,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  index: _index,
   isExpanded,
   isEditing,
   onToggleExpand,

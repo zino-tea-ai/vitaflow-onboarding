@@ -220,27 +220,41 @@ class BrowserSession:
             return False
     
     async def stop(self) -> None:
-        """Stop the browser session and cleanup resources"""
+        """Stop the browser session and cleanup resources with timeout protection"""
+
+        async def _close_with_timeout(resource, name: str, timeout: float = 5.0):
+            """Helper to close a resource with timeout"""
+            if resource is None:
+                return
+            try:
+                await asyncio.wait_for(resource.close(), timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning(f"[BrowserSession] Timeout closing {name}")
+            except Exception as e:
+                logger.debug(f"[BrowserSession] Error closing {name}: {e}")
+
         try:
-            if self._page:
-                await self._page.close()
-                self._page = None
-            
-            if self._context:
-                await self._context.close()
-                self._context = None
-            
-            if self._browser:
-                await self._browser.close()
-                self._browser = None
-            
+            await _close_with_timeout(self._page, "page")
+            self._page = None
+
+            await _close_with_timeout(self._context, "context")
+            self._context = None
+
+            await _close_with_timeout(self._browser, "browser")
+            self._browser = None
+
             if self._playwright:
-                await self._playwright.stop()
+                try:
+                    await asyncio.wait_for(self._playwright.stop(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("[BrowserSession] Timeout stopping playwright")
+                except Exception as e:
+                    logger.debug(f"[BrowserSession] Error stopping playwright: {e}")
                 self._playwright = None
-            
+
             self._started = False
             logger.info("[BrowserSession] Stopped")
-            
+
         except Exception as e:
             logger.warning(f"[BrowserSession] Error during stop: {e}")
     

@@ -69,20 +69,8 @@ from .errors import (
     CriticalError, FatalError,
     RecoveryStrategy, get_recovery_strategy,
 )
-from .blackboard import (
-    Blackboard, SubTask, AgentMessage, RequestStatus,
-)
-from .host_agent import (
-    HostAgent, HostAgentState, AgentConfig, IterationResult,
-)
-from .app_agent import (
-    AppAgent, AppAgentState, AppAgentConfig, AppType,
-    BrowserAppAgent, DesktopAppAgent, IDEAppAgent,
-)
-from .factory import (
-    AgentFactory, get_agent_factory, set_agent_factory,
-    create_app_agent, create_browser_agent, create_desktop_agent, create_ide_agent,
-)
+# 已删除: blackboard, host_agent, app_agent, factory
+# 这些模块已被 UnifiedAgentManager + ReActAgent 取代
 
 # Phase 3: Agent 循环 + 错误恢复 + 并发控制 + TerminationChecker
 from .concurrency import (
@@ -234,32 +222,7 @@ __all__ = [
     'FatalError',
     'RecoveryStrategy',
     'get_recovery_strategy',
-    # Blackboard (Phase 2)
-    'Blackboard',
-    'SubTask',
-    'AgentMessage',
-    'RequestStatus',
-    # Host Agent (Phase 2)
-    'HostAgent',
-    'HostAgentState',
-    'AgentConfig',
-    'IterationResult',
-    # App Agent (Phase 2)
-    'AppAgent',
-    'AppAgentState',
-    'AppAgentConfig',
-    'AppType',
-    'BrowserAppAgent',
-    'DesktopAppAgent',
-    'IDEAppAgent',
-    # Agent Factory (Phase 2)
-    'AgentFactory',
-    'get_agent_factory',
-    'set_agent_factory',
-    'create_app_agent',
-    'create_browser_agent',
-    'create_desktop_agent',
-    'create_ide_agent',
+    # 已删除: Blackboard, HostAgent, AppAgent, Factory (被 UnifiedAgentManager 取代)
     # Concurrency (Phase 3)
     'ConcurrencyManager',
     'ConcurrencyConfig',

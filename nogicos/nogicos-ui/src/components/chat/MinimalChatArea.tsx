@@ -12,7 +12,7 @@ import type { KeyboardEvent } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowUp, ChevronRight, ChevronDown, Square, Terminal, CheckCircle2, Check, Loader2, AlertCircle, Bot, Search, ListTodo, FileText, Folder, FolderOpen, Code, Globe, MousePointer } from 'lucide-react';
+import { ArrowUp, ChevronRight, Square, Terminal, Check, Loader2, AlertCircle, Bot, Search, ListTodo, FileText, Folder, Code, Globe } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -37,12 +37,19 @@ const springs = {
   micro: { type: 'spring' as const, stiffness: 500, damping: 35 },
 } as const;
 
+// Message part type
+interface MessagePart {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
 // Message type
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  parts?: any[];
+  parts?: MessagePart[];
   isHistory?: boolean;  // True for loaded messages (skip animations)
 }
 
@@ -176,7 +183,8 @@ export function MinimalChatArea({
           content: m.content,
           parts: m.parts,
         }));
-        setMessages(formatted as any);
+         
+        setMessages(formatted as Parameters<typeof setMessages>[0]);
       } else {
         setMessages([]);
       }
@@ -194,7 +202,8 @@ export function MinimalChatArea({
         content: m.content,
         parts: m.parts,
       }));
-      setMessages(formatted as any);
+       
+      setMessages(formatted as Parameters<typeof setMessages>[0]);
     }
   }, [initialMessages, setMessages]);
 
@@ -235,11 +244,12 @@ export function MinimalChatArea({
   const prepareMessagesForSave = useCallback((msgs: typeof chatMessages) => {
     return msgs.map(m => {
       // Extract content from parts if needed
-      let content = m.content || '';
+      const msgAny = m as unknown as { content?: string };
+      let content = msgAny.content || '';
       if (!content && m.parts) {
-        content = m.parts
-          .filter((p: any) => p.type === 'text')
-          .map((p: any) => p.text || '')
+        content = (m.parts as MessagePart[])
+          .filter((p) => p.type === 'text')
+          .map((p) => p.text || '')
           .join('');
       }
       return {
@@ -302,8 +312,11 @@ export function MinimalChatArea({
     if (onSessionUpdate && chatMessages.length > 0) {
       const firstUserMsg = chatMessages.find(m => m.role === 'user');
       if (firstUserMsg) {
-        const title = (firstUserMsg.content || '').slice(0, 30) || 'New Session';
-        const preview = (firstUserMsg.content || '').slice(0, 100) || '';
+        // Extract content from message (handle UIMessage parts format)
+        const msgContent = (firstUserMsg as unknown as { content?: string }).content || 
+          (firstUserMsg.parts as MessagePart[] | undefined)?.filter((p) => p.type === 'text').map((p) => p.text || '').join('') || '';
+        const title = msgContent.slice(0, 30) || 'New Session';
+        const preview = msgContent.slice(0, 100) || '';
         onSessionUpdate(title, preview);
       }
     }
@@ -324,10 +337,14 @@ export function MinimalChatArea({
   }, []);
 
   // Reset scroll lock when streaming ends
+  const wasStreamingRef = useRef(isActuallyStreaming);
   useEffect(() => {
-    if (!isActuallyStreaming) {
+    if (wasStreamingRef.current && !isActuallyStreaming) {
+      // Streaming just ended, reset scroll state
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: syncing state with streaming end
       setUserScrolledUp(false);
     }
+    wasStreamingRef.current = isActuallyStreaming;
   }, [isActuallyStreaming]);
 
   // Auto scroll - only for new messages, not when loading history
@@ -443,8 +460,8 @@ export function MinimalChatArea({
                       style={{ willChange: skipAnimation ? undefined : 'transform, opacity, filter' }}
                     >
                       <MinimalMessage
-                        role={message.role}
-                        content={message.content}
+                        role={message.role === 'system' ? 'assistant' : message.role}
+                        content={(message as unknown as { content?: string }).content || ''}
                         parts={message.parts}
                         isStreaming={isLoading && index === messages.length - 1 && message.role === 'assistant'}
                         skipAnimation={skipAnimation}
@@ -704,7 +721,7 @@ function WelcomeScreen({ onExample }: { onExample: (text: string) => void }) {
 interface MinimalMessageProps {
   role: 'user' | 'assistant';
   content?: string;
-  parts?: any[];
+  parts?: MessagePart[];
   isStreaming?: boolean;
   skipAnimation?: boolean;
 }
@@ -713,14 +730,17 @@ function StreamingText({ text, isStreaming, onComplete }: { text: string; isStre
   const containerRef = useRef<HTMLSpanElement>(null);
   const displayedRef = useRef(0);
   const textRef = useRef(text);
-  const timeoutRef = useRef<NodeJS.Timeout>();
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const completedRef = useRef(false);
   const isStreamingRef = useRef(isStreaming);
   const onCompleteRef = useRef(onComplete);
 
-  textRef.current = text;
-  isStreamingRef.current = isStreaming;
-  onCompleteRef.current = onComplete;
+  // Update refs in effect to avoid render-phase mutation
+  useEffect(() => {
+    textRef.current = text;
+    isStreamingRef.current = isStreaming;
+    onCompleteRef.current = onComplete;
+  });
 
   const updateDisplay = (length: number) => {
     if (!containerRef.current) return;
@@ -747,7 +767,7 @@ function StreamingText({ text, isStreaming, onComplete }: { text: string; isStre
 
       const char = target[current];
       const isCJK = /[\u4e00-\u9fff\u3400-\u4dbf\uac00-\ud7af\u3040-\u309f\u30a0-\u30ff]/.test(char);
-      let delay = isCJK ? 35 : 12;
+      const delay = isCJK ? 35 : 12;
 
       timeoutRef.current = setTimeout(tick, delay);
     };
@@ -769,8 +789,8 @@ interface ToolInfo {
   toolCallId: string;
   toolName?: string;
   state: string;
-  input?: Record<string, any>;
-  output?: any;
+  input?: Record<string, unknown>;
+  output?: unknown;
   errorText?: string;
 }
 
@@ -784,7 +804,7 @@ interface ScreenshotData {
   title?: string;
 }
 
-function parseToolOutput(output: any): any {
+function _parseToolOutput(output: unknown): unknown {
   if (!output) return null;
   // If it's a string, try to parse as JSON
   if (typeof output === 'string') {
@@ -796,12 +816,13 @@ function parseToolOutput(output: any): any {
   }
   return output;
 }
+void _parseToolOutput; // Suppress unused warning
 
-function getScreenshotData(output: any): ScreenshotData | null {
+function getScreenshotData(output: unknown): ScreenshotData | null {
   if (!output) return null;
   
   // Try to parse if string
-  let data = output;
+  let data: unknown = output;
   if (typeof data === 'string') {
     try {
       data = JSON.parse(data);
@@ -812,16 +833,17 @@ function getScreenshotData(output: any): ScreenshotData | null {
   
   // Check if it's a screenshot object
   if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>;
     // Direct match
-    if (data.type === 'browser_screenshot' && data.image_base64) {
+    if (obj.type === 'browser_screenshot' && obj.image_base64) {
       return data as ScreenshotData;
     }
     // Check if it has image_base64 (maybe type is slightly different)
-    if (data.image_base64 && typeof data.image_base64 === 'string' && data.image_base64.length > 100) {
+    if (obj.image_base64 && typeof obj.image_base64 === 'string' && obj.image_base64.length > 100) {
       // [P0-7 FIX] Enhanced security: Validate base64 is a valid PNG/JPEG image
       try {
         // Decode enough bytes to check file magic bytes (400 base64 chars = ~300 bytes)
-        const decoded = atob(data.image_base64.slice(0, 400));
+        const decoded = atob(obj.image_base64.slice(0, 400));
 
         // [P0-7 FIX] Validate PNG magic bytes: 0x89 'P' 'N' 'G' 0x0D 0x0A 0x1A 0x0A
         const isPNG = decoded.charCodeAt(0) === 0x89 &&
@@ -855,10 +877,10 @@ function getScreenshotData(output: any): ScreenshotData | null {
 
       return {
         type: 'browser_screenshot',
-        image_base64: data.image_base64,
-        page_content: data.page_content,
-        url: data.url,
-        title: data.title,
+        image_base64: obj.image_base64,
+        page_content: obj.page_content as string | undefined,
+        url: obj.url as string | undefined,
+        title: obj.title as string | undefined,
       };
     }
   }
@@ -866,9 +888,7 @@ function getScreenshotData(output: any): ScreenshotData | null {
   return null;
 }
 
-function isScreenshotOutput(output: any): output is ScreenshotData {
-  return getScreenshotData(output) !== null;
-}
+// isScreenshotOutput removed - was used by ToolWidget which was removed
 
 const ScreenshotOutput = memo(function ScreenshotOutput({ data }: { data: ScreenshotData }) {
   const [imageExpanded, setImageExpanded] = useState(false);
@@ -927,40 +947,44 @@ function getFileName(path: string): string {
 }
 
 // Format tool display based on type
-function formatToolDisplay(toolName: string, input: Record<string, any> | undefined) {
+function formatToolDisplay(toolName: string, input: Record<string, unknown> | undefined) {
   const name = toolName.toLowerCase().replace(/^tool-/, '');
+  const str = (v: unknown) => typeof v === 'string' ? v : '';
+  const num = (v: unknown) => typeof v === 'number' ? v : 0;
   
   switch (name) {
-    case 'read_file':
-      const fileName = getFileName(input?.target_file || '');
-      const lines = input?.offset && input?.limit 
-        ? `L${input.offset}-${input.offset + input.limit}` 
-        : '';
+    case 'read_file': {
+      const fileName = getFileName(str(input?.target_file));
+      const offset = num(input?.offset);
+      const limit = num(input?.limit);
+      const lines = offset && limit ? `L${offset}-${offset + limit}` : '';
       return {
         icon: <FileText className="w-3.5 h-3.5" />,
         label: `Read ${fileName}${lines ? ' ' + lines : ''}`,
         category: 'explore'
       };
+    }
     
     case 'list_dir':
       return {
         icon: <Folder className="w-3.5 h-3.5" />,
-        label: `Listed ${getFileName(input?.target_directory || '')}`,
+        label: `Listed ${getFileName(str(input?.target_directory))}`,
         category: 'explore'
       };
     
-    case 'codebase_search':
-      const query = input?.query || '';
+    case 'codebase_search': {
+      const query = str(input?.query);
       return {
         icon: <Search className="w-3.5 h-3.5" />,
         label: `Searched "${query.length > 30 ? query.slice(0, 30) + '...' : query}"`,
         category: 'search'
       };
+    }
     
     case 'grep':
       return {
         icon: <Code className="w-3.5 h-3.5" />,
-        label: `Grep ${input?.pattern || ''}`,
+        label: `Grep ${str(input?.pattern)}`,
         category: 'search'
       };
     
@@ -968,7 +992,7 @@ function formatToolDisplay(toolName: string, input: Record<string, any> | undefi
     case 'file_search':
       return {
         icon: <Search className="w-3.5 h-3.5" />,
-        label: `Search files ${input?.glob_pattern || input?.pattern || ''}`,
+        label: `Search files ${str(input?.glob_pattern) || str(input?.pattern)}`,
         category: 'search'
       };
 
@@ -982,13 +1006,14 @@ function formatToolDisplay(toolName: string, input: Record<string, any> | undefi
         category: 'browser'
       };
     
-    case 'run_terminal_cmd':
-      const cmd = input?.command || '';
+    case 'run_terminal_cmd': {
+      const cmd = str(input?.command);
       return {
         icon: <Terminal className="w-3.5 h-3.5" />,
         label: `Run ${cmd.length > 40 ? cmd.slice(0, 40) + '...' : cmd}`,
         category: 'terminal'
       };
+    }
     
     default:
       return {
@@ -999,53 +1024,7 @@ function formatToolDisplay(toolName: string, input: Record<string, any> | undefi
   }
 }
 
-// Group tools by category
-function groupTools(tools: ToolInfo[]) {
-  const groups: { 
-    category: string; 
-    label: string;
-    icon: React.ReactNode;
-    items: Array<{ tool: ToolInfo; display: ReturnType<typeof formatToolDisplay> }>;
-    isComplete: boolean;
-    hasError: boolean;
-  }[] = [];
-  
-  const categoryConfig: Record<string, { label: string; icon: React.ReactNode }> = {
-    explore: { label: 'Explored', icon: <FolderOpen className="w-3.5 h-3.5" /> },
-    search: { label: 'Searched', icon: <Search className="w-3.5 h-3.5" /> },
-    browser: { label: 'Browser', icon: <Globe className="w-3.5 h-3.5" /> },
-    terminal: { label: 'Terminal', icon: <Terminal className="w-3.5 h-3.5" /> },
-    other: { label: 'Actions', icon: <MousePointer className="w-3.5 h-3.5" /> },
-  };
-  
-  tools.forEach(tool => {
-    const toolName = tool.toolName || tool.type?.replace(/^tool-/, '') || 'unknown';
-    const display = formatToolDisplay(toolName, tool.input);
-    const isComplete = tool.state === 'output-available';
-    const isError = tool.state === 'error' || !!tool.errorText;
-    
-    // Find or create group
-    let group = groups.find(g => g.category === display.category);
-    if (!group) {
-      const config = categoryConfig[display.category] || categoryConfig.other;
-      group = {
-        category: display.category,
-        label: config.label,
-        icon: config.icon,
-        items: [],
-        isComplete: true,
-        hasError: false
-      };
-      groups.push(group);
-    }
-    
-    group.items.push({ tool, display });
-    if (!isComplete) group.isComplete = false;
-    if (isError) group.hasError = true;
-  });
-  
-  return groups;
-}
+// Group tools by category - removed, using ToolItemCursor individually
 
 // Cursor-style: Single tool item with inline result display
 const ToolItemCursor = memo(function ToolItemCursor({ tool }: { tool: ToolInfo }) {
@@ -1053,10 +1032,11 @@ const ToolItemCursor = memo(function ToolItemCursor({ tool }: { tool: ToolInfo }
   
   const toolName = tool.toolName || tool.type?.replace(/^tool-/, '') || 'unknown';
   const display = formatToolDisplay(toolName, tool.input);
-  const isComplete = tool.state === 'output-available';
+  const _isComplete = tool.state === 'output-available'; // Reserved for future use
   const isError = tool.state === 'error' || !!tool.errorText;
   const isRunning = tool.state === 'input-streaming' || tool.state === 'input-available';
   const hasOutput = !!tool.output;
+  void _isComplete;
   
   // Parse output and check for screenshot
   const screenshotData = useMemo(() => getScreenshotData(tool.output), [tool.output]);
@@ -1128,62 +1108,7 @@ const OperationGroup = memo(function OperationGroup({ tools }: { tools: ToolInfo
   );
 });
 
-// Legacy single tool widget (fallback)
-interface ToolWidgetProps {
-  tool: ToolInfo;
-}
-
-const ToolWidget = memo(function ToolWidget({ tool }: ToolWidgetProps) {
-  const [expanded, setExpanded] = useState(false);
-  
-  const toolName = tool.toolName || tool.type?.replace(/^tool-/, '') || 'unknown';
-  const display = formatToolDisplay(toolName, tool.input);
-  const isComplete = tool.state === 'output-available';
-  const isError = tool.state === 'error' || !!tool.errorText;
-  const isRunning = tool.state === 'input-streaming' || tool.state === 'input-available';
-
-  return (
-    <motion.div 
-      className="tool-chip"
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
-    >
-      <div className="tool-chip-main" onClick={() => tool.output && setExpanded(e => !e)}>
-        <span className="tool-chip-icon">
-          {isComplete ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-           : isError ? <AlertCircle className="w-3.5 h-3.5 text-red-400" />
-           : isRunning ? <Loader2 className="w-3.5 h-3.5 text-neutral-500 animate-spin" />
-           : display.icon}
-        </span>
-        <span className="tool-chip-name">{display.label}</span>
-        {tool.output && (
-          <span className={`tool-chip-chevron ${expanded ? 'open' : ''}`}>
-            <ChevronRight className="w-3 h-3" />
-          </span>
-        )}
-      </div>
-      
-      <AnimatePresence>
-        {expanded && tool.output && (
-          <motion.div 
-            className="tool-chip-output"
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.15 }}
-          >
-            {isScreenshotOutput(tool.output) ? (
-              <ScreenshotOutput data={tool.output} />
-            ) : (
-              <pre>{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
-  );
-});
+// Legacy ToolWidget removed - using ToolItemCursor instead
 
 const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isStreaming, skipAnimation }: MinimalMessageProps) {
   const [thinkingOpen, setThinkingOpen] = useState(true);
@@ -1217,12 +1142,25 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
       .join('');
   }, [parts]);
 
-  const toolInvocations = useMemo(() => {
+  const toolInvocations = useMemo((): ToolInfo[] => {
     if (!Array.isArray(parts)) return [];
-    return parts.filter((p): p is ToolInfo =>
-      p && typeof p === 'object' && typeof p.type === 'string' &&
-      (p.type.startsWith('tool-') || p.type === 'dynamic-tool')
-    );
+    return parts
+      .filter((p) =>
+        p && typeof p === 'object' && typeof p.type === 'string' &&
+        (p.type.startsWith('tool-') || p.type === 'dynamic-tool')
+      )
+      .map((p) => {
+        const part = p as MessagePart & { toolCallId?: string; toolName?: string; state?: string; input?: Record<string, unknown>; output?: unknown; errorText?: string };
+        return {
+          type: part.type,
+          toolCallId: part.toolCallId || '',
+          toolName: part.toolName,
+          state: part.state || 'pending',
+          input: part.input,
+          output: part.output,
+          errorText: part.errorText,
+        };
+      });
   }, [parts]);
 
   const hasReasoning = reasoningText.length > 0;
@@ -1230,10 +1168,15 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
   
   // Track when planning starts and ensure minimum display time
   const shouldShowPlanning = isStreaming && !hasReasoning && !textContent;
+  
+  // Timer for minimum planning display time
   useEffect(() => {
-    if (shouldShowPlanning && planningStartTime.current === null) {
-      planningStartTime.current = Date.now();
-      setPlanningMinTimeElapsed(false);
+    if (shouldShowPlanning) {
+      if (planningStartTime.current === null) {
+        planningStartTime.current = Date.now();
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: reset timer on planning start
+        setPlanningMinTimeElapsed(false);
+      }
       // Ensure planning shows for at least 400ms to prevent flashing
       const timer = setTimeout(() => setPlanningMinTimeElapsed(true), 400);
       return () => clearTimeout(timer);
@@ -1325,7 +1268,7 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
                     ) : (
                       <StreamingText 
                         text={reasoningText} 
-                        isStreaming={isStreaming && !textContent}
+                        isStreaming={!!(isStreaming && !textContent)}
                         onComplete={() => {
                           setThinkingAnimationDone(true);
                           const startTime = thinkingStartTime.current || Date.now();
@@ -1377,12 +1320,13 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
                   li: ({ children }) => <li className="text-neutral-300">{children}</li>,
                   strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
                   em: ({ children }) => <em className="italic text-neutral-200">{children}</em>,
-                  code: ({ className, children, ...props }) => {
+                  code: ({ className, children }) => {
                     const match = /language-(\w+)/.exec(className || '');
                     const isBlock = Boolean(match);
                     return isBlock ? (
                       <SyntaxHighlighter
-                        style={oneDark}
+                         
+                        style={oneDark as Record<string, React.CSSProperties>}
                         language={match?.[1] || 'text'}
                         PreTag="div"
                         customStyle={{
@@ -1399,7 +1343,6 @@ const MinimalMessage = memo(function MinimalMessage({ role, content, parts, isSt
                           color: '#666',
                           userSelect: 'none',
                         }}
-                        {...props}
                       >
                         {String(children).replace(/\n$/, '')}
                       </SyntaxHighlighter>

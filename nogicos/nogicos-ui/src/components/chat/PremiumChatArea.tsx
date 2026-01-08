@@ -22,7 +22,6 @@ import {
   Globe,
   FolderOpen,
   Terminal,
-  User
 } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
@@ -35,7 +34,7 @@ interface PremiumChatAreaProps {
   className?: string;
 }
 
-// Animation variants
+// Animation variants (using as const for proper type inference)
 const containerVariants = {
   hidden: { opacity: 0 },
   visible: {
@@ -45,7 +44,7 @@ const containerVariants = {
       delayChildren: 0.1,
     },
   },
-};
+} as const;
 
 const itemVariants = {
   hidden: { opacity: 0, y: 20, scale: 0.95 },
@@ -54,7 +53,7 @@ const itemVariants = {
     y: 0,
     scale: 1,
     transition: {
-      type: 'spring',
+      type: 'spring' as const,
       stiffness: 300,
       damping: 30,
     },
@@ -162,7 +161,8 @@ export function PremiumChatArea({
                     <PremiumMessage
                       id={message.id}
                       role={message.role as 'user' | 'assistant'}
-                      content={message.content}
+                      content={(message as unknown as { content?: string }).content || ''}
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- UIMessage parts to MessagePart compatibility
                       parts={message.parts as any}
                       isStreaming={isLoading && index === messages.length - 1 && message.role === 'assistant'}
                     />

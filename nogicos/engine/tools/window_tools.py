@@ -21,6 +21,9 @@ import logging
 from typing import Optional, Tuple
 from io import BytesIO
 from dataclasses import dataclass
+import json as _json
+from pathlib import Path as _Path
+import time
 
 # 导入兼容性模块
 from .windows_compat import WindowInputController, InputResult, InputMethod
@@ -32,6 +35,33 @@ from .window_state import WindowStateChecker, get_state_checker
 from .win11_compat import get_win11_compat
 
 logger = logging.getLogger("nogicos.tools.window_tools")
+
+# #region agent log helper (debug mode)
+_DEBUG_LOG_PATH = _Path(r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log")
+
+def _win_dbg_log(hypothesis_id: str, location: str, message: str, data: dict):
+    import os
+    try:
+        payload = {
+            "sessionId": "debug-session",
+            "runId": "pre-fix-1",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(_DEBUG_LOG_PATH), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+        try:
+            line = _json.dumps(payload, ensure_ascii=False) + "\n"
+            os.write(fd, line.encode("utf-8"))
+            os.fsync(fd)  # Force flush to disk immediately (prevent segfault data loss)
+        finally:
+            os.close(fd)
+    except Exception:
+        pass
+# #endregion
 
 
 @dataclass
@@ -87,6 +117,10 @@ class WindowTools:
         Returns:
             WindowToolResult
         """
+        # #region agent log H7
+        _win_dbg_log("H7", "window_click:start", "window_click called", {"hwnd": hwnd, "x": x, "y": y, "button": button})
+        # #endregion
+        
         # 1. 检查窗口可操作性
         operable, reason = self.state_checker.is_operable(hwnd)
         if not operable:
@@ -95,6 +129,10 @@ class WindowTools:
                 output="",
                 error=f"窗口无法操作: {reason}"
             )
+        
+        # #region agent log H7
+        _win_dbg_log("H7", "window_click:operable", "Window operable check passed", {"operable": operable})
+        # #endregion
         
         # 2. 检查 UIPI 权限
         accessibility = self.uipi_checker.check_window_accessibility(hwnd)
@@ -105,8 +143,14 @@ class WindowTools:
                 error=f"权限不足: {accessibility.reason}\n建议: {accessibility.suggestion}"
             )
         
-        # 3. 坐标转换 (截图坐标 → 客户区坐标)
-        client_x, client_y = scale_coordinates("api", x, y, hwnd)
+        # 3. 坐标直接使用 (截图是原始尺寸，Agent 传入的已是正确坐标)
+        # 注意：之前的 scale_coordinates 会错误地放大坐标，因为它假设截图是 1280x800
+        # 但实际上我们返回原始尺寸截图，所以 Agent 传入的坐标就是客户区坐标
+        client_x, client_y = x, y
+        
+        # #region agent log H7
+        _win_dbg_log("H7", "window_click:coords", "Using direct coordinates (no scaling)", {"client_x": client_x, "client_y": client_y, "original_x": x, "original_y": y})
+        # #endregion
         
         # 4. Windows 11 圆角补偿
         if self.win11_compat.is_windows_11():
@@ -114,8 +158,16 @@ class WindowTools:
                 client_x, client_y, hwnd
             )
         
+        # #region agent log H7
+        _win_dbg_log("H7", "window_click:pre_click", "About to execute click", {"client_x": client_x, "client_y": client_y})
+        # #endregion
+        
         # 5. 执行点击 (自动 Fallback)
         result = await self.input_controller.click(hwnd, client_x, client_y, button)
+        
+        # #region agent log H7
+        _win_dbg_log("H7", "window_click:post_click", "Click executed", {"success": result.success, "method": result.method_used.value if result.method_used else None})
+        # #endregion
         
         # 6. 等待 UI 响应
         await asyncio.sleep(self.POST_ACTION_DELAY_MS / 1000)
@@ -123,18 +175,33 @@ class WindowTools:
         # 7. 截图验证
         screenshot_b64 = None
         if capture_screenshot:
+            # #region agent log H7
+            _win_dbg_log("H7", "window_click:pre_screenshot", "About to capture screenshot", {})
+            # #endregion
             screenshot_b64 = await self._capture_window(hwnd)
+            # #region agent log H7
+            _win_dbg_log("H7", "window_click:post_screenshot", "Screenshot captured", {"has_image": screenshot_b64 is not None})
+            # #endregion
         
         # 8. 构建返回结果
         output = f"点击 ({x}, {y}) -> 客户区 ({client_x}, {client_y})"
         if result.fallback_count > 0:
             output += f" [使用 Fallback: {result.method_used.value}]"
         
+        # #region agent log H7
+        _win_dbg_log("H7", "window_click:end", "window_click completed", {"success": result.success})
+        # #endregion
+        
+        # Enhanced error diagnostics for debugging
+        error_msg = None
+        if not result.success:
+            error_msg = f"{result.error or 'Unknown error'} | Debug: orig=({x},{y}) client=({client_x},{client_y}) hwnd={hwnd} method={result.method_used.value if result.method_used else 'none'} fallbacks={result.fallback_count}"
+
         return WindowToolResult(
             success=result.success,
             output=output,
             base64_image=screenshot_b64,
-            error=result.error if not result.success else None,
+            error=error_msg,
             input_method=result.method_used,
             fallback_count=result.fallback_count
         )
@@ -182,13 +249,23 @@ class WindowTools:
         capture_screenshot: bool = True
     ) -> WindowToolResult:
         """在窗口中输入文字"""
+        # #region agent log F1
+        _win_dbg_log("F1", "window_type:start", "window_type called", {"hwnd": hwnd, "text": text[:100] if text else "", "text_len": len(text) if text else 0})
+        # #endregion
+        
         # 检查
         operable, reason = self.state_checker.is_operable(hwnd)
         if not operable:
+            # #region agent log F1
+            _win_dbg_log("F1", "window_type:not_operable", "Window not operable", {"reason": reason})
+            # #endregion
             return WindowToolResult(success=False, output="", error=f"窗口无法操作: {reason}")
         
         # 执行输入
         result = await self.input_controller.type_text(hwnd, text)
+        
+        # #region agent log F1
+        _win_dbg_log("F1", "window_type:result", "Input result", {"success": result.success, "method": result.method_used.value if result.method_used else None, "error": result.error})
         
         # 等待
         await asyncio.sleep(self.POST_ACTION_DELAY_MS / 1000)
@@ -410,13 +487,17 @@ class WindowTools:
                 return None
             
             # 缩放到目标尺寸
-            target_size = (self.coord_transformer.TARGET_WIDTH, 
+            target_size = (self.coord_transformer.TARGET_WIDTH,
                           self.coord_transformer.TARGET_HEIGHT)
             screenshot = screenshot.resize(target_size, Image.Resampling.LANCZOS)
-            
-            # 转换为 base64
+
+            # 转换为 base64 (使用 JPEG 压缩以减少 token 消耗)
+            # PNG 无损压缩对大图片太大，会导致 token 超限
             buffer = BytesIO()
-            screenshot.save(buffer, format='PNG', optimize=True)
+            # 转换为 RGB (JPEG 不支持 alpha 通道)
+            if screenshot.mode in ('RGBA', 'LA', 'P'):
+                screenshot = screenshot.convert('RGB')
+            screenshot.save(buffer, format='JPEG', quality=60, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
             
             return b64
@@ -598,8 +679,8 @@ def register_window_tools(registry):
 
 参数:
 - x: 截图上的 X 坐标 (0-1280)
-- y: 截图上的 Y 坐标 (0-800)  
-- hwnd: 目标窗口句柄
+- y: 截图上的 Y 坐标 (0-800)
+- hwnd: 目标窗口句柄 (从 Hook 上下文获取，见提示开头的 CONNECTED TARGET)
 - button: 鼠标按键 ("left", "right", "middle")
 
 功能:
@@ -608,17 +689,99 @@ def register_window_tools(registry):
 - 自动处理 DPI 缩放和 Windows 11 圆角
 - 点击后自动截图验证
 
+重要: 如果用户已连接窗口，请使用提示开头显示的 HWND，不要调用 list_windows。
+
 返回: 包含截图的结构化数据，用于验证点击效果""",
         category=ToolCategory.LOCAL,
     )
     async def window_click(
-        x: int, 
-        y: int, 
-        hwnd: int,
-        button: str = "left"
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        hwnd: Optional[int] = None,
+        button: str = "left",
+        # Common aliases AI might use
+        title: Optional[str] = None,
+        window_title: Optional[str] = None,
+        window_name: Optional[str] = None,
+        handle: Optional[int] = None,
+        window_handle: Optional[int] = None,
+        coord_x: Optional[int] = None,
+        coord_y: Optional[int] = None,
+        pos_x: Optional[int] = None,
+        pos_y: Optional[int] = None,
     ) -> Dict[str, Any]:
         """点击窗口 - 返回结构化数据含截图"""
-        result = await window_tools.window_click(x, y, hwnd, button)
+        # Support multiple parameter names for hwnd
+        actual_hwnd = hwnd or handle or window_handle
+        actual_x = x if x is not None else coord_x if coord_x is not None else pos_x
+        actual_y = y if y is not None else coord_y if coord_y is not None else pos_y
+
+        # If title provided instead of hwnd, try to find the window
+        actual_title = title or window_title or window_name
+        if actual_title and not actual_hwnd:
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                # Find window by title
+                found_hwnd = user32.FindWindowW(None, actual_title)
+                if not found_hwnd:
+                    # Try partial match
+                    from pywinauto import Desktop
+                    desktop = Desktop(backend="uia")
+                    for win in desktop.windows():
+                        if actual_title.lower() in win.window_text().lower():
+                            found_hwnd = win.handle
+                            break
+                if found_hwnd:
+                    actual_hwnd = found_hwnd
+                else:
+                    return {
+                        "type": "window_action",
+                        "action": "click",
+                        "success": False,
+                        "output": "",
+                        "error": f"Window with title '{actual_title}' not found",
+                        "image_base64": None,
+                        "input_method": None,
+                        "fallback_count": 0,
+                    }
+            except Exception as e:
+                return {
+                    "type": "window_action",
+                    "action": "click",
+                    "success": False,
+                    "output": "",
+                    "error": f"Error finding window by title: {e}",
+                    "image_base64": None,
+                    "input_method": None,
+                    "fallback_count": 0,
+                }
+
+        if actual_hwnd is None:
+            return {
+                "type": "window_action",
+                "action": "click",
+                "success": False,
+                "output": "",
+                "error": "Must provide hwnd (or handle/window_handle) or title (window_title/window_name)",
+                "image_base64": None,
+                "input_method": None,
+                "fallback_count": 0,
+            }
+
+        if actual_x is None or actual_y is None:
+            return {
+                "type": "window_action",
+                "action": "click",
+                "success": False,
+                "output": "",
+                "error": "Must provide x and y coordinates",
+                "image_base64": None,
+                "input_method": None,
+                "fallback_count": 0,
+            }
+
+        result = await window_tools.window_click(actual_x, actual_y, actual_hwnd, button)
         return {
             "type": "window_action",
             "action": "click",
@@ -721,15 +884,31 @@ def register_window_tools(registry):
         description="""截取窗口截图。
 
 参数:
-- hwnd: 目标窗口句柄
+- hwnd: 目标窗口句柄 (从 Hook 上下文获取，见提示开头的 CONNECTED TARGET)
 
-返回: 1280x800 的窗口截图 (base64 编码)""",
+返回: 1280x800 的窗口截图 (base64 编码)
+
+重要: 如果用户已连接窗口，请使用提示开头显示的 HWND，不要调用 list_windows 或 find_window。""",
         category=ToolCategory.LOCAL,
     )
     async def window_screenshot(hwnd: int) -> Dict[str, Any]:
         """截取窗口截图 - 返回结构化数据含截图"""
         result = await window_tools.window_screenshot(hwnd)
         window_info = window_tools.get_window_info(hwnd)
+        try:
+            _win_dbg_log(
+                hypothesis_id="H5",
+                location="window_tools:window_screenshot",
+                message="Captured window screenshot",
+                data={
+                    "hwnd": hwnd,
+                    "success": result.success,
+                    "title": window_info.get("title", ""),
+                    "size": window_info.get("coordinates", {}).get("client_size", [0, 0]),
+                },
+            )
+        except Exception:
+            pass
         return {
             "type": "window_screenshot",
             "success": result.success,

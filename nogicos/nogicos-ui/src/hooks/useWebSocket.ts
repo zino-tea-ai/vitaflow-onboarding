@@ -95,7 +95,7 @@ export function useWebSocket({
     if (wsRef.current) {
       try {
         wsRef.current.close();
-      } catch (e) {
+      } catch {
         // Ignore close errors
       }
       wsRef.current = null;
@@ -122,7 +122,7 @@ export function useWebSocket({
         onConnect?.();
       };
 
-      ws.onclose = (event) => {
+      ws.onclose = () => {
         // Only handle close for current instance
         if (!isMountedRef.current || currentInstanceId !== instanceIdRef.current) return;
         

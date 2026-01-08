@@ -41,6 +41,7 @@ export function ThinkingBlock({
   // Auto-expand when streaming starts
   useEffect(() => {
     if (isStreaming && content.length > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: expand on streaming start
       setIsExpanded(true);
     }
   }, [isStreaming, content]);

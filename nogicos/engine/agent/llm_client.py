@@ -662,9 +662,10 @@ class LLMClient:
             
             # 通知调用方需要重置之前的流式输出
             # 发送特殊标记让前端清除已显示的部分内容
+            # 使用独特的控制序列，避免与模型输出冲突
             if on_text:
                 try:
-                    await on_text("\n[STREAM_RESET]\n")
+                    await on_text("\x00__NOGICOS_CTRL_STREAM_RESET__\x00")
                 except Exception:
                     pass  # 忽略回调错误
             

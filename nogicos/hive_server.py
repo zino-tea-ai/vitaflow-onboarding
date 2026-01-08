@@ -17,6 +17,11 @@ Usage:
     python hive_server.py
 """
 
+# 【调试】启用 faulthandler 捕获 Segmentation Fault 堆栈
+import faulthandler
+import sys
+faulthandler.enable(file=sys.stderr, all_threads=True)
+
 import warnings
 import asyncio
 import os
@@ -25,7 +30,7 @@ import json
 import time
 import logging
 import aiohttp
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
 # Filter known deprecation warnings
@@ -48,7 +53,7 @@ logger = get_logger("hive_server")
 
 # FastAPI imports
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import Response, StreamingResponse, JSONResponse
     from pydantic import BaseModel
@@ -76,6 +81,23 @@ from engine.tools import create_full_registry
 from engine.watchdog import start_watchdog, get_watchdog, ConnectionState
 from engine.knowledge.store import get_session_store
 
+# Phase 6: HostAgent 已删除，由 UnifiedAgentManager 取代
+HOST_AGENT_AVAILABLE = False
+from engine.agent.events import EventType, AgentEvent
+from engine.agent.event_bus import get_event_bus
+from engine.agent.state_manager import TaskStatus
+
+# Phase 7: UnifiedAgentManager - 统一 Agent 入口
+try:
+    from engine.agent.unified_manager import UnifiedAgentManager, get_unified_manager
+    UNIFIED_AGENT_AVAILABLE = True
+    logger.info("UnifiedAgentManager available - using ReActAgent as core")
+except ImportError as e:
+    UNIFIED_AGENT_AVAILABLE = False
+    UnifiedAgentManager = None
+    get_unified_manager = None
+    logger.warning(f"UnifiedAgentManager not available: {e}")
+
 
 # ============================================================================
 # Request/Response Models
@@ -94,6 +116,56 @@ class ExecuteRequest(BaseModel):
     def task_content(self) -> str:
         """Get the task content, supporting both 'task' and 'message' fields"""
         return self.task or self.message or ""
+
+
+# ============================================================================
+# Phase 6: Agent Control API Models
+# ============================================================================
+
+class AgentStartRequest(BaseModel):
+    """Agent task start request - Phase 6"""
+    task: str                          # 任务描述
+    target_hwnds: Optional[List[int]] = None  # 目标窗口句柄列表
+    max_iterations: int = 50           # 最大迭代次数
+    session_id: str = "default"        # 会话 ID
+    
+    model_config = {"extra": "allow"}  # 允许扩展字段
+
+
+class AgentStopRequest(BaseModel):
+    """Agent task stop request - Phase 6"""
+    task_id: str
+    reason: str = "User requested"
+
+
+class AgentResumeRequest(BaseModel):
+    """Agent task resume request - Phase 6"""
+    task_id: str
+
+
+class AgentStatusResponse(BaseModel):
+    """Agent status response - Phase 6"""
+    task_id: str
+    status: str                        # idle, running, paused, completed, failed, etc.
+    iteration: int = 0
+    max_iterations: int = 50
+    current_action: Optional[str] = None
+    error: Optional[str] = None
+    progress: float = 0.0              # 0.0 - 1.0
+    elapsed_seconds: float = 0.0
+    tool_calls_count: int = 0
+
+
+class AgentEventType(str):
+    """Agent event types for WebSocket streaming"""
+    THINKING = "thinking"
+    TOOL_START = "tool_start"
+    TOOL_END = "tool_end"
+    PROGRESS = "progress"
+    CONFIRM_REQUIRED = "confirm_required"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    ERROR = "error"
 
 
 class ExecuteResponse(BaseModel):
@@ -316,13 +388,831 @@ server_start_time = time.time()
 
 
 # ============================================================================
+# Phase 6: Global HostAgent Manager (Review Fixed v2)
+# ============================================================================
+
+# Phase 6 Fix v2: Enhanced security with HMAC, Origin validation, IP whitelist
+from collections import defaultdict
+from dataclasses import dataclass, field
+import uuid as uuid_module
+import hmac
+import hashlib
+
+
+# ============================================================================
+# Event Priority System (for backpressure handling)
+# ============================================================================
+
+class EventPriority:
+    """事件优先级 - 高优先级事件在背压时不会被丢弃"""
+    CRITICAL = 0   # confirm_required, failed, error - 永不丢弃
+    HIGH = 1       # completed, stopped, cancelled, needs_help
+    NORMAL = 2     # tool_start, tool_end, progress
+    LOW = 3        # thinking, heartbeat, backpressure_warning
+
+
+# 事件类型到优先级的映射
+EVENT_PRIORITY_MAP: Dict[str, int] = {
+    # Critical - 永不丢弃
+    "confirm_required": EventPriority.CRITICAL,
+    "failed": EventPriority.CRITICAL,
+    "error": EventPriority.CRITICAL,
+    "auth_error": EventPriority.CRITICAL,
+    
+    # High - 仅在极端情况下丢弃
+    "completed": EventPriority.HIGH,
+    "stopped": EventPriority.HIGH,
+    "cancelled": EventPriority.HIGH,
+    "needs_help": EventPriority.HIGH,
+    "started": EventPriority.HIGH,
+    "resumed": EventPriority.HIGH,
+    "connected": EventPriority.HIGH,
+    "connection_closing": EventPriority.HIGH,
+    "pending_confirmations": EventPriority.HIGH,
+    
+    # Normal - 可以丢弃
+    "tool_start": EventPriority.NORMAL,
+    "tool_end": EventPriority.NORMAL,
+    "progress": EventPriority.NORMAL,
+    "status": EventPriority.NORMAL,
+    
+    # Low - 优先丢弃
+    "thinking": EventPriority.LOW,
+    "heartbeat": EventPriority.LOW,
+    "backpressure_warning": EventPriority.LOW,
+}
+
+
+def _get_default_event_priority() -> int:
+    """
+    获取默认事件优先级 - Review Fix v6
+    
+    可通过环境变量 NOGICOS_DEFAULT_EVENT_PRIORITY 配置:
+    - CRITICAL: 永不丢弃
+    - HIGH: 仅极端情况丢弃（默认）
+    - NORMAL: 可丢弃
+    - LOW: 优先丢弃
+    """
+    priority_str = os.environ.get("NOGICOS_DEFAULT_EVENT_PRIORITY", "HIGH").upper()
+    priority_map = {
+        "CRITICAL": EventPriority.CRITICAL,
+        "HIGH": EventPriority.HIGH,
+        "NORMAL": EventPriority.NORMAL,
+        "LOW": EventPriority.LOW,
+    }
+    return priority_map.get(priority_str, EventPriority.HIGH)
+
+
+def get_event_priority(event_type: str) -> int:
+    """
+    获取事件优先级 - Review Fix v6
+    
+    未注册的事件类型使用 NOGICOS_DEFAULT_EVENT_PRIORITY 配置的值（默认 HIGH）
+    """
+    return EVENT_PRIORITY_MAP.get(event_type, _get_default_event_priority())
+
+
+# ============================================================================
+# Enhanced Rate Limiter with IP Whitelist and Logging
+# ============================================================================
+
+@dataclass
+class RateLimitState:
+    """速率限制状态"""
+    requests: List[float] = field(default_factory=list)
+    blocked_count: int = 0
+    last_blocked_at: Optional[float] = None
+    
+    def is_allowed(self, max_requests: int, window_seconds: float) -> bool:
+        """检查是否允许请求"""
+        now = time.time()
+        # 清理过期记录
+        self.requests = [t for t in self.requests if now - t < window_seconds]
+        if len(self.requests) >= max_requests:
+            self.blocked_count += 1
+            self.last_blocked_at = now
+            return False
+        self.requests.append(now)
+        return True
+
+
+class AgentAPIRateLimiter:
+    """
+    Agent API 速率限制器 - Review Fix v3
+    
+    增强功能：
+    - IP 白名单支持
+    - 日志限频（避免日志爆炸）
+    - 统计信息
+    - 可选 Redis 后端（多进程/分布式部署）
+    """
+    
+    def __init__(
+        self, 
+        max_requests: int = 20, 
+        window_seconds: float = 60.0,
+        log_interval_seconds: float = 60.0,
+    ):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.log_interval_seconds = log_interval_seconds
+        self._states: Dict[str, RateLimitState] = defaultdict(RateLimitState)
+        self._last_log_time: Dict[str, float] = {}
+        
+        # IP 白名单
+        whitelist_str = os.environ.get("NOGICOS_RATE_LIMIT_WHITELIST", "")
+        self._whitelist: set = set(w.strip() for w in whitelist_str.split(",") if w.strip())
+        self._whitelist.update({"127.0.0.1", "localhost", "::1"})
+        
+        # Review Fix v3: 可选 Redis 后端
+        self._redis_client = None
+        self._use_redis = False
+        redis_url = os.environ.get("NOGICOS_REDIS_URL", "")
+        if redis_url:
+            try:
+                import redis
+                self._redis_client = redis.from_url(redis_url)
+                self._redis_client.ping()  # 测试连接
+                self._use_redis = True
+                logger.info(f"[RateLimit] Using Redis backend: {redis_url.split('@')[-1]}")
+            except ImportError:
+                logger.warning("[RateLimit] redis package not installed, using memory backend")
+            except Exception as e:
+                logger.warning(f"[RateLimit] Redis connection failed: {e}, using memory backend")
+    
+    def check(self, client_id: str) -> bool:
+        """检查客户端是否允许请求"""
+        if client_id in self._whitelist:
+            return True
+        
+        if self._use_redis and self._redis_client:
+            return self._check_redis(client_id)
+        else:
+            return self._check_memory(client_id)
+    
+    def _check_memory(self, client_id: str) -> bool:
+        """内存版速率检查"""
+        allowed = self._states[client_id].is_allowed(self.max_requests, self.window_seconds)
+        
+        if not allowed:
+            self._log_blocked(client_id, self._states[client_id].blocked_count)
+        
+        return allowed
+    
+    def _check_redis(self, client_id: str) -> bool:
+        """Redis 版速率检查（滑动窗口）"""
+        try:
+            key = f"nogicos:ratelimit:{client_id}"
+            now = time.time()
+            window_start = now - self.window_seconds
+            
+            pipe = self._redis_client.pipeline()
+            # 移除过期记录
+            pipe.zremrangebyscore(key, 0, window_start)
+            # 获取当前窗口内的请求数
+            pipe.zcard(key)
+            # 添加当前请求
+            pipe.zadd(key, {str(now): now})
+            # 设置过期时间
+            pipe.expire(key, int(self.window_seconds) + 1)
+            
+            results = pipe.execute()
+            current_count = results[1]
+            
+            if current_count >= self.max_requests:
+                # 移除刚添加的请求（超限）
+                self._redis_client.zrem(key, str(now))
+                
+                # 获取累计被阻止次数
+                blocked_key = f"nogicos:ratelimit:blocked:{client_id}"
+                blocked_count = self._redis_client.incr(blocked_key)
+                self._redis_client.expire(blocked_key, 3600)  # 1小时过期
+                
+                self._log_blocked(client_id, blocked_count)
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"[RateLimit] Redis error: {e}, falling back to allow")
+            return True
+    
+    def _log_blocked(self, client_id: str, blocked_count: int):
+        """日志限频"""
+        now = time.time()
+        last_log = self._last_log_time.get(client_id, 0)
+        if now - last_log >= self.log_interval_seconds:
+            logger.warning(f"[RateLimit] Client {client_id} blocked (total: {blocked_count})")
+            self._last_log_time[client_id] = now
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        获取速率限制统计 - Review Fix v4
+        
+        使用 SCAN 替代 KEYS 避免阻塞 Redis
+        """
+        if self._use_redis and self._redis_client:
+            try:
+                # Review Fix v4: 使用 SCAN 替代 KEYS，避免阻塞
+                total_blocked = 0
+                client_count = 0
+                cursor = 0
+                pattern = "nogicos:ratelimit:blocked:*"
+                
+                while True:
+                    cursor, keys = self._redis_client.scan(
+                        cursor=cursor,
+                        match=pattern,
+                        count=100  # 每批最多扫描 100 个
+                    )
+                    
+                    if keys:
+                        # 使用 MGET 批量获取值
+                        values = self._redis_client.mget(keys)
+                        for v in values:
+                            if v:
+                                total_blocked += int(v)
+                        client_count += len(keys)
+                    
+                    # cursor 为 0 表示扫描完成
+                    if cursor == 0:
+                        break
+                
+                return {
+                    "backend": "redis",
+                    "total_clients": client_count,
+                    "total_blocked_requests": total_blocked,
+                    "whitelist_size": len(self._whitelist),
+                }
+            except Exception:
+                pass
+        
+        total_blocked = sum(s.blocked_count for s in self._states.values())
+        return {
+            "backend": "memory",
+            "total_clients": len(self._states),
+            "total_blocked_requests": total_blocked,
+            "whitelist_size": len(self._whitelist),
+        }
+
+
+# Global rate limiter for Agent API
+_agent_rate_limiter = AgentAPIRateLimiter(max_requests=20, window_seconds=60.0)
+
+
+# ============================================================================
+# Review Fix v7: WebSocket Connection Limiter
+# ============================================================================
+
+class WebSocketConnectionLimiter:
+    """
+    WebSocket 连接限制器 - Review Fix v7
+    
+    功能：
+    - 连接速率限制（防止连接洪泛）
+    - 并发连接上限（防止资源耗尽）
+    - 按 IP 统计
+    """
+    
+    def __init__(
+        self,
+        max_connections_per_ip: int = 10,
+        max_total_connections: int = 100,
+        connect_rate_limit: int = 5,  # 每分钟最多建立连接数
+        rate_window_seconds: float = 60.0,
+    ):
+        self.max_connections_per_ip = int(os.environ.get(
+            "NOGICOS_WS_MAX_CONN_PER_IP", max_connections_per_ip
+        ))
+        self.max_total_connections = int(os.environ.get(
+            "NOGICOS_WS_MAX_TOTAL_CONN", max_total_connections
+        ))
+        self.connect_rate_limit = int(os.environ.get(
+            "NOGICOS_WS_CONNECT_RATE", connect_rate_limit
+        ))
+        self.rate_window_seconds = rate_window_seconds
+        
+        # IP -> 活跃连接数
+        self._active_connections: Dict[str, int] = defaultdict(int)
+        # IP -> 连接时间戳列表（用于速率限制）
+        self._connect_times: Dict[str, List[float]] = defaultdict(list)
+        self._lock = asyncio.Lock()
+    
+    async def try_acquire(self, client_ip: str) -> tuple[bool, str]:
+        """
+        尝试获取连接许可
+        
+        Returns:
+            (allowed, error_message)
+        """
+        async with self._lock:
+            now = time.time()
+            
+            # 检查总连接数
+            total = sum(self._active_connections.values())
+            if total >= self.max_total_connections:
+                return False, f"Server connection limit reached ({self.max_total_connections})"
+            
+            # 检查单 IP 连接数
+            if self._active_connections[client_ip] >= self.max_connections_per_ip:
+                return False, f"Per-IP connection limit reached ({self.max_connections_per_ip})"
+            
+            # 检查连接速率
+            times = self._connect_times[client_ip]
+            # 清理过期记录
+            times[:] = [t for t in times if now - t < self.rate_window_seconds]
+            
+            if len(times) >= self.connect_rate_limit:
+                return False, f"Connection rate limit exceeded ({self.connect_rate_limit}/min)"
+            
+            # 记录连接
+            self._active_connections[client_ip] += 1
+            times.append(now)
+            
+            return True, ""
+    
+    async def release(self, client_ip: str):
+        """释放连接"""
+        async with self._lock:
+            if self._active_connections[client_ip] > 0:
+                self._active_connections[client_ip] -= 1
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        return {
+            "total_connections": sum(self._active_connections.values()),
+            "unique_ips": len([k for k, v in self._active_connections.items() if v > 0]),
+            "max_total": self.max_total_connections,
+            "max_per_ip": self.max_connections_per_ip,
+            "rate_limit": self.connect_rate_limit,
+        }
+
+
+class WebSocketMessageRateLimiter:
+    """
+    WebSocket 消息速率限制器 - Review Fix v8
+    
+    防止客户端消息洪泛，按连接跟踪消息发送速率
+    """
+    
+    def __init__(
+        self,
+        max_messages_per_second: int = 10,
+        burst_limit: int = 20,  # 允许短时突发
+    ):
+        self.max_messages_per_second = int(os.environ.get(
+            "NOGICOS_WS_MSG_RATE", max_messages_per_second
+        ))
+        self.burst_limit = int(os.environ.get(
+            "NOGICOS_WS_MSG_BURST", burst_limit
+        ))
+        
+        # connection_id -> (message_times, warning_sent)
+        self._message_times: Dict[str, List[float]] = {}
+        self._warning_sent: Dict[str, bool] = {}
+    
+    def register_connection(self, connection_id: str):
+        """注册新连接"""
+        self._message_times[connection_id] = []
+        self._warning_sent[connection_id] = False
+    
+    def unregister_connection(self, connection_id: str):
+        """注销连接"""
+        self._message_times.pop(connection_id, None)
+        self._warning_sent.pop(connection_id, None)
+    
+    def check_rate(self, connection_id: str) -> tuple[bool, bool, str]:
+        """
+        检查消息速率
+        
+        Returns:
+            (allowed, should_warn, error_message)
+            - allowed: 是否允许发送
+            - should_warn: 是否应发送警告（首次接近限制时）
+            - error_message: 错误信息
+        """
+        if connection_id not in self._message_times:
+            return True, False, ""
+        
+        now = time.time()
+        times = self._message_times[connection_id]
+        
+        # 清理超过 1 秒的记录
+        times[:] = [t for t in times if now - t < 1.0]
+        
+        # 检查突发限制（硬限制）
+        if len(times) >= self.burst_limit:
+            return False, False, f"Message rate limit exceeded ({self.burst_limit}/s burst)"
+        
+        # 检查持续速率（软限制，发警告）
+        should_warn = False
+        if len(times) >= self.max_messages_per_second:
+            if not self._warning_sent.get(connection_id, False):
+                should_warn = True
+                self._warning_sent[connection_id] = True
+        else:
+            # 速率恢复正常，重置警告状态
+            self._warning_sent[connection_id] = False
+        
+        # 记录消息
+        times.append(now)
+        
+        return True, should_warn, ""
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        return {
+            "active_connections": len(self._message_times),
+            "max_rate": self.max_messages_per_second,
+            "burst_limit": self.burst_limit,
+        }
+
+
+# Global WebSocket connection limiter
+_ws_connection_limiter = WebSocketConnectionLimiter()
+
+# Global WebSocket message rate limiter
+_ws_message_limiter = WebSocketMessageRateLimiter()
+
+
+# ============================================================================
+# HMAC Token Generation and Validation for WebSocket
+# ============================================================================
+
+# ============================================================================
+# Review Fix v3: Separate WS Secret + HTTPS Enforcement
+# ============================================================================
+
+def get_ws_secret() -> str:
+    """
+    获取 WebSocket 专用密钥 - Review Fix v3
+    
+    优先使用 NOGICOS_WS_SECRET，若未配置则回退到 NOGICOS_API_KEY
+    """
+    return os.environ.get("NOGICOS_WS_SECRET") or \
+           os.environ.get("NOGICOS_API_KEY") or \
+           "default_secret_for_local"
+
+
+def is_https_required() -> bool:
+    """检查是否要求 HTTPS/WSS"""
+    return os.environ.get("NOGICOS_REQUIRE_HTTPS", "").lower() in ("true", "1", "yes")
+
+
+def _parse_forwarded_proto(headers) -> Optional[str]:
+    """
+    解析代理协议头 - Review Fix v6
+    
+    支持：
+    - X-Forwarded-Proto: https / wss (常见)
+    - Forwarded: proto=https / proto=wss (RFC 7239 标准)
+    
+    Returns:
+        协议字符串 ("https", "wss" 或 None)
+    """
+    # 安全协议集合（Review Fix v6: 支持 wss）
+    secure_protos = {"https", "wss"}
+    
+    # 优先检查 X-Forwarded-Proto（更常见）
+    x_forwarded = headers.get("X-Forwarded-Proto", "")
+    if x_forwarded.lower() in secure_protos:
+        return x_forwarded.lower()
+    
+    # 检查 RFC 7239 标准 Forwarded 头
+    # 格式: Forwarded: for=192.0.2.60;proto=https;by=203.0.113.43
+    forwarded = headers.get("Forwarded", "")
+    if forwarded:
+        # 解析 proto=xxx
+        for part in forwarded.split(";"):
+            part = part.strip()
+            if part.lower().startswith("proto="):
+                proto = part[6:].strip().strip('"').lower()
+                if proto in secure_protos:
+                    return proto
+    
+    return None
+
+
+def check_secure_connection(request_or_websocket, is_websocket: bool = False) -> tuple[bool, str]:
+    """
+    检查连接是否安全 - Review Fix v5
+    
+    当 NOGICOS_REQUIRE_HTTPS=true 时，强制要求 HTTPS/WSS
+    
+    检查顺序：
+    1. url.scheme（直连场景）
+    2. X-Forwarded-Proto / Forwarded 头（代理场景）
+    3. 本地连接豁免
+    
+    Returns:
+        (is_secure, error_message)
+    """
+    if not is_https_required():
+        return True, ""
+    
+    # 获取客户端地址（用于本地豁免）
+    client_host = ""
+    if hasattr(request_or_websocket, 'client') and request_or_websocket.client:
+        client_host = request_or_websocket.client.host or ""
+    
+    # 检查协议
+    if is_websocket:
+        # WebSocket: 检查 url.scheme 和代理头
+        url_scheme = ""
+        if hasattr(request_or_websocket, 'url') and request_or_websocket.url:
+            url_scheme = getattr(request_or_websocket.url, 'scheme', '') or ""
+        
+        # wss 或通过 HTTPS 代理升级
+        if url_scheme in ("wss", "https"):
+            return True, ""
+        
+        # Review Fix v6: 支持 Forwarded 标准头（https 和 wss）
+        forwarded_proto = _parse_forwarded_proto(request_or_websocket.headers)
+        if forwarded_proto in ("https", "wss"):
+            return True, ""
+        
+        # 本地连接允许非 WSS
+        if client_host in ("127.0.0.1", "localhost", "::1"):
+            return True, ""
+        
+        return False, "WSS required for non-local connections"
+    else:
+        # HTTP: 检查 scheme
+        url_scheme = ""
+        if hasattr(request_or_websocket, 'url') and request_or_websocket.url:
+            url_scheme = getattr(request_or_websocket.url, 'scheme', '') or ""
+        
+        if url_scheme == "https":
+            return True, ""
+        
+        # Review Fix v6: 支持 Forwarded 标准头
+        forwarded_proto = _parse_forwarded_proto(request_or_websocket.headers)
+        if forwarded_proto == "https":
+            return True, ""
+        
+        # 本地连接允许非 HTTPS
+        if client_host in ("127.0.0.1", "localhost", "::1"):
+            return True, ""
+        
+        return False, "HTTPS required for non-local connections"
+
+
+def generate_ws_token(task_id: str, expires_in_seconds: int = 300) -> str:
+    """
+    生成 WebSocket 连接令牌 - HMAC + 时间戳 - Review Fix v3
+    
+    使用独立的 WS 密钥 (NOGICOS_WS_SECRET)
+    
+    Args:
+        task_id: 任务 ID
+        expires_in_seconds: 令牌有效期（秒）
+        
+    Returns:
+        格式: {timestamp}.{hmac_signature}
+    """
+    secret = get_ws_secret()
+    timestamp = int(time.time()) + expires_in_seconds
+    message = f"{task_id}:{timestamp}"
+    
+    signature = hmac.new(
+        secret.encode(),
+        message.encode(),
+        hashlib.sha256
+    ).hexdigest()[:32]
+    
+    return f"{timestamp}.{signature}"
+
+
+def verify_ws_token(task_id: str, token: str) -> tuple[bool, str]:
+    """
+    验证 WebSocket 令牌 - Review Fix v3
+    
+    使用独立的 WS 密钥 (NOGICOS_WS_SECRET)
+    
+    Args:
+        task_id: 任务 ID
+        token: 令牌字符串
+        
+    Returns:
+        (is_valid, error_message)
+    """
+    if not token:
+        return False, "Missing token"
+    
+    try:
+        parts = token.split(".")
+        if len(parts) != 2:
+            return False, "Invalid token format"
+        
+        timestamp_str, signature = parts
+        timestamp = int(timestamp_str)
+        
+        # 检查过期
+        if timestamp < time.time():
+            return False, "Token expired"
+        
+        # 验证签名（使用独立密钥）
+        secret = get_ws_secret()
+        message = f"{task_id}:{timestamp}"
+        expected_signature = hmac.new(
+            secret.encode(),
+            message.encode(),
+            hashlib.sha256
+        ).hexdigest()[:32]
+        
+        if not hmac.compare_digest(signature, expected_signature):
+            return False, "Invalid signature"
+        
+        return True, ""
+        
+    except (ValueError, TypeError) as e:
+        return False, f"Token parse error: {e}"
+
+
+# ============================================================================
+# Enhanced Auth Verification
+# ============================================================================
+
+# Allowed Origins for WebSocket (from environment or defaults)
+def get_allowed_origins() -> set:
+    """获取允许的 Origin 列表"""
+    origins_str = os.environ.get("NOGICOS_ALLOWED_ORIGINS", "")
+    if origins_str:
+        return set(origins_str.split(","))
+    
+    # 默认允许的 Origins
+    return {
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "file://",  # Electron
+    }
+
+
+def _get_trusted_proxies() -> set:
+    """
+    获取可信代理 IP 列表 - Review Fix v6
+    
+    从环境变量 NOGICOS_TRUSTED_PROXIES 加载，逗号分隔
+    默认信任 localhost
+    """
+    proxies_str = os.environ.get("NOGICOS_TRUSTED_PROXIES", "")
+    proxies = set(p.strip() for p in proxies_str.split(",") if p.strip())
+    # 始终信任 localhost
+    proxies.update({"127.0.0.1", "localhost", "::1"})
+    return proxies
+
+
+def get_real_client_ip(request_or_websocket) -> str:
+    """
+    获取真实客户端 IP - Review Fix v6
+    
+    在代理场景下解析 X-Forwarded-For / Forwarded 头获取真实 IP
+    
+    检查顺序：
+    1. X-Forwarded-For（最常见）
+    2. Forwarded: for=xxx（RFC 7239）
+    3. X-Real-IP（Nginx 常用）
+    4. request.client.host（直连）
+    
+    安全措施 (Review Fix v6)：
+    - NOGICOS_TRUST_PROXY=true 启用代理信任
+    - NOGICOS_TRUSTED_PROXIES=ip1,ip2 限制可信代理 IP
+    - 仅当连接来自可信代理时才解析转发头
+    """
+    # 获取连接 IP
+    direct_ip = ""
+    if hasattr(request_or_websocket, 'client') and request_or_websocket.client:
+        direct_ip = request_or_websocket.client.host or ""
+    
+    # 如果未启用代理信任，直接返回连接 IP
+    if os.environ.get("NOGICOS_TRUST_PROXY", "").lower() not in ("true", "1", "yes"):
+        return direct_ip or "unknown"
+    
+    # Review Fix v6: 检查连接是否来自可信代理
+    trusted_proxies = _get_trusted_proxies()
+    if direct_ip and direct_ip not in trusted_proxies:
+        # 连接不是来自可信代理，忽略转发头（防止伪造）
+        logger.debug(f"[Security] Ignoring forwarded headers from untrusted IP: {direct_ip}")
+        return direct_ip
+    
+    headers = request_or_websocket.headers
+    
+    # 1. X-Forwarded-For: client, proxy1, proxy2
+    x_forwarded_for = headers.get("X-Forwarded-For", "")
+    if x_forwarded_for:
+        # 取第一个（最左边是原始客户端）
+        client_ip = x_forwarded_for.split(",")[0].strip()
+        if client_ip:
+            return client_ip
+    
+    # 2. Forwarded: for="[2001:db8::1]";proto=https
+    forwarded = headers.get("Forwarded", "")
+    if forwarded:
+        for part in forwarded.split(";"):
+            part = part.strip()
+            if part.lower().startswith("for="):
+                # 移除 for= 和可能的引号/方括号
+                client_ip = part[4:].strip().strip('"').strip("[]")
+                if client_ip:
+                    return client_ip
+    
+    # 3. X-Real-IP（Nginx）
+    x_real_ip = headers.get("X-Real-IP", "")
+    if x_real_ip:
+        return x_real_ip.strip()
+    
+    return direct_ip or "unknown"
+
+
+def verify_agent_api_auth(request: Request) -> str:
+    """
+    验证 Agent API 鉴权 - Phase 6 Security Fix v5
+    
+    增强功能：
+    - HTTPS 强制（NOGICOS_REQUIRE_HTTPS=true）
+    - Origin 校验（可选）
+    - 真实 IP 识别（NOGICOS_TRUST_PROXY=true）
+    - 速率限制（基于真实 IP）
+    
+    Returns:
+        client_id: 用于速率限制的客户端标识（真实 IP）
+        
+    Raises:
+        HTTPException: 鉴权失败或速率限制
+    """
+    # 获取配置的 API Key
+    expected_key = os.environ.get("NOGICOS_API_KEY", "")
+    
+    # Review Fix v5: 获取真实客户端 IP（代理场景）
+    client_ip = get_real_client_ip(request)
+    direct_ip = request.client.host if request.client else "unknown"
+    
+    # Review Fix v5: HTTPS 强制检查（REST 端点）
+    is_secure, https_error = check_secure_connection(request, is_websocket=False)
+    if not is_secure:
+        logger.warning(f"[Security] REST API insecure connection from {client_ip}: {https_error}")
+        raise HTTPException(status_code=403, detail=https_error)
+    
+    # Origin 校验（如果启用）
+    if os.environ.get("NOGICOS_CHECK_ORIGIN", "").lower() == "true":
+        origin = request.headers.get("Origin", "")
+        allowed_origins = get_allowed_origins()
+        if origin and origin not in allowed_origins:
+            logger.warning(f"[Security] Blocked request from disallowed origin: {origin}")
+            raise HTTPException(status_code=403, detail="Origin not allowed")
+    
+    if not expected_key:
+        # 未配置 Key 时，仅允许 localhost
+        # 注意：检查直连 IP 而非代理后的 IP，防止伪造
+        if direct_ip not in ("127.0.0.1", "localhost", "::1"):
+            logger.warning(f"[Security] Agent API blocked non-local request from {client_ip}")
+            raise HTTPException(status_code=403, detail="Agent API only available locally")
+        client_id = client_ip
+    else:
+        # 验证 API Key
+        auth_header = request.headers.get("Authorization", "")
+        api_key_header = request.headers.get("X-API-Key", "")
+        
+        is_valid = (
+            auth_header == f"Bearer {expected_key}" or
+            api_key_header == expected_key
+        )
+        
+        if not is_valid:
+            logger.warning(f"[Security] Agent API unauthorized request from {client_ip}")
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        
+        # Review Fix v5: 使用真实 IP 作为客户端 ID
+        client_id = client_ip
+    
+    # 速率限制检查（基于真实 IP）
+    if not _agent_rate_limiter.check(client_id):
+        raise HTTPException(status_code=429, detail="Too many requests")
+    
+    return client_id
+
+
+# HostAgentManager 已删除 - 由 UnifiedAgentManager 取代
+# 删除日期: 2026-01-07
+# 原因: HostAgent 是空壳，实际能力在 ReActAgent 中
+
+# Global UnifiedAgentManager (new - Phase 7)
+unified_agent_manager: Optional[UnifiedAgentManager] = None
+
+
+# ============================================================================
 # FastAPI App
 # ============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """App lifespan manager"""
-    global engine, server_start_time
+    global engine, server_start_time, unified_agent_manager
     
     logger.info("=" * 60)
     logger.info("NogicOS Hive Server V2 Starting...")
@@ -333,6 +1223,21 @@ async def lifespan(app: FastAPI):
     # Initialize engine
     engine = NogicEngine()
     await engine.start_websocket()
+    
+    # Initialize UnifiedAgentManager (唯一的 Agent 管理器)
+    if UNIFIED_AGENT_AVAILABLE:
+        unified_agent_manager = UnifiedAgentManager()
+        await unified_agent_manager.initialize(status_server=engine.status_server)
+        stats = unified_agent_manager.get_stats()
+        logger.info("=" * 40)
+        logger.info("UnifiedAgentManager initialized!")
+        logger.info(f"  Modules connected:")
+        for module, available in stats.get("modules", {}).items():
+            status = "OK" if available else "N/A"
+            logger.info(f"    - {module}: {status}")
+        logger.info("=" * 40)
+    else:
+        logger.warning("UnifiedAgentManager not available, Agent API will be disabled")
     
     # Start watchdog for connection monitoring
     def on_state_change(status):
@@ -347,12 +1252,18 @@ async def lifespan(app: FastAPI):
     logger.info("Server ready!")
     logger.info(f"  HTTP: http://localhost:8080")
     logger.info(f"  WebSocket: ws://localhost:8765")
+    if UNIFIED_AGENT_AVAILABLE:
+        logger.info(f"  Agent API: /api/agent/*")
     logger.info("=" * 60)
     
     yield
     
     # Cleanup
     logger.info("Shutting down...")
+    
+    # Close UnifiedAgentManager
+    if unified_agent_manager:
+        await unified_agent_manager.close()
     
     # Stop watchdog
     watchdog = get_watchdog()
@@ -378,8 +1289,11 @@ ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ
     "http://localhost:5173",   # Vite dev server
     "http://localhost:5174",   # Vite alternative port
     "http://localhost:5175",   # Vite alternative port
+    "http://localhost:5176",   # Vite alternative port
+    "http://localhost:5177",   # Vite alternative port
     "http://localhost:3000",   # React dev server
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:5176",
     "http://127.0.0.1:3000",
     "http://localhost:8080",   # Local server
     "http://127.0.0.1:8080",   # Local server
@@ -392,6 +1306,48 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Session-ID"],
 )
+
+
+# ============================================================================
+# Review Fix v7: Global HTTPS Enforcement Middleware
+# ============================================================================
+
+@app.middleware("http")
+async def https_enforcement_middleware(request: Request, call_next):
+    """
+    全局 HTTPS 强制中间件 - Review Fix v7
+    
+    当 NOGICOS_REQUIRE_HTTPS=true 时：
+    - 对所有非本地请求强制 HTTPS
+    - 豁免路径: /health, /ready (健康检查)
+    
+    配置:
+    - NOGICOS_REQUIRE_HTTPS=true 启用
+    - NOGICOS_HTTPS_EXEMPT_PATHS=/health,/ready 豁免路径
+    """
+    # 检查是否启用 HTTPS 强制
+    if not is_https_required():
+        return await call_next(request)
+    
+    # 获取豁免路径
+    exempt_paths_str = os.environ.get("NOGICOS_HTTPS_EXEMPT_PATHS", "/health,/ready")
+    exempt_paths = set(p.strip() for p in exempt_paths_str.split(",") if p.strip())
+    
+    # 检查是否豁免路径
+    if request.url.path in exempt_paths:
+        return await call_next(request)
+    
+    # 检查安全连接
+    is_secure, error = check_secure_connection(request, is_websocket=False)
+    if not is_secure:
+        client_host = request.client.host if request.client else "unknown"
+        logger.warning(f"[Security] HTTP blocked insecure request from {client_host} to {request.url.path}")
+        return JSONResponse(
+            status_code=403,
+            content={"detail": error, "path": request.url.path}
+        )
+    
+    return await call_next(request)
 
 
 # ============================================================================
@@ -1124,7 +2080,10 @@ async def generate_ai_sdk_stream(
                     context = f"## 当前文件上下文:\n{file_context_str}\n\n" + (context or "")
                     logger.info(f"[Chat] Injecting file context: {file_context.get('path', 'unknown')}")
             
-            result = await agent.run(
+            # 使用 run_with_planning() 激活 Plan-and-Execute 架构
+            # - 简单任务：直接执行
+            # - 复杂任务：生成计划，逐步执行，失败时重新规划
+            result = await agent.run_with_planning(
                 task=task,
                 session_id=session_id,
                 context=context,  # Pass conversation history as context
@@ -1586,6 +2545,583 @@ async def connect_to_window(request: ConnectWindowRequest):
     except Exception as e:
         logger.error(f"Failed to connect to window: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Phase 6: Agent Control API Endpoints
+# ============================================================================
+
+@app.post("/api/agent/start")
+async def start_agent(request: AgentStartRequest, req: Request):
+    """
+    启动 Agent 任务 - Phase 7 (UnifiedAgentManager)
+    
+    启动一个新的 Agent 任务，返回任务 ID 用于后续状态查询和控制。
+    
+    Phase 7 改进：
+        - 使用 UnifiedAgentManager 作为核心（基于 ReActAgent）
+        - 自动串联 PlanCache、Memory、ContextStore、Verification
+        - 支持计划复用和学习
+    
+    Security:
+        - 需要 API Key 鉴权（或仅允许本地请求）
+        - 速率限制：20 requests/minute
+    
+    Args:
+        request: 包含任务描述和目标窗口等信息
+        
+    Returns:
+        {"task_id": str, "status": "running"}
+    """
+    # Security: 验证鉴权和速率限制
+    verify_agent_api_auth(req)
+    
+    # Phase 7: 优先使用 UnifiedAgentManager
+    if UNIFIED_AGENT_AVAILABLE and unified_agent_manager:
+        try:
+            result = await unified_agent_manager.start_task(
+                task=request.task,
+                target_hwnds=request.target_hwnds,
+                max_iterations=request.max_iterations,
+                session_id=request.session_id,
+            )
+            return result
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to start agent (unified): {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # Fallback: HostAgentManager (legacy)
+    if HOST_AGENT_AVAILABLE and host_agent_manager:
+        try:
+            result = await host_agent_manager.start_task(
+                task=request.task,
+                target_hwnds=request.target_hwnds,
+                max_iterations=request.max_iterations,
+                session_id=request.session_id,
+            )
+            return result
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to start agent (legacy): {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    raise HTTPException(status_code=501, detail="No Agent available")
+
+
+@app.post("/api/agent/stop")
+async def stop_agent(request: AgentStopRequest, req: Request):
+    """
+    停止 Agent 任务（用户接管）- Phase 7
+    
+    参考 ByteBot takeover 模式，用户可以接管正在执行的任务。
+    
+    Security:
+        - 需要 API Key 鉴权（或仅允许本地请求）
+    
+    Args:
+        request: 包含任务 ID 和停止原因
+        
+    Returns:
+        {"success": bool, "status": "stopped"}
+    """
+    # Security: 验证鉴权
+    verify_agent_api_auth(req)
+    
+    # Phase 7: 优先使用 UnifiedAgentManager
+    if UNIFIED_AGENT_AVAILABLE and unified_agent_manager:
+        try:
+            result = await unified_agent_manager.stop_task(
+                task_id=request.task_id,
+                reason=request.reason,
+            )
+            return result
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to stop agent: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # Fallback: HostAgentManager (legacy)
+    if HOST_AGENT_AVAILABLE and host_agent_manager:
+        try:
+            result = await host_agent_manager.stop_task(
+                task_id=request.task_id,
+                reason=request.reason,
+            )
+            return result
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to stop agent: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    raise HTTPException(status_code=501, detail="No Agent available")
+
+
+@app.post("/api/agent/resume")
+async def resume_agent(request: AgentResumeRequest, req: Request):
+    """
+    恢复 Agent 任务 - Phase 6 (Security Fixed)
+    
+    参考 ByteBot resume 模式，从检查点恢复暂停或中断的任务。
+    
+    Security:
+        - 需要 API Key 鉴权（或仅允许本地请求）
+    
+    Args:
+        request: 包含要恢复的任务 ID
+        
+    Returns:
+        {"task_id": str, "status": "resuming"}
+    """
+    # Security: 验证鉴权
+    verify_agent_api_auth(req)
+    
+    if not HOST_AGENT_AVAILABLE or not host_agent_manager:
+        raise HTTPException(status_code=501, detail="HostAgent not available")
+    
+    try:
+        result = await host_agent_manager.resume_task(task_id=request.task_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to resume agent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/agent/status/{task_id}")
+async def get_agent_status(task_id: str, req: Request):
+    """
+    获取 Agent 任务状态 - Phase 7
+    
+    Security:
+        - 需要 API Key 鉴权（或仅允许本地请求）
+    
+    Args:
+        task_id: 任务 ID
+        
+    Returns:
+        AgentStatusResponse 包含详细的任务状态信息
+    """
+    # Security: 验证鉴权
+    verify_agent_api_auth(req)
+    
+    # Phase 7: 优先使用 UnifiedAgentManager
+    if UNIFIED_AGENT_AVAILABLE and unified_agent_manager:
+        try:
+            status = await unified_agent_manager.get_task_status(task_id)
+            if "error" in status:
+                raise HTTPException(status_code=404, detail=status["error"])
+            return status
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get agent status: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # Fallback: HostAgentManager (legacy)
+    if HOST_AGENT_AVAILABLE and host_agent_manager:
+        try:
+            status = host_agent_manager.get_status(task_id)
+            return status
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to get agent status: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    raise HTTPException(status_code=501, detail="No Agent available")
+
+
+@app.post("/api/agent/confirm/{action_id}")
+async def confirm_agent_action(action_id: str, approved: bool = True, req: Request = None):
+    """
+    确认/拒绝敏感操作 - Phase 6 (Security Fixed)
+    
+    当 Agent 请求执行敏感操作时，用户通过此端点批准或拒绝。
+    
+    Security:
+        - 需要 API Key 鉴权（或仅允许本地请求）
+    
+    Args:
+        action_id: 操作 ID（从 WebSocket 事件获取）
+        approved: True=批准, False=拒绝
+        
+    Returns:
+        {"success": bool}
+    """
+    # Security: 验证鉴权
+    if req:
+        verify_agent_api_auth(req)
+    
+    if not HOST_AGENT_AVAILABLE or not host_agent_manager:
+        raise HTTPException(status_code=501, detail="HostAgent not available")
+    
+    if approved:
+        success = await host_agent_manager.approve_action(action_id)
+    else:
+        success = await host_agent_manager.deny_action(action_id)
+    
+    return {"success": success, "action_id": action_id, "approved": approved}
+
+
+@app.get("/api/agent/confirmations")
+async def get_pending_confirmations(req: Request):
+    """
+    获取待确认的敏感操作列表 - Phase 6 Fix
+    
+    返回当前所有等待用户确认的敏感操作。
+    
+    Security:
+        - 需要 API Key 鉴权（或仅允许本地请求）
+    """
+    # Security: 验证鉴权
+    verify_agent_api_auth(req)
+    
+    if not HOST_AGENT_AVAILABLE or not host_agent_manager:
+        raise HTTPException(status_code=501, detail="HostAgent not available")
+    
+    confirmations = host_agent_manager.get_pending_confirmations()
+    return {"pending": confirmations, "count": len(confirmations)}
+
+
+@app.get("/api/agent/stats")
+async def get_agent_stats(req: Request):
+    """
+    获取 Agent 系统统计信息 - Phase 7
+    
+    返回 UnifiedAgentManager 的模块状态和统计信息。
+    
+    Security:
+        - 需要 API Key 鉴权（或仅允许本地请求）
+    """
+    # Security: 验证鉴权
+    verify_agent_api_auth(req)
+    
+    # Phase 7: UnifiedAgentManager stats
+    if UNIFIED_AGENT_AVAILABLE and unified_agent_manager:
+        stats = unified_agent_manager.get_stats()
+        stats["manager_type"] = "UnifiedAgentManager"
+        stats["core_agent"] = "ReActAgent"
+        return stats
+    
+    # Legacy
+    if HOST_AGENT_AVAILABLE and host_agent_manager:
+        return {
+            "manager_type": "HostAgentManager (legacy)",
+            "core_agent": "HostAgent",
+            "modules": {
+                "plan_cache": False,
+                "context_store": False,
+                "memory": False,
+                "verification": False,
+            },
+        }
+    
+    raise HTTPException(status_code=501, detail="No Agent available")
+
+
+# ============================================================================
+# Phase 6: WebSocket Agent Event Stream
+# ============================================================================
+
+@app.get("/api/agent/ws-token/{task_id}")
+async def get_ws_token(task_id: str, req: Request):
+    """
+    获取 WebSocket 连接令牌 - Phase 6 Fix v2
+    
+    返回一个 HMAC 签名的令牌，用于 WebSocket 连接鉴权。
+    令牌有效期 5 分钟。
+    
+    Security:
+        - 需要 API Key 鉴权
+    """
+    # 验证 API 鉴权
+    verify_agent_api_auth(req)
+    
+    token = generate_ws_token(task_id, expires_in_seconds=300)
+    return {
+        "task_id": task_id,
+        "token": token,
+        "expires_in": 300,
+        "ws_url": f"/ws/agent/{task_id}?token={token}",
+    }
+
+
+@app.websocket("/ws/agent/{task_id}")
+async def agent_event_stream(websocket: WebSocket, task_id: str, token: Optional[str] = None):
+    """
+    WebSocket 流式推送 Agent 事件 - Phase 6 (Security Fixed v3)
+    
+    为指定任务建立 WebSocket 连接，实时接收：
+    - started: 任务开始
+    - thinking: AI 思考过程
+    - tool_start: 工具调用开始
+    - tool_end: 工具调用结束
+    - progress: 进度更新
+    - confirm_required: 需要用户确认
+    - needs_help: 需要人工干预
+    - completed: 任务完成
+    - failed: 任务失败
+    - cancelled: 任务取消
+    - stopped: 任务停止
+    - backpressure_warning: 事件队列积压警告
+    - heartbeat: 心跳
+    
+    Security (v3):
+        - HTTPS/WSS 强制（NOGICOS_REQUIRE_HTTPS=true）
+        - HMAC 签名令牌（独立密钥 NOGICOS_WS_SECRET）
+        - Origin 校验
+        - 仅允许本地连接（未配置 API Key 时）
+        - 鉴权失败时发送错误事件后再关闭
+    
+    Args:
+        task_id: 任务 ID
+        token: HMAC 签名令牌（通过 query 参数传递）
+    """
+    # Review Fix v5: 使用真实客户端 IP
+    client_host = get_real_client_ip(websocket)
+    direct_host = websocket.client.host if websocket.client else "unknown"
+    
+    # Review Fix v7: 连接速率限制（在 accept 前检查）
+    allowed, limit_error = await _ws_connection_limiter.try_acquire(client_host)
+    if not allowed:
+        logger.warning(f"[Security] WebSocket connection limited for {client_host}: {limit_error}")
+        # 连接限制时直接关闭，不 accept
+        await websocket.close(code=1008, reason=limit_error)
+        return
+    
+    # 确保连接结束时释放配额
+    connection_acquired = True
+    
+    # Fix v7: 鉴权失败时先 accept，发送错误事件，再关闭，并释放连接配额
+    async def reject_with_error(code: int, reason: str, error_type: str):
+        """拒绝连接并发送错误事件"""
+        nonlocal connection_acquired
+        try:
+            await websocket.accept()
+            await websocket.send_json({
+                "type": "auth_error",
+                "data": {
+                    "error": reason,
+                    "error_type": error_type,
+                    "code": code,
+                },
+                "timestamp": time.time(),
+                "task_id": task_id,
+            })
+            await websocket.close(code=code, reason=reason)
+        finally:
+            # 释放连接配额
+            if connection_acquired:
+                await _ws_connection_limiter.release(client_host)
+                connection_acquired = False
+    
+    # Security v3: HTTPS/WSS 强制检查
+    is_secure, https_error = check_secure_connection(websocket, is_websocket=True)
+    if not is_secure:
+        logger.warning(f"[Security] WebSocket insecure connection from {client_host}: {https_error}")
+        await reject_with_error(4003, https_error, "insecure_connection")
+        return
+    
+    # Security v3: Origin 校验
+    if os.environ.get("NOGICOS_CHECK_ORIGIN", "").lower() == "true":
+        origin = websocket.headers.get("Origin", "")
+        allowed_origins = get_allowed_origins()
+        if origin and origin not in allowed_origins:
+            logger.warning(f"[Security] WebSocket blocked origin: {origin} from {client_host}")
+            await reject_with_error(4003, f"Origin not allowed: {origin}", "origin_blocked")
+            return
+    
+    # Security v3: HMAC 令牌验证（使用独立密钥）或本地访问
+    ws_secret = get_ws_secret()
+    if ws_secret != "default_secret_for_local":
+        # 需要 HMAC 令牌验证
+        is_valid, error_msg = verify_ws_token(task_id, token or "")
+        if not is_valid:
+            logger.warning(f"[Security] WebSocket auth failed from {client_host}: {error_msg}")
+            await reject_with_error(4001, f"Authentication failed: {error_msg}", "auth_failed")
+            return
+    else:
+        # 未配置密钥时，仅允许 localhost
+        # Review Fix v5: 检查直连 IP 而非代理后的 IP，防止伪造
+        if direct_host not in ("127.0.0.1", "localhost", "::1"):
+            logger.warning(f"[Security] WebSocket blocked non-local from {client_host} (direct: {direct_host})")
+            await reject_with_error(4003, "Local access only", "local_only")
+            return
+    
+    # 检查 HostAgent 可用性
+    if not HOST_AGENT_AVAILABLE or not host_agent_manager:
+        await reject_with_error(1011, "HostAgent not available", "service_unavailable")
+        return
+    
+    # 鉴权成功，接受连接
+    await websocket.accept()
+    logger.info(f"[Agent WS] Connected for task: {task_id} from {client_host}")
+    
+    # 发送连接成功事件
+    await websocket.send_json({
+        "type": "connected",
+        "data": {"task_id": task_id, "client": client_host},
+        "timestamp": time.time(),
+    })
+    
+    # 订阅任务事件
+    event_queue = host_agent_manager.subscribe(task_id)
+    
+    # Review Fix v8: 注册消息速率限制器
+    connection_id = f"{task_id}:{client_host}:{time.time()}"
+    _ws_message_limiter.register_connection(connection_id)
+    
+    try:
+        # 发送当前状态
+        try:
+            status = host_agent_manager.get_status(task_id)
+            await websocket.send_json({
+                "type": "status",
+                "data": status,
+                "timestamp": time.time(),
+            })
+        except ValueError:
+            # 任务不存在，发送 not_found 状态
+            await websocket.send_json({
+                "type": "status",
+                "data": {"task_id": task_id, "status": "not_found"},
+                "timestamp": time.time(),
+            })
+        
+        # 发送待确认的操作（如果有）
+        pending = host_agent_manager.get_pending_confirmations()
+        task_pending = [p for p in pending if p.get("task_id") == task_id]
+        if task_pending:
+            await websocket.send_json({
+                "type": "pending_confirmations",
+                "data": task_pending,
+                "timestamp": time.time(),
+            })
+        
+        # 持续推送事件
+        while True:
+            try:
+                # 等待事件，超时则发送心跳
+                event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+                
+                # Review Fix v8: 检查消息发送速率
+                event_type = event.get("type", "")
+                event_priority = event.get("priority", get_event_priority(event_type))
+                
+                allowed, should_warn, rate_error = _ws_message_limiter.check_rate(connection_id)
+                
+                if not allowed:
+                    # 超过突发限制，跳过低优先级事件
+                    if event_priority > EventPriority.HIGH:
+                        logger.debug(f"[Agent WS] Dropping {event_type} due to rate limit")
+                        continue
+                    # 高优先级事件仍然发送，但记录警告
+                    logger.warning(f"[Agent WS] Rate limit exceeded but sending {event_type} (priority={event_priority})")
+                
+                if should_warn:
+                    # 发送速率警告
+                    await websocket.send_json({
+                        "type": "rate_warning",
+                        "data": {"message": "Message rate approaching limit"},
+                        "timestamp": time.time(),
+                    })
+                
+                await websocket.send_json(event)
+                
+                # 检查是否任务结束
+                if event_type in ("completed", "failed", "cancelled", "stopped"):
+                    logger.info(f"[Agent WS] Task {task_id} ended ({event_type}), closing")
+                    # 发送最终状态
+                    await websocket.send_json({
+                        "type": "connection_closing",
+                        "data": {"reason": f"Task {event_type}"},
+                        "timestamp": time.time(),
+                    })
+                    break
+                    
+            except asyncio.TimeoutError:
+                # 发送心跳保持连接
+                try:
+                    await websocket.send_json({
+                        "type": "heartbeat",
+                        "timestamp": time.time(),
+                    })
+                except Exception:
+                    # 发送失败，连接可能已断开
+                    break
+                
+    except WebSocketDisconnect:
+        logger.info(f"[Agent WS] Disconnected for task: {task_id}")
+    except Exception as e:
+        logger.error(f"[Agent WS] Error for task {task_id}: {e}")
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "data": {"message": str(e)},
+                "timestamp": time.time(),
+            })
+        except Exception:
+            pass
+    finally:
+        host_agent_manager.unsubscribe(task_id, event_queue)
+        # Review Fix v7: 释放连接配额
+        if connection_acquired:
+            await _ws_connection_limiter.release(client_host)
+        # Review Fix v8: 注销消息速率限制器
+        _ws_message_limiter.unregister_connection(connection_id)
+        logger.debug(f"[Agent WS] Cleanup completed for task: {task_id}")
+        logger.info(f"WebSocket cleanup for task: {task_id}")
+
+
+# Debug endpoint to test pyautogui in backend process
+@app.get("/test-pyautogui")
+async def test_pyautogui():
+    """Test pyautogui movement in backend process"""
+    import pyautogui
+    import ctypes
+    
+    results = {}
+    
+    # Check DPI awareness
+    try:
+        awareness = ctypes.c_int()
+        ctypes.windll.shcore.GetProcessDpiAwareness(0, ctypes.byref(awareness))
+        results["dpi_awareness"] = awareness.value
+    except:
+        results["dpi_awareness"] = "unknown"
+    
+    # Current position
+    before = pyautogui.position()
+    results["before"] = f"({before.x}, {before.y})"
+    
+    # Try to move
+    target_x, target_y = 500, 500
+    pyautogui.moveTo(target_x, target_y)
+    
+    # Check after
+    import time
+    time.sleep(0.1)
+    after = pyautogui.position()
+    results["target"] = f"({target_x}, {target_y})"
+    results["after"] = f"({after.x}, {after.y})"
+    results["success"] = after.x == target_x and after.y == target_y
+    
+    # Check pyautogui settings
+    results["failsafe"] = pyautogui.FAILSAFE
+    results["pause"] = pyautogui.PAUSE
+    results["screen_size"] = f"{pyautogui.size()}"
+    
+    return results
 
 
 @app.get("/health")

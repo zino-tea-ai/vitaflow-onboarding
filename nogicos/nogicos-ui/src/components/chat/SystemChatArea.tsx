@@ -11,8 +11,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, Send, Paperclip, Image, Mic, Terminal, 
   ChevronDown, ChevronRight, Bot, User, 
-  Cpu, Activity, Wifi, Clock,
-  FileText, Folder, MoreHorizontal
+  Cpu, Activity, Clock,
+  FileText, Folder,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { StreamingText } from './StreamingText';
@@ -54,7 +54,7 @@ export function SystemChatArea({
   const [localInput, setLocalInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [agentMode, setAgentMode] = useState(true);
-  const [systemStats, setSystemStats] = useState({
+  const [systemStats] = useState({
     fps: 'N/A',
     gpu: '23%',
     cpu: '14%',
@@ -89,14 +89,16 @@ export function SystemChatArea({
     }
   }, [localInput]);
 
-  // Track loading state
+  // Track loading state based on messages
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- intentional: sync loading state with messages */
     if (messages.length > 0) {
       const lastMessage = messages[messages.length - 1];
-      setIsLoading(lastMessage.role === 'user' || (lastMessage as any).isStreaming);
+      setIsLoading(lastMessage.role === 'user' || (lastMessage as { isStreaming?: boolean }).isStreaming === true);
     } else {
       setIsLoading(false);
     }
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [messages]);
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -221,8 +223,8 @@ export function SystemChatArea({
                     key={message.id}
                     id={message.id}
                     role={message.role as 'user' | 'assistant'}
-                    content={message.content}
-                    parts={message.parts as any}
+                    content={(message as unknown as { content?: string }).content || ''}
+                    parts={message.parts as MessagePart[]}
                     isStreaming={isLoading && index === messages.length - 1 && message.role === 'assistant'}
                   />
                 ))}
@@ -390,25 +392,40 @@ function WelcomeScreen({ onExample }: { onExample: (text: string) => void }) {
   );
 }
 
+// Message part type
+interface MessagePart {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
 // System Message Component
 interface SystemMessageProps {
   id: string;
   role: 'user' | 'assistant';
   content?: string;
-  parts?: any[];
+  parts?: MessagePart[];
   isStreaming?: boolean;
 }
 
-function SystemMessage({ id, role, content, parts, isStreaming }: SystemMessageProps) {
+function SystemMessage({ 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  id: _id, 
+  role, 
+  content, 
+  parts, 
+  isStreaming 
+}: SystemMessageProps) {
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const isUser = role === 'user';
 
+  type MessagePart = { type: string; text?: string };
   const textContent = parts
-    ?.filter((p: any) => p.type === 'text')
-    .map((p: any) => p.text)
+    ?.filter((p: MessagePart) => p.type === 'text')
+    .map((p: MessagePart) => p.text || '')
     .join('') || content || '';
 
-  const reasoningParts = parts?.filter((p: any) => p.type === 'reasoning') || [];
+  const reasoningParts = parts?.filter((p: MessagePart) => p.type === 'reasoning') || [];
 
   return (
     <motion.div
@@ -450,7 +467,7 @@ function SystemMessage({ id, role, content, parts, isStreaming }: SystemMessageP
                   exit={{ height: 0, opacity: 0 }}
                   className="sys-thinking-content overflow-hidden"
                 >
-                  {reasoningParts.map((p: any, i: number) => (
+                  {reasoningParts.map((p: MessagePart, i: number) => (
                     <p key={i}>{p.text}</p>
                   ))}
                 </motion.div>

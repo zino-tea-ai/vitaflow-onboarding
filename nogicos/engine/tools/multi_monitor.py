@@ -86,8 +86,10 @@ class MultiMonitorManager:
             return True
         
         try:
+            # 【Segfault 修复】必须保持回调实例的引用，否则会被 GC 导致崩溃
+            callback_instance = self.MONITORENUMPROC(callback)
             self.user32.EnumDisplayMonitors(
-                None, None, self.MONITORENUMPROC(callback), 0
+                None, None, callback_instance, 0
             )
         except Exception as e:
             logger.error(f"Failed to enumerate monitors: {e}")

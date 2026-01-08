@@ -95,28 +95,26 @@ font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
 | `font-medium` | 500 | `font-weight: 500` |
 | `font-semibold` | 600 | `font-weight: 600` |
 
-### Type Scale
+### Type Scale (Semantic Naming)
 
-| Token | Size | Weight | Line Height | Letter Spacing | Usage |
-|-------|------|--------|-------------|----------------|-------|
-| `text-xs` | 10px | Regular | 1.4 | -0.2px | 底部导航、环形图中心 |
-| `text-sm` | 12px | Regular | 1.4 | -0.4px | 标签、单位、描述 |
-| `text-base` | 14px | Medium | 1.4 | -0.4px | 正文、列表项 |
-| `text-lg` | 16px | Medium | 1.4 | -0.4px | 按钮文字、表单标签 |
-| `text-xl` | 20px | Medium | 1.3 | -0.4px | 导航标题、中等数值 |
-| `text-2xl` | 24px | Medium | 1.2 | -0.4px | 弹窗标题 |
-| `text-3xl` | 28px | Medium | 1.2 | -0.4px | 页面标题 |
-| `text-4xl` | 40px | Medium | 1.1 | -1.5px | 大数值 |
-| `text-5xl` | 48px | Medium | 1.1 | -1.5px | 超大数值 |
+| Token | Size | Line Height | Weight | Usage |
+|-------|------|-------------|--------|-------|
+| `text/display` | 48px | 53px | Medium | 超大数值、Hero 数字 |
+| `text/heading` | 28px | 34px | Medium | 页面标题 |
+| `text/title` | 20px | 26px | Medium | 导航标题、弹窗标题、中等数值 |
+| `text/body` | 14px | 20px | Medium | 正文（强调）、列表项 |
+| `text/body-regular` | 14px | 20px | Regular | 正文（普通）、描述文字 |
+| `text/caption` | 12px | 17px | Regular | 辅助说明、标签、单位 |
+| `text/label` | 10px | 14px | Medium | 底部导航、环形图中心、小标签 |
 
 ### Letter Spacing Rules
 
 | 字号范围 | Letter Spacing | 场景 |
 |----------|----------------|------|
-| 10-11px | `-0.2px` | 底部导航、小标签 |
-| 12-20px | `-0.4px` | 正文、标签、标题 |
-| 24-28px | `-0.4px` | 页面标题、弹窗标题 |
-| 40-48px | `-1.5px` | 大数字显示 |
+| 10-12px | `-0.2px` | label, caption |
+| 14-20px | `-0.4px` | body, title |
+| 28px | `-0.4px` | heading |
+| 48px | `-1.5px` | display |
 
 ---
 
@@ -389,11 +387,12 @@ background: linear-gradient(to bottom, #FFFFFF, #F8FAFC);
 ## ✅ Checklist for Implementation
 
 ### Figma Setup
-- [ ] Create Variables Collection "VitaFlow Tokens"
-- [ ] Add all Color variables
-- [ ] Add all Effect styles (shadows)
-- [ ] Add all Text styles
+- [x] Create Variables Collection "VitaFlow Tokens" (64 variables)
+- [x] Add all Color variables (primitive + semantic)
+- [x] Add all Effect styles (shadow/sm, md, lg, cta, nav)
+- [x] Add all Text styles (display, heading, title, body, body-regular, caption, label)
 - [ ] Link variables to components
+- [ ] Create Design Guide page
 
 ### Development Handoff
 - [ ] Export CSS variables file

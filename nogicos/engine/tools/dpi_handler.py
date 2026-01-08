@@ -140,17 +140,20 @@ class DPIHandler:
                 logger.debug(f"GetDpiForMonitor failed: {e}")
         
         # 方法 3: GetDeviceCaps (最后手段)
+        hdc = None
         try:
             hdc = self.user32.GetDC(hwnd)
             if hdc:
                 gdi32 = ctypes.WinDLL('gdi32')
                 LOGPIXELSX = 88
                 dpi = gdi32.GetDeviceCaps(hdc, LOGPIXELSX)
-                self.user32.ReleaseDC(hwnd, hdc)
                 if dpi > 0:
                     return dpi / self.STANDARD_DPI
         except Exception as e:
             logger.debug(f"GetDeviceCaps failed: {e}")
+        finally:
+            if hdc:
+                self.user32.ReleaseDC(hwnd, hdc)
         
         return 1.0  # 默认 100%
     

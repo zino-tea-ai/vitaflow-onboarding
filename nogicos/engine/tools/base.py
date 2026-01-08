@@ -366,9 +366,23 @@ class ToolRegistry:
                 
                 duration_ms = int((time.time() - start_time) * 1000)
                 
+                # Check if tool returned a dict with explicit success field
+                # This is critical for tools like window_type that may fail silently
+                actual_success = True
+                actual_error = None
+                if isinstance(result, dict):
+                    if "success" in result:
+                        actual_success = bool(result.get("success", True))
+                    if "error" in result and result.get("error"):
+                        actual_error = result.get("error")
+                        if actual_success and actual_error:
+                            # If there's an error message, it's not really successful
+                            actual_success = False
+                
                 return ToolResult(
-                    success=True,
+                    success=actual_success,
                     output=result,
+                    error=actual_error,
                     tool_name=name,
                     duration_ms=duration_ms
                 )

@@ -353,6 +353,8 @@ class ContextStore:
             "browser": None,
             "desktop": None,
             "files": None,
+            # 新增：支持多窗口
+            "connected_windows": [],  # List[AppContext]
         }
         
         for hook_id, state in connected.items():
@@ -362,6 +364,13 @@ class ContextStore:
                 context["desktop"] = asdict(state.context)
             elif state.type == HookType.FILE and state.context:
                 context["files"] = asdict(state.context)
+            
+            # 收集所有带 hwnd 的上下文
+            if state.context and hasattr(state.context, 'hwnd') and state.context.hwnd:
+                ctx_dict = asdict(state.context) if hasattr(state.context, '__dataclass_fields__') else {}
+                if ctx_dict:
+                    ctx_dict['hook_id'] = hook_id
+                    context["connected_windows"].append(ctx_dict)
         
         return context
     
@@ -377,11 +386,39 @@ class ContextStore:
         if not ctx["connected_hooks"]:
             return ""
         
-        lines = ["[Current Context - NogicOS is aware of the following:]"]
+        lines = ["[CONNECTED TARGETS - You MUST use these windows, do NOT enumerate windows yourself:]"]
         
-        if ctx["browser"]:
+        # 新增：显示所有连接的窗口
+        connected_windows = ctx.get("connected_windows", [])
+        if connected_windows:
+            lines.append(f"\n## Connected Windows ({len(connected_windows)} total)")
+            for i, win in enumerate(connected_windows, 1):
+                hwnd = win.get('hwnd', 0)
+                title = win.get('title', '') or win.get('active_window', '')
+                app = win.get('app_name', '') or win.get('app_display_name', '') or win.get('active_app', '')
+                app_type = win.get('app_type', 'unknown')
+                
+                lines.append(f"\n### Window {i}: {app}")
+                lines.append(f"- **HWND: {hwnd}** ← Target window handle")
+                lines.append(f"- Title: {title}")
+                lines.append(f"- Type: {app_type}")
+                
+                # 浏览器特有信息
+                if win.get('url'):
+                    lines.append(f"- URL: {win['url']}")
+                if win.get('tab_count'):
+                    lines.append(f"- Tabs: {win['tab_count']}")
+            
+            lines.append(f"\n⚠️ IMPORTANT: User has connected to {len(connected_windows)} specific window(s).")
+            lines.append(f"   Do NOT call list_windows or find_window to find other windows.")
+            lines.append(f"   Always use the HWND values above for window_screenshot, window_click, etc.")
+        
+        # 兼容旧格式
+        elif ctx["browser"]:
             b = ctx["browser"]
-            lines.append(f"\n## Browser ({b['app']})")
+            hwnd = b.get('hwnd', 0)
+            lines.append(f"\n## Browser Target ({b['app']})")
+            lines.append(f"- **HWND: {hwnd}** ← Use this for all browser operations")
             lines.append(f"- Active URL: {b['url']}")
             lines.append(f"- Page Title: {b['title']}")
             if b.get('tabs'):
@@ -391,11 +428,16 @@ class ContextStore:
                 if len(b['tabs']) > 5:
                     lines.append(f"  ... and {len(b['tabs']) - 5} more tabs")
         
-        if ctx["desktop"]:
+        elif ctx["desktop"]:
             d = ctx["desktop"]
-            lines.append(f"\n## Desktop")
-            lines.append(f"- Active App: {d['active_app']}")
-            lines.append(f"- Active Window: {d['active_window']}")
+            hwnd = d.get('hwnd', 0)
+            lines.append(f"\n## Desktop Target")
+            lines.append(f"- **HWND: {hwnd}** ← Use this for all desktop operations (click, type, screenshot)")
+            lines.append(f"- App: {d['active_app']}")
+            lines.append(f"- Window Title: {d['active_window']}")
+            lines.append(f"\n⚠️ IMPORTANT: User has connected to this specific window.")
+            lines.append(f"   Do NOT call list_windows or find_window to find another window.")
+            lines.append(f"   Always use hwnd={hwnd} for window_screenshot, window_click, etc.")
         
         if ctx["files"]:
             f = ctx["files"]

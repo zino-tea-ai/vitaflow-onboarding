@@ -258,6 +258,8 @@ class MultiOverlayManager {
     /** @type {Map<number, OverlayInstance>} hwnd -> OverlayInstance */
     this._overlays = new Map();
     this._isAvailable = true;
+    /** @type {number | null} 当前活跃窗口句柄 */
+    this._currentActiveHwnd = null;
   }
 
   /**
@@ -323,6 +325,7 @@ class MultiOverlayManager {
         webPreferences: {
           nodeIntegration: false,
           contextIsolation: true,
+          preload: path.join(__dirname, 'overlay-preload.js'),
         },
       });
 
@@ -561,6 +564,154 @@ class MultiOverlayManager {
    */
   getActiveHwnds() {
     return Array.from(this._overlays.keys());
+  }
+
+  /**
+   * 设置活跃窗口（Phase 7.6: 多窗口焦点管理）
+   * 高亮指定窗口，使其他窗口变暗
+   * @param {number} activeHwnd - 活跃窗口句柄
+   */
+  setActiveWindow(activeHwnd) {
+    for (const [hwnd, instance] of this._overlays) {
+      if (!instance.isAlive()) continue;
+      
+      if (hwnd === activeHwnd) {
+        // 活跃窗口
+        instance.window.webContents.send('focus:active');
+        console.log(`[MultiOverlay] Window ${hwnd} set to ACTIVE`);
+      } else {
+        // 非活跃窗口
+        instance.window.webContents.send('focus:inactive');
+        console.log(`[MultiOverlay] Window ${hwnd} set to INACTIVE`);
+      }
+    }
+  }
+
+  /**
+   * 循环切换活跃窗口
+   * @returns {number | null} 新的活跃窗口 HWND
+   */
+  cycleActiveWindow() {
+    const hwnds = this.getActiveHwnds();
+    if (hwnds.length === 0) return null;
+    
+    // 如果当前没有活跃窗口，初始化为第一个
+    if (this._currentActiveHwnd === null || !hwnds.includes(this._currentActiveHwnd)) {
+      const firstHwnd = hwnds[0];
+      this.setActiveWindow(firstHwnd);
+      this._currentActiveHwnd = firstHwnd;
+      console.log(`[MultiOverlay] Initialized active window to first: ${firstHwnd}`);
+      return firstHwnd;
+    }
+    
+    // 找到当前活跃窗口索引
+    const currentIndex = hwnds.indexOf(this._currentActiveHwnd);
+    
+    // 下一个
+    const nextIndex = (currentIndex + 1) % hwnds.length;
+    const nextHwnd = hwnds[nextIndex];
+    
+    this.setActiveWindow(nextHwnd);
+    this._currentActiveHwnd = nextHwnd;
+    
+    console.log(`[MultiOverlay] Cycled active window: ${this._currentActiveHwnd} -> ${nextHwnd}`);
+    return nextHwnd;
+  }
+
+  /**
+   * 获取当前活跃窗口
+   * @returns {number | null}
+   */
+  getCurrentActiveHwnd() {
+    return this._currentActiveHwnd;
+  }
+
+  /**
+   * 初始化活跃窗口（如果有 overlay 但未设置活跃窗口）
+   * 在首次创建 overlay 或收到事件时自动调用
+   */
+  initializeActiveIfNeeded() {
+    if (this._currentActiveHwnd === null && this._overlays.size > 0) {
+      const firstHwnd = this.getActiveHwnds()[0];
+      if (firstHwnd) {
+        this.setActiveWindow(firstHwnd);
+        this._currentActiveHwnd = firstHwnd;
+        console.log(`[MultiOverlay] Auto-initialized active window: ${firstHwnd}`);
+      }
+    }
+  }
+
+  /**
+   * 允许的预览类型列表（白名单）
+   * 
+   * 扩展指南：新增预览类型需同步更新：
+   * 1. 此处添加类型名到 Set
+   * 2. _generateOverlayHTML() 中添加 ipcRenderer.on('preview:新类型', ...) 监听
+   * 3. _generateOverlayHTML() 中添加对应的 create*Preview() 函数
+   * 4. agent-ipc.js handleToolEventForPreview() 中添加 switch case
+   * 
+   * @see agent-ipc.js 底部的"预览类型白名单说明"获取完整维护指南
+   */
+  static ALLOWED_PREVIEW_TYPES = new Set([
+    'mouse-trajectory',  // 鼠标移动轨迹（虚线）
+    'click',             // 点击涟漪效果
+    'typing',            // 输入文字预览
+    'target',            // 目标位置指示器（脉冲环）
+    'scroll',            // 滚动方向指示
+    'shortcut',          // 快捷键显示
+    'window-action',     // 窗口操作提示（移动/缩放/关闭等）
+    'clear',             // 清除所有预览
+  ]);
+
+  /**
+   * 发送动作预览到指定 Overlay
+   * @param {number} hwnd - 目标窗口句柄
+   * @param {string} previewType - 预览类型
+   * @param {object} data - 预览数据
+   */
+  sendActionPreview(hwnd, previewType, data) {
+    // 参数校验：hwnd
+    if (typeof hwnd !== 'number' || hwnd <= 0 || !Number.isInteger(hwnd)) {
+      console.warn(`[MultiOverlay] Invalid hwnd for preview: ${hwnd}`);
+      return { success: false, error: 'Invalid hwnd: must be a positive integer' };
+    }
+
+    // 参数校验：previewType
+    if (typeof previewType !== 'string' || !MultiOverlayManager.ALLOWED_PREVIEW_TYPES.has(previewType)) {
+      console.warn(`[MultiOverlay] Invalid or disallowed preview type: ${previewType}`);
+      return { success: false, error: `Invalid preview type: ${previewType}. Allowed: ${[...MultiOverlayManager.ALLOWED_PREVIEW_TYPES].join(', ')}` };
+    }
+
+    // 参数校验：data
+    if (data !== null && typeof data !== 'object') {
+      console.warn(`[MultiOverlay] Invalid preview data type: ${typeof data}`);
+      return { success: false, error: 'Invalid data: must be an object or null' };
+    }
+
+    const instance = this._overlays.get(hwnd);
+    if (!instance || !instance.isAlive()) {
+      console.warn(`[MultiOverlay] Cannot send preview, overlay not found: ${hwnd}`);
+      return { success: false, error: 'Overlay not found', hwnd };
+    }
+
+    try {
+      instance.window.webContents.send(`preview:${previewType}`, data);
+      return { success: true };
+    } catch (e) {
+      console.error(`[MultiOverlay] Failed to send preview:`, e.message);
+      return { success: false, error: e.message };
+    }
+  }
+
+  /**
+   * 清除所有动作预览
+   */
+  clearAllPreviews() {
+    for (const [hwnd, instance] of this._overlays) {
+      if (instance.isAlive()) {
+        instance.window.webContents.send('preview:clear');
+      }
+    }
   }
 
   /**
@@ -1044,15 +1195,34 @@ class MultiOverlayManager {
     <span class="app-name">${targetTitle || ''}</span>
   </div>
   
+  <!-- Phase 7: 预览效果容器 -->
+  <div id="preview-container" style="position: fixed; inset: 0; pointer-events: none; z-index: 1000;"></div>
+  
+  <!-- Phase 7: 焦点状态样式 -->
+  <style id="focus-styles">
+    body.focus-active .corner::before,
+    body.focus-active .corner::after {
+      background: #00ff88 !important;
+      box-shadow: 0 0 15px rgba(0, 255, 136, 0.8) !important;
+    }
+    body.focus-inactive {
+      opacity: 0.5;
+      filter: grayscale(0.3);
+    }
+    body.focus-inactive .corner::before,
+    body.focus-inactive .corner::after {
+      background: rgba(255, 255, 255, 0.3) !important;
+      box-shadow: none !important;
+    }
+  </style>
+  
   <script>
-    // Premium 音效 - 精致的连接音（类似 macOS 系统音效）
+    // ============== Premium 音效 ==============
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
     
     function playPremiumConnectSound() {
       const now = audioContext.currentTime;
-      
-      // 主音：柔和的上升和弦
-      const frequencies = [880, 1108.73, 1318.51]; // A5, C#6, E6 (A major chord)
+      const frequencies = [880, 1108.73, 1318.51];
       
       frequencies.forEach((freq, i) => {
         const osc = audioContext.createOscillator();
@@ -1072,31 +1242,357 @@ class MultiOverlayManager {
         osc.frequency.setValueAtTime(freq * 0.5, now);
         osc.frequency.exponentialRampToValueAtTime(freq, now + 0.08);
         
-        // 渐入渐出
         gain.gain.setValueAtTime(0, now);
         gain.gain.linearRampToValueAtTime(0.06 - i * 0.015, now + 0.05);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
         
-        osc.start(now + i * 0.03); // 错开时间，形成琶音效果
+        osc.start(now + i * 0.03);
         osc.stop(now + 0.3);
       });
       
-      // 泛音层：增加空气感
       const shimmer = audioContext.createOscillator();
       const shimmerGain = audioContext.createGain();
       shimmer.connect(shimmerGain);
       shimmerGain.connect(audioContext.destination);
       shimmer.type = 'triangle';
-      shimmer.frequency.setValueAtTime(2637, now + 0.05); // E7
+      shimmer.frequency.setValueAtTime(2637, now + 0.05);
       shimmerGain.gain.setValueAtTime(0.02, now + 0.05);
       shimmerGain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
       shimmer.start(now + 0.05);
       shimmer.stop(now + 0.25);
     }
     
-    // 延迟播放，配合视觉动画
     setTimeout(() => playPremiumConnectSound(), 180);
+    
+    // ============== Phase 7: 预览渲染系统 ==============
+    const previewContainer = document.getElementById('preview-container');
+    let activeElements = [];
+    
+    // 清除所有预览元素
+    function clearPreviews() {
+      activeElements.forEach(el => el.remove());
+      activeElements = [];
+    }
+    
+    // 创建点击指示器
+    function createClickIndicator(x, y, type = 'click') {
+      const el = document.createElement('div');
+      el.className = 'preview-click';
+      el.style.cssText = \`
+        position: absolute;
+        left: \${x}px;
+        top: \${y}px;
+        width: 40px;
+        height: 40px;
+        border: 2px solid #00ff88;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        animation: preview-ripple 0.5s ease-out forwards;
+      \`;
+      if (type === 'double-click') {
+        el.style.animation = 'preview-double-ripple 0.6s ease-out forwards';
+      } else if (type === 'right-click') {
+        el.style.borderColor = '#f59e0b';
+      }
+      previewContainer.appendChild(el);
+      activeElements.push(el);
+      setTimeout(() => el.remove(), 600);
+    }
+    
+    // 创建目标指示器
+    function createTargetIndicator(x, y, label) {
+      clearPreviews();
+      const el = document.createElement('div');
+      el.className = 'preview-target';
+      el.innerHTML = \`
+        <div class="target-ring"></div>
+        <div class="target-label">\${label || '目标'}</div>
+      \`;
+      el.style.cssText = \`
+        position: absolute;
+        left: \${x}px;
+        top: \${y}px;
+        transform: translate(-50%, -50%);
+      \`;
+      previewContainer.appendChild(el);
+      activeElements.push(el);
+    }
+    
+    // 创建输入预览
+    function createTypingPreview(text, isPassword) {
+      clearPreviews();
+      const el = document.createElement('div');
+      el.className = 'preview-typing';
+      el.innerHTML = \`
+        <span>\${isPassword ? '•'.repeat(Math.min(text.length, 20)) : text.substring(0, 50)}</span>
+        <span class="cursor"></span>
+      \`;
+      el.style.cssText = \`
+        position: fixed;
+        bottom: 60px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 8px 16px;
+        background: rgba(0, 0, 0, 0.9);
+        border: 1px solid \${isPassword ? '#f59e0b' : 'rgba(255,255,255,0.2)'};
+        border-radius: 8px;
+        color: \${isPassword ? '#f59e0b' : 'white'};
+        font-family: monospace;
+        font-size: 14px;
+      \`;
+      previewContainer.appendChild(el);
+      activeElements.push(el);
+      setTimeout(() => el.remove(), 2000);
+    }
+    
+    // 创建快捷键预览
+    function createShortcutPreview(shortcut) {
+      clearPreviews();
+      const keys = shortcut.split('+');
+      const el = document.createElement('div');
+      el.className = 'preview-shortcut';
+      el.innerHTML = keys.map(k => \`<kbd>\${k}</kbd>\`).join('');
+      el.style.cssText = \`
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        padding: 16px 32px;
+        background: rgba(0, 0, 0, 0.95);
+        border: 1px solid rgba(255,255,255,0.3);
+        border-radius: 12px;
+        display: flex;
+        gap: 8px;
+        animation: preview-scale-in 0.2s ease-out;
+      \`;
+      previewContainer.appendChild(el);
+      activeElements.push(el);
+      setTimeout(() => el.remove(), 1000);
+    }
+    
+    // 创建滚动预览
+    function createScrollPreview(direction, amount) {
+      const el = document.createElement('div');
+      el.className = 'preview-scroll';
+      el.innerHTML = direction === 'up' ? '↑' : direction === 'down' ? '↓' : direction === 'left' ? '←' : '→';
+      el.style.cssText = \`
+        position: fixed;
+        top: 50%;
+        right: 20px;
+        transform: translateY(-50%);
+        width: 40px;
+        height: 40px;
+        background: rgba(0, 0, 0, 0.8);
+        border: 1px solid #00ff88;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #00ff88;
+        font-size: 20px;
+        animation: preview-bounce 0.5s ease-out;
+      \`;
+      previewContainer.appendChild(el);
+      activeElements.push(el);
+      setTimeout(() => el.remove(), 500);
+    }
+    
+    // 创建鼠标轨迹
+    function createMouseTrajectory(from, to) {
+      clearPreviews();
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.style.cssText = 'position: absolute; inset: 0; width: 100%; height: 100%;';
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', \`M\${from.x},\${from.y} L\${to.x},\${to.y}\`);
+      path.setAttribute('stroke', 'rgba(0, 255, 136, 0.8)');
+      path.setAttribute('stroke-width', '2');
+      path.setAttribute('stroke-dasharray', '5,5');
+      path.setAttribute('fill', 'none');
+      path.style.animation = 'preview-dash 0.3s linear forwards';
+      svg.appendChild(path);
+      previewContainer.appendChild(svg);
+      activeElements.push(svg);
+      setTimeout(() => svg.remove(), 1000);
+    }
+    
+    // 创建窗口操作提示
+    function createWindowActionPreview(action, label) {
+      clearPreviews();
+      const icons = {
+        move: '↔',
+        resize: '⤢',
+        close: '✕',
+        maximize: '⬜',
+        minimize: '—',
+        open: '📂',
+        generic: '⚡'
+      };
+      const el = document.createElement('div');
+      el.className = 'preview-window-action';
+      el.innerHTML = \`<span class="icon">\${icons[action] || '⚡'}</span><span class="label">\${label}</span>\`;
+      el.style.cssText = \`
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        padding: 16px 24px;
+        background: rgba(0, 0, 0, 0.9);
+        border: 1px solid #00ff88;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: white;
+        font-size: 14px;
+        animation: preview-scale-in 0.2s ease-out;
+      \`;
+      previewContainer.appendChild(el);
+      activeElements.push(el);
+      setTimeout(() => el.remove(), 1500);
+    }
+    
+    // ============== IPC 事件监听（通过安全的 contextBridge API）==============
+    // 使用 overlay-preload.js 暴露的 window.overlayAPI
+    if (window.overlayAPI) {
+      // 一次性注册所有预览事件处理器
+      window.overlayAPI.onAllPreviews({
+        click: (data) => {
+          if (data?.x != null && data?.y != null) {
+            createClickIndicator(data.x, data.y, data.type);
+          }
+        },
+        target: (data) => {
+          if (data?.x != null && data?.y != null) {
+            createTargetIndicator(data.x, data.y, data.label);
+          }
+        },
+        typing: (data) => {
+          if (data?.text) {
+            createTypingPreview(data.text, data.isPassword);
+          }
+        },
+        shortcut: (data) => {
+          if (data?.shortcut) {
+            createShortcutPreview(data.shortcut);
+          }
+        },
+        scroll: (data) => {
+          createScrollPreview(data?.direction || 'down', data?.amount || 100);
+        },
+        mouseTrajectory: (data) => {
+          if (data?.from && data?.to) {
+            createMouseTrajectory(data.from, data.to);
+          }
+        },
+        windowAction: (data) => {
+          createWindowActionPreview(data?.action || 'generic', data?.label || '执行操作');
+        },
+        clear: () => {
+          clearPreviews();
+        },
+      });
+      
+      // 焦点管理事件
+      window.overlayAPI.onFocus('focus:active', () => {
+        document.body.classList.remove('focus-inactive');
+        document.body.classList.add('focus-active');
+      });
+      
+      window.overlayAPI.onFocus('focus:inactive', () => {
+        document.body.classList.remove('focus-active');
+        document.body.classList.add('focus-inactive');
+      });
+      
+      console.log('[Overlay] IPC events registered via secure contextBridge');
+    } else {
+      console.warn('[Overlay] overlayAPI not available - preload may have failed');
+    }
   </script>
+  
+  <!-- Phase 7: 预览动画样式 -->
+  <style>
+    @keyframes preview-ripple {
+      0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; }
+      100% { transform: translate(-50%, -50%) scale(2); opacity: 0; }
+    }
+    @keyframes preview-double-ripple {
+      0%, 50% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; }
+      25% { transform: translate(-50%, -50%) scale(1.5); opacity: 0.5; }
+      75% { transform: translate(-50%, -50%) scale(1.5); opacity: 0.5; }
+      100% { transform: translate(-50%, -50%) scale(2); opacity: 0; }
+    }
+    @keyframes preview-scale-in {
+      from { transform: translate(-50%, -50%) scale(0.8); opacity: 0; }
+      to { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    }
+    @keyframes preview-bounce {
+      0%, 100% { transform: translateY(-50%); }
+      50% { transform: translateY(-60%); }
+    }
+    @keyframes preview-dash {
+      from { stroke-dashoffset: 100; }
+      to { stroke-dashoffset: 0; }
+    }
+    .target-ring {
+      width: 60px;
+      height: 60px;
+      border: 2px solid #00ff88;
+      border-radius: 50%;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      animation: preview-pulse-ring 1.5s ease-out infinite;
+    }
+    @keyframes preview-pulse-ring {
+      0% { transform: translate(-50%, -50%) scale(1); opacity: 0.8; }
+      100% { transform: translate(-50%, -50%) scale(1.5); opacity: 0; }
+    }
+    .target-label {
+      position: absolute;
+      top: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 4px 12px;
+      background: rgba(0, 0, 0, 0.8);
+      border: 1px solid #00ff88;
+      border-radius: 4px;
+      color: #00ff88;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .preview-typing .cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      background: #00ff88;
+      margin-left: 2px;
+      animation: blink 0.8s step-end infinite;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+    .preview-shortcut kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 40px;
+      height: 40px;
+      padding: 0 12px;
+      background: linear-gradient(180deg, #444, #333);
+      border: 1px solid #555;
+      border-radius: 6px;
+      color: white;
+      font-family: system-ui;
+      font-size: 16px;
+      font-weight: 500;
+      box-shadow: 0 2px 0 #222;
+    }
+    .preview-window-action .icon {
+      font-size: 24px;
+    }
+  </style>
 </body>
 </html>
     `;
@@ -1162,7 +1658,38 @@ function setupMultiOverlayIPC() {
     return manager.stopTracking(hwnd);
   });
 
-  console.log('[MultiOverlayManager] IPC handlers registered (Phase 2)');
+  // Phase 7: 设置活跃窗口（多窗口焦点管理）
+  ipcMain.handle('multi-overlay:set-active', async (event, { hwnd }) => {
+    manager.setActiveWindow(hwnd);
+    return { success: true, activeHwnd: hwnd };
+  });
+
+  // Phase 7: 循环切换活跃窗口
+  ipcMain.handle('multi-overlay:cycle-active', async () => {
+    const nextHwnd = manager.cycleActiveWindow();
+    return { success: true, activeHwnd: nextHwnd };
+  });
+
+  // Phase 7: 发送动作预览（带参数校验）
+  ipcMain.handle('multi-overlay:preview', async (event, { hwnd, previewType, data }) => {
+    // 基础校验在 manager.sendActionPreview 内部完成
+    const result = manager.sendActionPreview(hwnd, previewType, data);
+    
+    // 如果失败，记录到控制台（便于调试）
+    if (!result.success) {
+      console.warn(`[IPC multi-overlay:preview] Failed:`, result.error);
+    }
+    
+    return result;
+  });
+
+  // Phase 7: 清除所有动作预览
+  ipcMain.handle('multi-overlay:clear-previews', async () => {
+    manager.clearAllPreviews();
+    return { success: true };
+  });
+
+  console.log('[MultiOverlayManager] IPC handlers registered (Phase 2 + Phase 7)');
 }
 
 // ============== 导出 ==============

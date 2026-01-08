@@ -19,8 +19,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Set, TYPE_CHECKING
 from datetime import datetime, timedelta
 
-if TYPE_CHECKING:
-    from .host_agent import AgentConfig
+# 已删除: host_agent 依赖，改用独立的 ConcurrencyConfig
 
 logger = logging.getLogger(__name__)
 

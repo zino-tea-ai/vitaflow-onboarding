@@ -253,10 +253,12 @@ class BrowserHook(BaseHook):
                         windows.append(window)
                 return True
             
-            # 【修复 #18】缓存 WNDENUMPROC 类型避免重复创建
+            # 【修复 #18 + Segfault 修复】
+            # 必须保持回调实例的引用，否则会被 GC 导致崩溃
             if not hasattr(self, '_WNDENUMPROC'):
                 self._WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
-            user32.EnumWindows(self._WNDENUMPROC(enum_callback), 0)
+            callback_instance = self._WNDENUMPROC(enum_callback)
+            user32.EnumWindows(callback_instance, 0)
             
             if windows:
                 return windows[0]

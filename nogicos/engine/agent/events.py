@@ -39,6 +39,7 @@ class EventType(Enum):
     AGENT_EXECUTING = "agent.executing"
     AGENT_WAITING = "agent.waiting"
     AGENT_IDLE = "agent.idle"
+    AGENT_NEEDS_HELP = "agent.needs_help"  # 需要人工介入（与敏感确认语义分离）
     
     # ========== 工具调用 ==========
     TOOL_START = "tool.start"

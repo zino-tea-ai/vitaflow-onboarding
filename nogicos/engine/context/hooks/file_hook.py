@@ -26,6 +26,10 @@ try:
     WATCHDOG_AVAILABLE = True
 except ImportError:
     WATCHDOG_AVAILABLE = False
+    Observer = None
+    FileSystemEventHandler = object  # Fallback base class
+    FileModifiedEvent = None
+    FileCreatedEvent = None
     logger.debug("[FileHook] watchdog not available, file watching disabled")
 
 

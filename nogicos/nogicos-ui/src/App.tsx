@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
-import { TitleBar, Sidebar, ChatArea, ChatKitArea, VisualizationPanel, defaultVisualizationState } from '@/components/nogicos';
-import type { Session, Message, ToolExecution, ThinkingState, VisualizationState, ActionLogEntry, GlowState } from '@/components/nogicos';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { TitleBar, Sidebar, ChatArea, ChatKitArea, ExecutionStats, ExecutionPlan } from '@/components/nogicos';
+import type { Session, Message, ToolExecution, ThinkingState, ExecutionStatsData, ExecutionPlanData, ConnectedApp } from '@/components/nogicos';
 import { MinimalChatArea, SystemChatArea, CursorChatArea, PremiumChatArea } from '@/components/chat';
 import type { ChatMessage } from '@/components/chat/MinimalChatArea';
 import { Toaster } from '@/components/ui/sonner';
@@ -10,6 +10,7 @@ import type { ConnectionState } from '@/hooks/useWebSocket';
 import { CommandPalette } from '@/components/command/CommandPalette';
 import { useElectron } from '@/hooks/useElectron';
 import { useSessionPersist } from '@/hooks/useSessionPersist';
+import { useAgentWebSocket } from '@/hooks/useAgentWebSocket';
 
 // Config
 const WS_URL = 'ws://localhost:8765';
@@ -37,7 +38,7 @@ function App() {
     loadSession,
     saveSession,
     deleteSession: deletePersistedSession,
-    refreshSessions,
+    // refreshSessions, // Available but not currently used
   } = useSessionPersist({ autoLoad: true });
   
   // State - define these FIRST
@@ -52,24 +53,29 @@ function App() {
   // Each session in this set will have its own MinimalChatArea instance rendered
   const [activeSessions, setActiveSessions] = useState<Set<string>>(() => new Set([initialSessionId]));
   
-  // Convert to UI format and include unsaved session
-  const persistedUISession: Session[] = persistedSessions.map(s => ({
-    id: s.id,
-    title: s.title,
-    preview: s.preview,
-    timestamp: new Date(s.updated_at),
-  }));
-  
-  // Merge: unsaved session first (if it's not already in persisted), then persisted sessions
-  const sessions: Session[] = currentUnsavedSession && !persistedUISession.find(s => s.id === currentUnsavedSession.id)
-    ? [currentUnsavedSession, ...persistedUISession]
-    : persistedUISession;
+  // Convert to UI format and include unsaved session (wrapped in useMemo to prevent dependency issues)
+  const sessions: Session[] = useMemo(() => {
+    const persistedUISession: Session[] = persistedSessions.map(s => ({
+      id: s.id,
+      title: s.title,
+      preview: s.preview,
+      timestamp: new Date(s.updated_at),
+    }));
+    
+    // Merge: unsaved session first (if it's not already in persisted), then persisted sessions
+    return currentUnsavedSession && !persistedUISession.find(s => s.id === currentUnsavedSession.id)
+      ? [currentUnsavedSession, ...persistedUISession]
+      : persistedUISession;
+  }, [persistedSessions, currentUnsavedSession]);
   
   const [messages, setMessages] = useState<Message[]>([]);
   // Store all sessions' messages in a map
   const [chatSessions, setChatSessions] = useState<Record<string, ChatMessage[]>>({});
   const [tools, setTools] = useState<ToolExecution[]>([]);
   const [isExecuting, setIsExecuting] = useState(false);
+  
+  // 连接的应用列表（从 ConnectorPanel 同步）
+  const [connectedApps, setConnectedApps] = useState<ConnectedApp[]>([]);
   const [thinkingState, setThinkingState] = useState<ThinkingState>({
     isThinking: false,
     content: '',
@@ -99,19 +105,25 @@ function App() {
       loadSession(mostRecent.id).then(detail => {
         if (detail?.history && Array.isArray(detail.history)) {
           const chatMessages: ChatMessage[] = detail.history
-            .filter((m): m is { role: string; content: string; parts?: unknown[] } =>
-              m && typeof m === 'object' &&
-              typeof m.role === 'string' &&
-              (m.role === 'user' || m.role === 'assistant') &&
-              typeof m.content === 'string'
-            )
-            .map((m, i) => ({
-              id: `loaded-${mostRecent.id}-${i}`,
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-              ...(Array.isArray(m.parts) ? { parts: m.parts } : {}),
-              isHistory: true,
-            }));
+            .filter((m: unknown) => {
+              if (!m || typeof m !== 'object') return false;
+              const msg = m as Record<string, unknown>;
+              return (
+                typeof msg.role === 'string' &&
+                (msg.role === 'user' || msg.role === 'assistant') &&
+                typeof msg.content === 'string'
+              );
+            })
+            .map((m: unknown, i: number) => {
+              const msg = m as { role: string; content: string; parts?: Array<{ type: string; text?: string; [key: string]: unknown }> };
+              return {
+                id: `loaded-${mostRecent.id}-${i}`,
+                role: msg.role as 'user' | 'assistant',
+                content: msg.content,
+                ...(Array.isArray(msg.parts) ? { parts: msg.parts } : {}),
+                isHistory: true,
+              };
+            });
           setChatSessions(prev => ({ ...prev, [mostRecent.id]: chatMessages }));
         }
       }).catch(err => {
@@ -120,9 +132,58 @@ function App() {
     }
   }, [sessions, loadSession]);
 
-  // Visualization state
-  const [vizState, setVizState] = useState<VisualizationState>(defaultVisualizationState);
-  const [showVisualization] = useState(true);
+  // Execution Stats state (for YC Demo)
+  const [showExecutionStats, setShowExecutionStats] = useState(false);
+  const [executionStats, setExecutionStats] = useState<ExecutionStatsData | null>(null);
+  const executionTracker = useRef({
+    startTime: 0,
+    toolsUsed: 0,
+    iterations: 0,
+    apps: new Set<string>(),
+    usedCachedPlan: false,
+    cacheSimilarity: 0,
+    patternsLearned: 0,
+  });
+
+  // Execution Plan state (for YC Demo - streaming plan display)
+  const [executionPlan, setExecutionPlan] = useState<ExecutionPlanData | null>(null);
+  const [showExecutionPlan, setShowExecutionPlan] = useState(false);
+
+  // Reset execution tracker when starting a new task
+  const resetExecutionTracker = useCallback(() => {
+    executionTracker.current = {
+      startTime: Date.now(),
+      toolsUsed: 0,
+      iterations: 0,
+      apps: new Set<string>(),
+      usedCachedPlan: false,
+      cacheSimilarity: 0,
+      patternsLearned: 0,
+    };
+    setShowExecutionStats(false);
+    setExecutionStats(null);
+    // Also reset execution plan
+    setExecutionPlan(null);
+    setShowExecutionPlan(false);
+  }, []);
+
+  // Phase 7: Agent WebSocket Hook
+  const {
+    state: agentState,
+    toastQueue,
+    isConnected: agentConnected,
+    startTask: agentStartTask,
+    stopTask: agentStopTask,
+    resumeTask: agentResumeTask,
+    confirmAction: agentConfirmAction,
+    clearError: agentClearError,
+    dismissToast,
+  } = useAgentWebSocket();
+  
+  // Phase 7: Toast dismiss handler
+  const handleDismissToast = useCallback((id: string) => {
+    dismissToast(id);
+  }, [dismissToast]);
   
   // Helper to add action log entry
   const addActionLog = useCallback((type: ActionLogEntry['type'], description: string) => {
@@ -230,6 +291,8 @@ function App() {
 
       // === Tool Events ===
       case 'tool_start':
+        // Track tools used for execution stats
+        executionTracker.current.toolsUsed += 1;
         if (msg.tool_id && msg.tool_name) {
           setTools((prev) => [
             ...prev,
@@ -384,6 +447,8 @@ function App() {
         break;
 
       case 'task_start':
+        // Reset execution tracker for new task
+        resetExecutionTracker();
         if (msg.data) {
           const taskData = msg.data as { max_steps?: number; url?: string };
           setVizState(prev => ({
@@ -397,36 +462,48 @@ function App() {
         }
         break;
 
-      case 'step_start':
-        if (msg.data) {
-          const stepData = msg.data as { step: number };
-          setVizState(prev => ({
-            ...prev,
-            step: prev.step ? { ...prev.step, current: stepData.step, status: 'active' } : null,
-            glow: 'medium',
-          }));
-          addActionLog('step', `步骤 ${stepData.step + 1} 开始`);
-        }
-        break;
+      // step_start is now handled below with execution plan update
 
       case 'step_complete':
         if (msg.data) {
           const stepData = msg.data as { step: number; success?: boolean };
+          // Update execution plan progress
+          setExecutionPlan(prev => prev ? { ...prev, currentStep: stepData.step + 1 } : null);
           setVizState(prev => ({
             ...prev,
             step: prev.step ? { ...prev.step, status: stepData.success !== false ? 'completed' : 'error' } : null,
           }));
-          addActionLog('step', `步骤 ${stepData.step + 1} ${stepData.success !== false ? '完成' : '失败'}`);
+          addActionLog('step', `Step ${stepData.step + 1} ${stepData.success !== false ? 'completed' : 'failed'}`);
         }
         break;
 
       case 'task_complete':
+        // CRITICAL: Unlock input IMMEDIATELY when task completes
+        // Don't wait for HTTP stream to finish
+        setIsExecuting(false);
         setVizState(prev => ({
           ...prev,
           glow: 'success',
           cursor: { ...prev.cursor, state: 'idle' },
         }));
         addActionLog('complete', '任务完成');
+        // Show execution stats (YC Demo moment!)
+        {
+          const tracker = executionTracker.current;
+          const totalTime = (Date.now() - tracker.startTime) / 1000;
+          setExecutionStats({
+            success: true,
+            totalTime,
+            iterations: tracker.iterations,
+            toolsUsed: tracker.toolsUsed,
+            apps: Array.from(tracker.apps),
+            usedCachedPlan: tracker.usedCachedPlan,
+            cacheSimilarity: tracker.cacheSimilarity,
+            patternsLearned: tracker.patternsLearned,
+            estimatedSpeedup: tracker.patternsLearned > 0 ? 6.0 : undefined,
+          });
+          setShowExecutionStats(true);
+        }
         // Reset glow after 2 seconds
         setTimeout(() => {
           setVizState(prev => ({ ...prev, glow: 'off' }));
@@ -440,16 +517,107 @@ function App() {
           step: prev.step ? { ...prev.step, status: 'error' } : null,
         }));
         addActionLog('error', '任务出错');
+        // Show error stats
+        {
+          const tracker = executionTracker.current;
+          const totalTime = (Date.now() - tracker.startTime) / 1000;
+          setExecutionStats({
+            success: false,
+            totalTime,
+            iterations: tracker.iterations,
+            toolsUsed: tracker.toolsUsed,
+            apps: Array.from(tracker.apps),
+          });
+          setShowExecutionStats(true);
+        }
         setTimeout(() => {
           setVizState(prev => ({ ...prev, glow: 'off' }));
         }, 2000);
+        break;
+
+      // YC Demo: Plan Cache hit - Pattern recognized!
+      case 'plan_cache_hit':
+        if (msg.data) {
+          const cacheData = msg.data as { similarity?: number; original_time?: number; expected_speedup?: string };
+          executionTracker.current.usedCachedPlan = true;
+          executionTracker.current.cacheSimilarity = cacheData.similarity ?? 0;
+          addActionLog('cache', `Pattern recognized! (${((cacheData.similarity ?? 0) * 100).toFixed(0)}% match)`);
+          toast.success('Pattern recognized! Using optimized approach', { duration: 3000 });
+          // Update execution plan with cache info
+          setExecutionPlan(prev => prev ? {
+            ...prev,
+            usedCache: true,
+            cacheSimilarity: cacheData.similarity ?? 0
+          } : null);
+        }
+        break;
+
+      // YC Demo: Plan generating (streaming start)
+      case 'plan_generating':
+        setShowExecutionPlan(true);
+        setExecutionPlan({
+          steps: [],
+          currentStep: 0,
+          isGenerating: true,
+        });
+        break;
+
+      // YC Demo: Plan generated with steps
+      case 'plan':
+      case 'plan_generated':
+        if (msg.data) {
+          const planData = msg.data as { steps?: string[]; plan?: { steps?: string[] } };
+          const steps = planData.steps || planData.plan?.steps || [];
+          setExecutionPlan(prev => ({
+            ...prev,
+            steps,
+            currentStep: 0,
+            isGenerating: false,
+            usedCache: prev?.usedCache ?? false,
+            cacheSimilarity: prev?.cacheSimilarity,
+          }));
+          setShowExecutionPlan(true);
+          addActionLog('step', `Plan generated: ${steps.length} steps`);
+        }
+        break;
+
+      // YC Demo: Step progress update
+      case 'step_start':
+        if (msg.data) {
+          const stepData = msg.data as { step: number };
+          setExecutionPlan(prev => prev ? { ...prev, currentStep: stepData.step } : null);
+          setVizState(prev => ({
+            ...prev,
+            step: prev.step ? { ...prev.step, current: stepData.step, status: 'active' } : null,
+            glow: 'medium',
+          }));
+          addActionLog('step', `Step ${stepData.step + 1} started`);
+        }
+        break;
+
+      // YC Demo: Model Cascade info
+      case 'model_cascade':
+        if (msg.data) {
+          const cascadeData = msg.data as { iteration?: number; model_display?: string; is_fast_mode?: boolean };
+          executionTracker.current.iterations = cascadeData.iteration ?? 0;
+          if (cascadeData.is_fast_mode) {
+            addActionLog('cascade', `Using ${cascadeData.model_display || 'Haiku'} (fast mode)`);
+          }
+        }
+        break;
+
+
+      // Track patterns learned (Plan Cache save)
+      case 'plan_cached':
+        executionTracker.current.patternsLearned += 1;
+        addActionLog('learn', 'New pattern learned and cached');
         break;
 
       default:
         // Ignore unknown types (pong handled by hook)
         break;
     }
-  }, [addActionLog, saveSession]);
+  }, [addActionLog, saveSession, resetExecutionTracker]);
 
   // Track if we've shown the connected toast
   const [hasShownConnectedToast, setHasShownConnectedToast] = useState(false);
@@ -545,7 +713,7 @@ function App() {
     // Prepare messages
     let chatMessages: ChatMessage[] = [];
     if (detail?.history && detail.history.length > 0) {
-      chatMessages = detail.history.map((m: any, i) => ({
+      chatMessages = detail.history.map((m: { role: string; content: string; parts?: Array<{ type: string; text?: string; [key: string]: unknown }> }, i: number) => ({
         id: `loaded-${id}-${i}`,
         role: m.role as 'user' | 'assistant',
         content: m.content,
@@ -590,6 +758,7 @@ function App() {
 
   // Handle session title/preview update from chat
   // NOTE: DO NOT create new session here - it will trigger key change and remount
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleSessionUpdate = useCallback((_title: string, _preview: string) => {
     // Session updates are handled by saveSession which updates persistedSessions
     // Session creation happens in handleMessagesChange
@@ -614,12 +783,11 @@ function App() {
       const title = firstUserMsg?.content?.slice(0, 30) || 'New Session';
       
       // Save to backend (this will add to persistedSessions)
-      const toSave = msgs.map(m => ({
-        role: m.role,
+      const toSave: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = msgs.map(m => ({
+        role: m.role as 'user' | 'assistant' | 'system',
         content: m.content,
-        parts: m.parts,
       }));
-      saveSession(sessionId, toSave as any, title);
+      saveSession(sessionId, toSave, title);
       
       // Don't clear unsaved session here - let the effect below handle it
       // to avoid the flash of disappearing sidebar item
@@ -671,6 +839,21 @@ function App() {
     // Execute task
     setIsExecuting(true);
     try {
+      // Phase 8 修复: 优先使用 Agent WebSocket (支持状态追踪/敏感操作确认/热键)
+      // 传递连接的窗口 hwnd 列表，如果没有连接则让后端自动检测
+      if (agentConnected && agentStartTask) {
+        const targetHwnds = connectedApps.map(app => app.hwnd).filter(hwnd => hwnd > 0);
+        console.log('[App] Starting task with target hwnds:', targetHwnds);
+        const taskId = await agentStartTask(content, targetHwnds);
+        if (!taskId) {
+          toast.error('Failed to start agent task');
+        }
+        // Agent events will be received via useAgentWebSocket hook
+        // UI updates handled by agentState
+        return;
+      }
+      
+      // Fallback: 使用旧的 HTTP API (非 Electron 环境或 Agent 不可用时)
       const response = await fetch(`${API_URL}/v2/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -705,11 +888,20 @@ function App() {
     } finally {
       setIsExecuting(false);
     }
-  }, [activeSessionId, messages, saveSession]);
+  }, [activeSessionId, messages, saveSession, agentConnected, agentStartTask, connectedApps]);
 
   // Stop execution
   const handleStopExecution = useCallback(async () => {
     try {
+      // Phase 8 修复: 优先使用 Agent WebSocket 停止任务
+      if (agentConnected && agentStopTask) {
+        agentStopTask();
+        setIsExecuting(false);
+        toast.info('Execution stopped');
+        return;
+      }
+      
+      // Fallback: HTTP API
       await fetch(`${API_URL}/stop`, { method: 'POST' });
       setIsExecuting(false);
       toast.info('Execution stopped');
@@ -717,7 +909,7 @@ function App() {
       console.error('Failed to stop:', e);
       setIsExecuting(false);
     }
-  }, []);
+  }, [agentConnected, agentStopTask]);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-background overflow-hidden">
@@ -747,6 +939,7 @@ function App() {
             onNewSession={handleNewSession}
             onSelectSession={handleSelectSession}
             onDeleteSession={handleDeleteSession}
+            onConnectedAppsChange={setConnectedApps}
           />
           {/* Render all active sessions - only the active one is visible */}
           {Array.from(activeSessions).map(sessionId => (
@@ -779,6 +972,7 @@ function App() {
           onNewSession={handleNewSession}
           onSelectSession={handleSelectSession}
           onDeleteSession={handleDeleteSession}
+          onConnectedAppsChange={setConnectedApps}
         />
 
         {/* Chat Area */}
@@ -836,17 +1030,21 @@ function App() {
           thinkingState={thinkingState}
           onSendMessage={handleSendMessage}
           onStopExecution={handleStopExecution}
+          // Phase 7: Agent 状态
+          agentStatus={agentState.status}
+          agentProgress={agentState.progress}
+          agentError={agentState.error}
+          pendingAction={agentState.pendingAction}
+          onConfirmAction={agentConfirmAction}
+          onRecoverFromError={(handler) => {
+            if (handler === 'retry') agentResumeTask();
+            else if (handler === 'clear') agentClearError();
+          }}
+          // Phase 7: Toast
+          toastQueue={toastQueue}
+          onDismissToast={handleDismissToast}
         />
           )}
-
-        {/* Visualization Panel */}
-        <VisualizationPanel
-          state={vizState}
-          visible={showVisualization}
-          collapsible={true}
-          initialCollapsed={false}
-          title="AI 可视化"
-        />
       </div>
       )}
 
@@ -860,8 +1058,25 @@ function App() {
         }}
       />
 
+      {/* Execution Plan Panel (YC Demo - streaming plan display) */}
+      <div className="fixed top-20 right-6 z-40 w-[320px]">
+        <ExecutionPlan
+          data={executionPlan}
+          visible={showExecutionPlan}
+        />
+      </div>
+
+      {/* Execution Stats Panel (YC Demo) */}
+      {executionStats && (
+        <ExecutionStats
+          data={executionStats}
+          visible={showExecutionStats}
+          onDismiss={() => setShowExecutionStats(false)}
+        />
+      )}
+
       {/* Toast Notifications */}
-      <Toaster 
+      <Toaster
         position="bottom-right"
         toastOptions={{
           className: 'glass-panel',

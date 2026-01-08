@@ -3,11 +3,15 @@
  * 
  * 安全地暴露 Electron API 给渲染进程
  * 遵循 contextIsolation 最佳实践
+ * 
+ * Phase 7: 添加 agentAPI 支持
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-// 暴露窗口控制 API
+// ============================================================================
+// electronAPI - 基础窗口控制 API
+// ============================================================================
 contextBridge.exposeInMainWorld('electronAPI', {
   // ============== 窗口控制 ==============
   minimize: () => ipcRenderer.send('window-minimize'),
@@ -132,4 +136,154 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Phase 2: 停止位置跟踪
   stopMultiOverlayTracking: (hwnd) =>
     ipcRenderer.invoke('multi-overlay:stop-tracking', { hwnd }),
+
+  // Phase 7: 设置活跃窗口（多窗口焦点管理）
+  setActiveOverlay: (hwnd) =>
+    ipcRenderer.invoke('multi-overlay:set-active', { hwnd }),
+
+  // Phase 7: 循环切换活跃窗口
+  cycleActiveOverlay: () =>
+    ipcRenderer.invoke('multi-overlay:cycle-active'),
+
+  // Phase 7: 发送动作预览到指定 Overlay
+  sendOverlayPreview: (hwnd, previewType, data) =>
+    ipcRenderer.invoke('multi-overlay:preview', { hwnd, previewType, data }),
+
+  // Phase 7: 清除所有动作预览
+  clearOverlayPreviews: () =>
+    ipcRenderer.invoke('multi-overlay:clear-previews'),
+});
+
+// ============================================================================
+// agentAPI - Agent 控制 API (Phase 7)
+// ⚠️ 安全要求：使用 contextBridge 包装，永不直接暴露 ipcRenderer
+// ============================================================================
+contextBridge.exposeInMainWorld('agentAPI', {
+  // ============== Agent 控制 ==============
+  
+  /**
+   * 启动任务
+   * @param {string} task - 任务描述
+   * @param {number[]} targetHwnds - 目标窗口句柄数组
+   * @returns {Promise<{taskId: string}>}
+   */
+  startTask: (task, targetHwnds) => 
+    ipcRenderer.invoke('agent:start', { task, targetHwnds }),
+  
+  /**
+   * 停止任务
+   * @param {string} taskId - 任务 ID
+   */
+  stopTask: (taskId) => 
+    ipcRenderer.invoke('agent:stop', { taskId }),
+  
+  /**
+   * 恢复任务
+   * @param {string} taskId - 任务 ID
+   */
+  resumeTask: (taskId) => 
+    ipcRenderer.invoke('agent:resume', { taskId }),
+
+  // ============== 状态订阅 ==============
+  
+  /**
+   * 订阅 Agent 事件（安全的单向推送）
+   * @param {Function} callback - 事件回调
+   * @returns {Function} 取消订阅函数
+   */
+  onAgentEvent: (callback) => {
+    // ⚠️ 重要：不传递原始 event 对象，只传递 data
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('agent:event', handler);
+    return () => ipcRenderer.removeListener('agent:event', handler);
+  },
+  
+  /**
+   * 订阅批量事件（性能优化）
+   * @param {Function} callback - 批量事件回调
+   * @returns {Function} 取消订阅函数
+   */
+  onBatchEvents: (callback) => {
+    const handler = (_event, events) => callback(events);
+    ipcRenderer.on('agent:event:batch', handler);
+    return () => ipcRenderer.removeListener('agent:event:batch', handler);
+  },
+
+  // ============== 用户确认 ==============
+  
+  /**
+   * 响应敏感操作确认
+   * @param {string} taskId - 任务 ID
+   * @param {string} actionId - 操作 ID
+   * @param {boolean} approved - 是否批准
+   */
+  confirmSensitiveAction: (taskId, actionId, approved) =>
+    ipcRenderer.invoke('agent:confirm', { taskId, actionId, approved }),
+
+  // ============== 状态查询 ==============
+  
+  /**
+   * 获取任务状态
+   * @param {string} taskId - 任务 ID
+   */
+  getTaskStatus: (taskId) =>
+    ipcRenderer.invoke('agent:status', { taskId }),
+  
+  /**
+   * 获取所有活跃任务
+   */
+  getActiveTasks: () =>
+    ipcRenderer.invoke('agent:active-tasks'),
+
+  // ============== Overlay 动作预览 ==============
+  
+  /**
+   * 订阅动作预览事件
+   * @param {Function} callback - 预览事件回调
+   * @returns {Function} 取消订阅函数
+   */
+  onActionPreview: (callback) => {
+    const channels = [
+      'preview:mouse-trajectory',
+      'preview:click',
+      'preview:typing',
+      'preview:target',
+      'preview:scroll',
+      'preview:shortcut',
+      'preview:window-action',
+      'preview:clear',
+    ];
+    
+    const handlers = channels.map(channel => {
+      const handler = (_event, data) => callback({ type: channel, data });
+      ipcRenderer.on(channel, handler);
+      return { channel, handler };
+    });
+    
+    return () => {
+      handlers.forEach(({ channel, handler }) => {
+        ipcRenderer.removeListener(channel, handler);
+      });
+    };
+  },
+
+  // ============== 窗口焦点管理 ==============
+  
+  /**
+   * 订阅窗口焦点变化
+   * @param {Function} callback - 焦点变化回调
+   * @returns {Function} 取消订阅函数
+   */
+  onFocusChange: (callback) => {
+    const activeHandler = (_event) => callback({ active: true });
+    const inactiveHandler = (_event) => callback({ active: false });
+    
+    ipcRenderer.on('focus:active', activeHandler);
+    ipcRenderer.on('focus:inactive', inactiveHandler);
+    
+    return () => {
+      ipcRenderer.removeListener('focus:active', activeHandler);
+      ipcRenderer.removeListener('focus:inactive', inactiveHandler);
+    };
+  },
 });

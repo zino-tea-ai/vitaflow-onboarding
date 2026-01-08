@@ -50,6 +50,34 @@ try {
   console.log('[Main] MultiOverlayManager not available:', e.message);
 }
 
+// Phase 7: Agent IPC Handlers
+let agentIpc = null;
+let agentIpcController = null;
+try {
+  agentIpc = require('./agent-ipc');
+  console.log('[Main] Agent IPC module loaded');
+} catch (e) {
+  console.log('[Main] Agent IPC module not available:', e.message);
+}
+
+// Phase 7: CSP Configuration
+let cspConfig = null;
+try {
+  cspConfig = require('./csp-config');
+  console.log('[Main] CSP config module loaded');
+} catch (e) {
+  console.log('[Main] CSP config module not available:', e.message);
+}
+
+// Phase 7: Overlay Action Preview
+let overlayActionPreview = null;
+try {
+  overlayActionPreview = require('./overlay-action-preview');
+  console.log('[Main] Overlay Action Preview module loaded');
+} catch (e) {
+  console.log('[Main] Overlay Action Preview module not available:', e.message);
+}
+
 // 配置
 const DEV_SERVER_URL = process.env.DEV_SERVER_URL || 'http://localhost:5173';
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -315,23 +343,37 @@ function isValidSender(event) {
 }
 
 app.whenReady().then(() => {
-  // [P0 FIX Round 1] Add Content Security Policy
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Content-Security-Policy': [
-          "default-src 'self'; " +
-          "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +  // Required for React/Vite
-          "style-src 'self' 'unsafe-inline'; " +
-          "img-src 'self' data: https:; " +
-          "font-src 'self' data:; " +
-          "connect-src 'self' ws://localhost:* http://localhost:* https:; " +
-          "frame-src 'none';"
-        ]
-      }
+  // [Phase 7] 使用统一的 CSP 配置模块
+  if (cspConfig) {
+    if (IS_DEV) {
+      // 开发模式：使用宽松的 CSP（允许 HMR）
+      cspConfig.setupDevCSP();
+      console.log('[Main] Development CSP configured');
+    } else {
+      // 生产模式：使用严格的 CSP + 安全头
+      cspConfig.setupAllSecurity();
+      console.log('[Main] Production security configured');
+    }
+  } else {
+    // 回退：使用旧版 CSP 配置
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [
+            "default-src 'self'; " +
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+            "style-src 'self' 'unsafe-inline'; " +
+            "img-src 'self' data: https: blob:; " +
+            "font-src 'self' data:; " +
+            "connect-src 'self' ws://localhost:* http://localhost:* https:; " +
+            "frame-src 'none';"
+          ]
+        }
+      });
     });
-  });
+    console.log('[Main] Legacy CSP configured (fallback)');
+  }
 
   createWindow();
   createTray();
@@ -362,6 +404,18 @@ app.whenReady().then(() => {
   if (multiOverlayManager && multiOverlayManager.setupMultiOverlayIPC) {
     multiOverlayManager.setupMultiOverlayIPC();
     console.log('[Main] MultiOverlayManager IPC handlers registered');
+  }
+  
+  // [Phase 7] Setup Agent IPC handlers
+  if (agentIpc && agentIpc.registerAgentIpcHandlers && mainWindow) {
+    // 获取 MultiOverlayManager 实例用于动作预览
+    const overlayManager = multiOverlayManager?.getMultiOverlayManager?.() || null;
+    agentIpcController = agentIpc.registerAgentIpcHandlers(mainWindow, {
+      multiOverlayManager: overlayManager,
+    });
+    console.log('[Main] Agent IPC handlers registered (with overlay preview support)');
+  } else if (agentIpc && agentIpc.registerAgentIpcHandlers) {
+    console.warn('[Main] Agent IPC handlers deferred - mainWindow not ready');
   }
   
   // ============== 连接状态 Overlay / 通知 ==============
@@ -455,6 +509,15 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   // 注销所有全局快捷键
   globalShortcut.unregisterAll();
+  
+  // [Phase 7] 清理 Agent IPC 资源
+  if (agentIpcController && agentIpcController.cleanup) {
+    agentIpcController.cleanup();
+    console.log('[Main] Agent IPC resources cleaned up');
+  }
+  if (agentIpc && agentIpc.unregisterAgentIpcHandlers) {
+    agentIpc.unregisterAgentIpcHandlers();
+  }
 });
 
 app.on('before-quit', () => {

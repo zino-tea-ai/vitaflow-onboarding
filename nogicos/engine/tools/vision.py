@@ -226,20 +226,37 @@ def register_vision_tools(registry):
             return f"Error: {str(e)}"
     
     @registry.action(
-        description="Find UI element on screen using AI vision",
+        description="Find UI element on screen using AI vision. Pass the element description as 'element_description' parameter.",
         category=ToolCategory.LOCAL,
     )
-    async def desktop_find_element(element_description: str) -> str:
+    async def desktop_find_element(
+        element_description: Optional[str] = None,
+        # Common aliases AI might use
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        element: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> str:
         """
         C4.3: Find UI element coordinates using vision.
-        
+
         Args:
             element_description: Description of element to find
                 (e.g., "the blue Submit button", "search box in top right")
-            
+            title: Alias for element_description
+            description: Alias for element_description
+            element: Alias for element_description
+            name: Alias for element_description
+
         Returns:
             Element location or not found message
         """
+        # Support multiple parameter names that AI might use
+        actual_description = element_description or title or description or element or name
+        if not actual_description:
+            return "Error: Must provide element_description (or title/description/element/name)"
+        element_description = actual_description
+
         if not PIL_AVAILABLE:
             return "Error: PIL not installed"
         
@@ -272,19 +289,38 @@ def register_vision_tools(registry):
             return f"Error: {str(e)}"
     
     @registry.action(
-        description="Click on UI element found by AI vision",
+        description="Click on UI element found by AI vision. Use 'element_description' parameter.",
         category=ToolCategory.LOCAL,
     )
-    async def desktop_click_element(element_description: str) -> str:
+    async def desktop_click_element(
+        element_description: Optional[str] = None,
+        # Common aliases AI might use
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        element: Optional[str] = None,
+        name: Optional[str] = None,
+        target: Optional[str] = None,
+    ) -> str:
         """
         Find element with vision and click on it.
-        
+
         Args:
             element_description: Description of element to click
-            
+            title: Alias for element_description
+            description: Alias for element_description
+            element: Alias for element_description
+            name: Alias for element_description
+            target: Alias for element_description
+
         Returns:
             Click result message
         """
+        # Support multiple parameter names
+        actual_description = element_description or title or description or element or name or target
+        if not actual_description:
+            return "Error: Must provide element_description (or title/description/element/name/target)"
+        element_description = actual_description
+
         if not PIL_AVAILABLE:
             return "Error: PIL not installed"
         

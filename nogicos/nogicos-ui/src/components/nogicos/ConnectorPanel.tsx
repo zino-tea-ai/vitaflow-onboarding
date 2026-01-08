@@ -10,18 +10,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Globe, 
-  Monitor, 
-  FolderOpen,
   Plug,
   Unplug,
   ChevronDown,
-  ChevronRight,
-  ExternalLink,
   Search,
   GripVertical,
   Crosshair,
   CheckCircle2,
-  XCircle,
   Loader2,
   AppWindow,
   Code2,
@@ -127,13 +122,20 @@ interface ConnectorPanelProps {
   wsRef?: React.RefObject<WebSocket | null>;
   defaultExpanded?: boolean;
   className?: string;
+  /** 当连接的应用列表变化时回调 */
+  onConnectedAppsChange?: (apps: ConnectedApp[]) => void;
 }
 
+// 导出类型供外部使用
+export type { ConnectedApp };
+
 export function ConnectorPanel({ 
-  wsRef, 
+  wsRef: _wsRef, 
   defaultExpanded = true,
   className,
+  onConnectedAppsChange,
 }: ConnectorPanelProps) {
+  void _wsRef; // Reserved for future WebSocket integration
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [windows, setWindows] = useState<WindowInfo[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -143,6 +145,10 @@ export function ConnectorPanel({
   const [isLoadingWindows, setIsLoadingWindows] = useState(false);
   
   const dragRef = useRef<HTMLDivElement>(null);
+  
+  // 保存 callback ref 避免闭包问题
+  const onConnectedAppsChangeRef = useRef(onConnectedAppsChange);
+  useEffect(() => { onConnectedAppsChangeRef.current = onConnectedAppsChange; }, [onConnectedAppsChange]);
 
   // 获取所有窗口
   // [P1 FIX] Enhanced fetch error handling
@@ -219,6 +225,8 @@ export function ConnectorPanel({
       }
 
       setConnectedApps(apps);
+      // 通知父组件
+      onConnectedAppsChangeRef.current?.(apps);
     } catch (error) {
       // [P1 FIX] Differentiate network errors
       if (error instanceof TypeError && error.message.includes('fetch')) {
@@ -243,7 +251,7 @@ export function ConnectorPanel({
   }, [fetchWindows, fetchConnectedApps]);
 
   // 连接到窗口
-  const connectToWindow = async (window: WindowInfo) => {
+  const connectToWindow = useCallback(async (window: WindowInfo) => {
     setLoadingHwnd(window.hwnd);
     
     try {
@@ -275,7 +283,7 @@ export function ConnectorPanel({
     } finally {
       setLoadingHwnd(null);
     }
-  };
+  }, [fetchConnectedApps]);
 
   // 断开连接
   const disconnectApp = async (app: ConnectedApp) => {

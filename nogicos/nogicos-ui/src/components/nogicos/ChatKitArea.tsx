@@ -6,7 +6,6 @@
  */
 
 import { ChatKit, useChatKit } from '@openai/chatkit-react';
-import { useEffect } from 'react';
 
 interface ChatKitAreaProps {
   /** 触发显示可视化面板 */

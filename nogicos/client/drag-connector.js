@@ -11,6 +11,15 @@
 const { BrowserWindow, screen, ipcMain } = require('electron');
 const path = require('path');
 
+// Safe console.log to avoid EPIPE errors when stdout is closed
+const safeLog = (...args) => {
+  try {
+    console.log(...args);
+  } catch (e) {
+    // Ignore EPIPE errors
+  }
+};
+
 let dragOverlayWindow = null;
 let isActive = false;
 let targetWindowInfo = null;
@@ -56,9 +65,9 @@ try {
   GetAsyncKeyState = user32.func('GetAsyncKeyState', 'short', ['int']);
   GetAncestor = user32.func('GetAncestor', 'int', ['int', 'uint']);
   
-  console.log('[DragConnector] koffi loaded, Windows API available');
+  safeLog('[DragConnector] koffi loaded, Windows API available');
 } catch (e) {
-  console.log('[DragConnector] koffi not available:', e.message);
+  safeLog('[DragConnector] koffi not available:', e.message);
 }
 
 /**
@@ -189,7 +198,7 @@ function createDragOverlay() {
   // 使用显示器的边界（逻辑像素）
   const { x, y, width, height } = display.bounds;
   
-  console.log('[DragConnector] Creating overlay on display:', {
+  safeLog('[DragConnector] Creating overlay on display:', {
     id: display.id,
     bounds: display.bounds,
     scaleFactor: display.scaleFactor,
@@ -633,7 +642,7 @@ function startDragMode(mainWindow) {
   
   // 等待页面加载完成
   dragOverlayWindow.webContents.on('did-finish-load', () => {
-    console.log('[DragConnector] Overlay page loaded');
+    safeLog('[DragConnector] Overlay page loaded');
   });
   
   // 开始轮询鼠标位置 + 检测鼠标释放
@@ -646,7 +655,7 @@ function startDragMode(mainWindow) {
     
     if (mouseWasDown && !mouseDown) {
       // 鼠标刚刚释放！使用最后有效的目标窗口
-      console.log('[DragConnector] Mouse released, using last valid target:', targetWindowInfo?.title);
+      safeLog('[DragConnector] Mouse released, using last valid target:', targetWindowInfo?.title);
       
       // 直接使用已保存的 targetWindowInfo，不要再检测
       const finalTarget = targetWindowInfo ? {
@@ -659,7 +668,7 @@ function startDragMode(mainWindow) {
       
       // 通知渲染进程连接完成
       if (mainWindowRef && !mainWindowRef.isDestroyed() && finalTarget) {
-        console.log('[DragConnector] Sending complete event with target:', finalTarget);
+        safeLog('[DragConnector] Sending complete event with target:', finalTarget);
         mainWindowRef.webContents.send('drag-connector:complete', finalTarget);
       }
       return;
@@ -672,7 +681,7 @@ function startDragMode(mainWindow) {
     
     if (currentDisplay !== currentDisplayNow.id) {
       // 鼠标移到了另一个显示器，重新创建 overlay
-      console.log('[DragConnector] Mouse moved to different display, recreating overlay');
+      safeLog('[DragConnector] Mouse moved to different display, recreating overlay');
       if (dragOverlayWindow && !dragOverlayWindow.isDestroyed()) {
         dragOverlayWindow.close();
         dragOverlayWindow = null;
@@ -727,7 +736,7 @@ function startDragMode(mainWindow) {
       
       if (windowInfo.hwnd !== lastHwnd) {
         lastHwnd = windowInfo.hwnd;
-        console.log('[DragConnector] Target window:', windowInfo.title, 'at', { relX, relY, relW, relH });
+        safeLog('[DragConnector] Target window:', windowInfo.title, 'at', { relX, relY, relW, relH });
       }
       
       // 更新高亮
@@ -763,7 +772,7 @@ function startDragMode(mainWindow) {
       // 没有检测到有效窗口，但保留最后的 targetWindowInfo
       // 只隐藏高亮，不清除目标
       if (lastHwnd !== 0) {
-        console.log('[DragConnector] No target window (keeping last valid)');
+        safeLog('[DragConnector] No target window (keeping last valid)');
         lastHwnd = 0;
       }
       if (dragOverlayWindow && !dragOverlayWindow.isDestroyed()) {
@@ -772,7 +781,7 @@ function startDragMode(mainWindow) {
     }
   }, 16); // ~60 FPS，更流畅的视觉反馈
   
-  console.log('[DragConnector] Drag mode started');
+  safeLog('[DragConnector] Drag mode started');
   return { success: true };
 }
 
@@ -806,7 +815,7 @@ function endDragMode() {
   
   targetWindowInfo = null;
   
-  console.log('[DragConnector] Drag mode ended, target:', result.target);
+  safeLog('[DragConnector] Drag mode ended, target:', result.target);
   return result;
 }
 
@@ -822,7 +831,7 @@ function setupDragConnectorIPC(mainWindow) {
     return endDragMode();
   });
   
-  console.log('[DragConnector] IPC handlers registered');
+  safeLog('[DragConnector] IPC handlers registered');
 }
 
 module.exports = {

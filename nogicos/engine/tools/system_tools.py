@@ -16,8 +16,32 @@ import platform
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+import json as _json
+from pathlib import Path as _Path
+import time
 
 logger = logging.getLogger("nogicos.tools.system_tools")
+
+# #region agent log helper (debug mode)
+_DEBUG_LOG_PATH = _Path(r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log")
+
+def _sys_dbg_log(hypothesis_id: str, location: str, message: str, data: dict):
+    try:
+        payload = {
+            "sessionId": "debug-session",
+            "runId": "pre-fix-1",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+# #endregion
 
 
 @dataclass
@@ -167,10 +191,27 @@ class SystemTools:
             return True
         
         try:
-            self.user32.EnumWindows(self.WNDENUMPROC(enum_callback), 0)
+            # 【Segfault 修复】必须保持回调实例的引用，否则会被 GC 导致崩溃
+            callback_instance = self.WNDENUMPROC(enum_callback)
+            self.user32.EnumWindows(callback_instance, 0)
         except Exception as e:
             logger.error(f"EnumWindows failed: {e}")
         
+        # Debug log: record top few windows
+        try:
+            top = windows[:5]
+            _sys_dbg_log(
+                hypothesis_id="H4",
+                location="system_tools:list_windows",
+                message="Enumerated windows",
+                data={
+                    "count": len(windows),
+                    "top": [{"hwnd": w.get("hwnd"), "title": w.get("title"), "class": w.get("class_name")} for w in top],
+                },
+            )
+        except Exception:
+            pass
+
         return windows
     
     def find_window(
