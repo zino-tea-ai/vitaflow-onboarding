@@ -5,9 +5,15 @@ Screenshot Utilities - 截图工具
 提供窗口截图和屏幕截图功能
 """
 
+# 【修复】确保用户安装的包可以被找到
+import sys
+import os
+_user_site = os.path.expanduser("~\\AppData\\Roaming\\Python\\Python314\\site-packages")
+if _user_site not in sys.path:
+    sys.path.insert(0, _user_site)
+
 import asyncio
 import logging
-import sys
 from dataclasses import dataclass
 from typing import Optional, Tuple
 

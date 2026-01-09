@@ -28,6 +28,11 @@ const ALLOWED_FOCUS_CHANNELS = [
   'focus:inactive',
 ];
 
+// 允许的状态更新频道
+const ALLOWED_STATE_CHANNELS = [
+  'state:update',  // 状态更新（status, action, progress）
+];
+
 /**
  * 安全地暴露 Overlay API
  */
@@ -123,6 +128,29 @@ contextBridge.exposeInMainWorld('overlayAPI', {
     }
     
     return () => unsubscribes.forEach(unsub => unsub());
+  },
+
+  /**
+   * 订阅状态更新事件
+   * @param {function} callback - 回调函数 (state) => void
+   *   state: { status, action, progress }
+   *   status: 'idle' | 'reading' | 'writing' | 'processing' | 'error'
+   * @returns {function} 取消订阅函数
+   */
+  onStateUpdate: (callback) => {
+    const wrappedCallback = (_event, state) => {
+      try {
+        callback(state);
+      } catch (e) {
+        console.error('[OverlayPreload] State update callback error:', e);
+      }
+    };
+    
+    ipcRenderer.on('state:update', wrappedCallback);
+    
+    return () => {
+      ipcRenderer.removeListener('state:update', wrappedCallback);
+    };
   },
 });
 

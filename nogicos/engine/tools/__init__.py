@@ -82,6 +82,52 @@ except ImportError:
     NogicBrowserExecutor = None
     get_browser_executor = None
 
+# Playwright Executor - Playwright-based browser automation (like Cursor MCP)
+try:
+    from .playwright_executor import (
+        register_playwright_tools,
+        NogicPlaywrightExecutor,
+        get_playwright_executor
+    )
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    register_playwright_tools = None
+    NogicPlaywrightExecutor = None
+    get_playwright_executor = None
+
+# Form Workflow - Complete form filling workflow (like Cursor + Playwright MCP)
+try:
+    from .form_workflow import (
+        register_form_workflow_tools,
+        FormWorkflow,
+        FormWorkflowContext,
+    )
+    FORM_WORKFLOW_AVAILABLE = True
+except ImportError:
+    FORM_WORKFLOW_AVAILABLE = False
+    register_form_workflow_tools = None
+    FormWorkflow = None
+    FormWorkflowContext = None
+
+# YC Workflow - Preset workflow for filling YC application
+try:
+    from .yc_workflow import (
+        register_yc_workflow_tools,
+        execute_yc_workflow,
+        is_yc_workflow_trigger,
+        YCWorkflowContext,
+    )
+    YC_WORKFLOW_AVAILABLE = True
+except (ImportError, SyntaxError) as e:
+    import logging
+    logging.getLogger(__name__).warning(f"YC Workflow not available: {e}")
+    YC_WORKFLOW_AVAILABLE = False
+    register_yc_workflow_tools = None
+    execute_yc_workflow = None
+    is_yc_workflow_trigger = None
+    YCWorkflowContext = None
+
 # Windows compatibility modules (Phase 4.5)
 try:
     from .windows_compat import WindowInputController, InputResult, InputMethod
@@ -116,16 +162,15 @@ def create_full_registry() -> ToolRegistry:
     register_local_tools(registry)      # 文件系统
     register_cursor_tools(registry)     # Cursor IDE
     
-    # [已移除] Desktop tools (Phase C) - pyautogui based
-    # 原因: UFO 提供更完整的桌面自动化，低级工具容易导致任务不完整
-    # if DESKTOP_TOOLS_AVAILABLE and register_desktop_tools:
-    #     register_desktop_tools(registry)
+    # Desktop tools (Phase C) - pyautogui based (re-enabled for form filling)
+    # 用于表单填写等需要精确输入的场景
+    if DESKTOP_TOOLS_AVAILABLE and register_desktop_tools:
+        register_desktop_tools(registry)
     
-    # [已移除] Vision tools (Phase C4) - Claude Vision
-    # 原因: desktop_analyze_screen, desktop_find_element, desktop_click_element 和 UFO 重叠
-    # 但不能完整执行任务（如发送消息），让 UFO 统一处理
-    # if VISION_TOOLS_AVAILABLE and register_vision_tools:
-    #     register_vision_tools(registry)
+    # Vision tools (Phase C4) - Claude Vision (re-enabled for screen reading)
+    # 用于读取屏幕内容，desktop_analyze_screen 不需要 UFO
+    if VISION_TOOLS_AVAILABLE and register_vision_tools:
+        register_vision_tools(registry)
     
     # [已移除] Window tools (Phase 4) - PostMessage based, window isolation
     # 原因: UFO 可以处理窗口操作，低级工具容易导致只输入不发送等问题
@@ -136,13 +181,29 @@ def create_full_registry() -> ToolRegistry:
     if SYSTEM_TOOLS_AVAILABLE and register_system_tools:
         register_system_tools(registry)
     
-    # UFO tools - Microsoft UFO AI-powered desktop automation (主力桌面自动化)
+    # UFO tools - Microsoft UFO AI-powered desktop automation
     if UFO_TOOLS_AVAILABLE and register_ufo_tools:
         register_ufo_tools(registry)
     
-    # Browser Executor - Browser Use AI vision-powered browser automation
-    if BROWSER_EXECUTOR_AVAILABLE and register_browser_executor_tools:
-        register_browser_executor_tools(registry)
+    # [DISABLED] Browser Executor - Browser Use AI vision-powered browser automation
+    # 禁用 Browser-Use，改用 Playwright（和 Cursor MCP 一致）
+    # if BROWSER_EXECUTOR_AVAILABLE and register_browser_executor_tools:
+    #     register_browser_executor_tools(registry)
+    
+    # Playwright Executor - Playwright-based browser automation (like Cursor MCP)
+    # 这是我们使用的浏览器自动化方案
+    if PLAYWRIGHT_AVAILABLE and register_playwright_tools:
+        register_playwright_tools(registry)
+    
+    # [DISABLED] Form Workflow - 禁用，改用原子工具（像 Cursor MCP 一样）
+    # Agent 应该自己组合 playwright_snapshot + read_file + playwright_type
+    # 这样可以实现渐进式交互，每步都可以向用户确认
+    # if FORM_WORKFLOW_AVAILABLE and register_form_workflow_tools:
+    #     register_form_workflow_tools(registry)
+    
+    # [DISABLED] YC Workflow - 禁用，同上
+    # if YC_WORKFLOW_AVAILABLE and register_yc_workflow_tools:
+    #     register_yc_workflow_tools(registry)
     
     return registry
 
@@ -207,4 +268,11 @@ __all__ = [
     'WINDOWS_COMPAT_AVAILABLE',
     'UFO_TOOLS_AVAILABLE',
     'BROWSER_EXECUTOR_AVAILABLE',
+    'YC_WORKFLOW_AVAILABLE',
+    
+    # YC Workflow
+    'register_yc_workflow_tools',
+    'execute_yc_workflow',
+    'is_yc_workflow_trigger',
+    'YCWorkflowContext',
 ]

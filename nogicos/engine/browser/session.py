@@ -219,6 +219,78 @@ class BrowserSession:
             self._started = False
             return False
     
+    async def connect_to_browser(self, cdp_url: str = "http://localhost:9222") -> bool:
+        """
+        Connect to an existing browser via Chrome DevTools Protocol (CDP).
+        
+        This allows NogicOS to control a browser that the user has already opened,
+        enabling direct DOM manipulation without mouse simulation.
+        
+        Args:
+            cdp_url: CDP endpoint URL (default: http://localhost:9222)
+                     User must start Chrome with: --remote-debugging-port=9222
+        
+        Returns:
+            True if connected successfully, False otherwise
+        """
+        if self._started:
+            logger.warning("[BrowserSession] Already started, call stop() first")
+            return False
+        
+        if not PLAYWRIGHT_AVAILABLE:
+            logger.error("[BrowserSession] Playwright not available, cannot connect")
+            return False
+        
+        try:
+            # Start playwright if not already started
+            if not self._playwright:
+                self._playwright = await async_playwright().start()
+            
+            # Connect to existing browser via CDP
+            logger.info(f"[BrowserSession] Connecting to browser at {cdp_url}...")
+            self._browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
+            
+            # Get existing contexts or create new one
+            contexts = self._browser.contexts
+            if contexts:
+                self._context = contexts[0]
+                logger.info(f"[BrowserSession] Using existing context with {len(contexts)} context(s)")
+            else:
+                self._context = await self._browser.new_context(viewport=self.viewport)
+                logger.info("[BrowserSession] Created new context")
+            
+            # Get existing pages or create new one
+            pages = self._context.pages
+            if pages:
+                self._page = pages[0]
+                logger.info(f"[BrowserSession] Using existing page: {await self._page.title()}")
+            else:
+                self._page = await self._context.new_page()
+                logger.info("[BrowserSession] Created new page")
+            
+            # Setup event listeners
+            self._page.on("load", self._on_load)
+            self._page.on("framenavigated", self._on_navigated)
+            
+            self._started = True
+            logger.info(f"[BrowserSession] Connected to browser via CDP at {cdp_url}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[BrowserSession] Failed to connect via CDP: {e}")
+            # Cleanup on failure
+            if self._playwright:
+                try:
+                    await self._playwright.stop()
+                except Exception:
+                    pass
+                self._playwright = None
+            self._browser = None
+            self._context = None
+            self._page = None
+            self._started = False
+            return False
+    
     async def stop(self) -> None:
         """Stop the browser session and cleanup resources with timeout protection"""
 

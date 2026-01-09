@@ -144,6 +144,10 @@ class StatusServer:
         # Start background cleanup task
         self._cleanup_task: Optional[asyncio.Task] = None
     
+        # Confirmation responses (for YC Workflow etc.)
+        # Maps request_id -> {"confirmed": bool, "timestamp": float}
+        self.confirm_responses: Dict[str, Dict[str, Any]] = {}
+    
     @property
     def client_count(self) -> int:
         return len(self._clients)
@@ -366,6 +370,18 @@ class StatusServer:
             elif msg_type == "tool_response":
                 logger.info(f"[Server] Received tool_response: {data.get('call_id', 'unknown')[:8]}...")
                 await self._handle_tool_response(data)
+            
+            # Confirmation response (from frontend, for YC Workflow etc.)
+            elif msg_type == "confirm_response":
+                request_id = data.get("request_id")
+                confirmed = data.get("confirmed", False)
+                if request_id:
+                    import time
+                    self.confirm_responses[request_id] = {
+                        "confirmed": confirmed,
+                        "timestamp": time.time(),
+                    }
+                    logger.info(f"[Server] Confirmation response: {request_id[:8]}... = {confirmed}")
             
         except json.JSONDecodeError:
             logger.warning(f"[Server] Invalid JSON: {message}")
@@ -677,6 +693,80 @@ class StatusServer:
             }
         }
         await self.broadcast(message)
+    
+    async def request_confirmation(
+        self,
+        title: str,
+        question: str,
+        answer: str,
+        execution_count: int = 1,
+        source_file: str = "",
+        timeout: float = 300.0,  # 5 minutes
+    ) -> bool:
+        """
+        Request user confirmation via UI dialog.
+        
+        Sends a confirm_request message to the frontend and waits for confirm_response.
+        
+        Args:
+            title: Dialog title
+            question: The question/field being confirmed
+            answer: The proposed answer to confirm
+            execution_count: 执行次数（1 = 首次，2+ = 后续）
+            source_file: 来源文件路径
+            timeout: Timeout in seconds
+            
+        Returns:
+            True if user confirmed, False if cancelled or timeout
+        """
+        import uuid
+        import time
+        
+        request_id = str(uuid.uuid4())
+        
+        # Send confirmation request to frontend
+        await self.broadcast({
+            "type": "confirm_request",
+            "data": {
+                "request_id": request_id,
+                "title": title,
+                "question": question,
+                "answer": answer,
+                "execution_count": execution_count,
+                "source_file": source_file,
+            }
+        })
+        
+        logger.info(f"[Server] Confirmation request sent: {request_id[:8]}...")
+        
+        # Wait for response
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if request_id in self.confirm_responses:
+                response = self.confirm_responses.pop(request_id)
+                confirmed = response.get("confirmed", False)
+                logger.info(f"[Server] Confirmation result: {request_id[:8]}... = {confirmed}")
+                return confirmed
+            
+            await asyncio.sleep(0.1)  # Check every 100ms
+        
+        logger.warning(f"[Server] Confirmation timeout: {request_id[:8]}...")
+        return False
+    
+    async def broadcast_workflow_status(self, message: str):
+        """
+        Broadcast workflow status message to frontend.
+        
+        Args:
+            message: Status message to display
+        """
+        await self.broadcast({
+            "type": "workflow_status",
+            "data": {
+                "message": message,
+                "timestamp": datetime.now().isoformat(),
+            }
+        })
     
     # ========================================================================
     # Stream Protocol Methods (v2.0)

@@ -5,6 +5,13 @@ NogicOS Browser Executor - 基于 Browser Use 的浏览器自动化
 集成 Browser Use 到 NogicOS，禁用所有第三方品牌标识
 """
 
+# Ensure user site-packages is in path (for browser-use installed via pip --user)
+import sys
+import site
+_user_site = site.getusersitepackages()
+if _user_site and _user_site not in sys.path:
+    sys.path.insert(0, _user_site)
+
 import asyncio
 import logging
 import os
@@ -86,12 +93,9 @@ class NogicBrowserExecutor:
             # 创建干净的 BrowserProfile - 禁用所有视觉效果
             self._profile = BrowserProfile(
                 headless=False,
-                # 禁用元素高亮（hover 动画）
+                # 禁用元素高亮
                 highlight_elements=False,
-                dom_highlight_elements=False,
-                # 禁用 demo 模式
-                demo_mode=False,
-                # 其他设置
+                # 禁用安全限制便于自动化
                 disable_security=True,
             )
             
@@ -112,6 +116,7 @@ class NogicBrowserExecutor:
         self, 
         task: str, 
         start_url: Optional[str] = None,
+        cdp_url: Optional[str] = None,
         timeout: int = 120
     ) -> BrowserTaskResult:
         """
@@ -119,25 +124,37 @@ class NogicBrowserExecutor:
         
         Args:
             task: 任务描述
-            start_url: 起始 URL（避免显示 about:blank 动画）
+            start_url: 起始 URL（如果启动新浏览器）
+            cdp_url: CDP URL 连接到已打开的 Chrome（如 http://localhost:9222）
             timeout: 超时时间（秒）
         """
         import time
         start_time = time.time()
+        browser_session = None  # Initialize before try block
         
         try:
             await self._ensure_initialized()
             
             from browser_use import Agent
-            from browser_use.browser import BrowserSession
+            from browser_use.browser import BrowserSession, BrowserProfile
             
-            # 创建新的 BrowserSession
-            browser_session = BrowserSession(browser_profile=self._profile)
-            
-            # 如果有起始 URL，修改任务让它先导航
-            full_task = task
-            if start_url:
-                full_task = f"First navigate to {start_url}, then: {task}"
+            # 根据是否提供 CDP URL 决定连接方式
+            if cdp_url:
+                # 连接到已打开的 Chrome（通过 CDP）
+                logger.info(f"[NogicBrowser] Connecting to existing browser via CDP: {cdp_url}")
+                cdp_profile = BrowserProfile(
+                    cdp_url=cdp_url,
+                    headless=False,
+                    highlight_elements=False,
+                )
+                browser_session = BrowserSession(browser_profile=cdp_profile)
+                full_task = task  # 不需要导航，用户已经在目标页面
+            else:
+                # 启动新浏览器
+                browser_session = BrowserSession(browser_profile=self._profile)
+                full_task = task
+                if start_url:
+                    full_task = f"First navigate to {start_url}, then: {task}"
             
             # 创建 Agent
             agent = Agent(
@@ -212,35 +229,46 @@ def register_browser_executor_tools(registry):
     """
     注册 Browser Use 浏览器自动化工具到 NogicOS Registry
     （AI 视觉驱动，用于复杂网页操作）
+    
+    默认连接到已有的 Chrome（CDP），不启动新浏览器
     """
     from .base import ToolCategory
     
+    # 默认 CDP URL - 连接到用户已打开的 Chrome
+    DEFAULT_CDP_URL = "http://localhost:9222"
+    
     @registry.action(
-        description="""Execute a browser automation task using AI vision.
+        description="""Execute a browser automation task using AI vision on the ALREADY OPEN Chrome browser.
+        
+IMPORTANT: This tool connects to the user's existing Chrome browser (via CDP).
+It does NOT open a new browser window.
         
 Use this for:
-- Navigating websites and filling forms
+- Filling forms on the currently open page
 - Clicking buttons and links
 - Extracting information from web pages
 - Any task requiring browser interaction
 
 Args:
     task: Natural language description of what to do in the browser
-    url: Optional starting URL (if the page isn't already open)
     
 Returns:
-    Result with success status, extracted content, and execution details""",
+    Result with success status, extracted content, and execution details
+    
+Note: Chrome must be started with --remote-debugging-port=9222""",
         category=ToolCategory.LOCAL,
     )
-    async def browser_task(task: str, url: str = "") -> Dict[str, Any]:
-        """Execute a browser task using AI vision."""
-        logger.info(f"[Browser Tool] Executing: {task}")
+    async def browser_task(task: str) -> Dict[str, Any]:
+        """Execute a browser task on the already open Chrome browser."""
+        logger.info(f"[Browser Tool] Executing on existing Chrome: {task}")
         
         try:
             executor = get_browser_executor()
+            
+            # 默认使用 CDP 连接到已有浏览器，不启动新浏览器
             result = await executor.execute(
                 task=task,
-                start_url=url if url else None
+                cdp_url=DEFAULT_CDP_URL  # 连接到已有 Chrome
             )
             
             return {
@@ -259,7 +287,7 @@ Returns:
                 "message": str(e),
             }
     
-    logger.info("[NogicBrowser] Browser tools registered")
+    logger.info("[NogicBrowser] Browser tools registered (CDP mode - connects to existing Chrome)")
 
 
 # 测试函数

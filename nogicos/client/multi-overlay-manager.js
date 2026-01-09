@@ -733,6 +733,50 @@ class MultiOverlayManager {
   }
 
   /**
+   * 更新 Overlay 状态（Phase 8: 动态状态显示）
+   * 用于显示 AI 正在做什么：读取、写入、处理等
+   * 
+   * @param {number} hwnd - 目标窗口句柄
+   * @param {object} state - 状态对象
+   * @param {string} state.status - 状态类型: 'idle' | 'reading' | 'writing' | 'processing' | 'error'
+   * @param {string} [state.action] - 操作描述（如 "Reading page content..."）
+   * @param {number} [state.progress] - 进度 0-100
+   * @returns {{success: boolean, error?: string}}
+   */
+  updateOverlayState(hwnd, state) {
+    const instance = this._overlays.get(hwnd);
+    if (!instance || !instance.isAlive()) {
+      console.warn(`[MultiOverlay] Cannot update state, overlay not found: ${hwnd}`);
+      return { success: false, error: 'Overlay not found' };
+    }
+
+    try {
+      instance.window.webContents.send('state:update', {
+        status: state.status || 'idle',
+        action: state.action || '',
+        progress: state.progress,
+      });
+      console.log(`[MultiOverlay] State updated for HWND ${hwnd}: ${state.status}`);
+      return { success: true };
+    } catch (e) {
+      console.error(`[MultiOverlay] Failed to update state:`, e.message);
+      return { success: false, error: e.message };
+    }
+  }
+
+  /**
+   * 更新所有 Overlay 的状态
+   * @param {object} state - 状态对象
+   */
+  updateAllOverlayStates(state) {
+    for (const [hwnd, instance] of this._overlays) {
+      if (instance.isAlive()) {
+        this.updateOverlayState(hwnd, state);
+      }
+    }
+  }
+
+  /**
    * 生成 Overlay HTML - NogicOS 深色风格（Premium版）
    * 设计理念：全窗口入场冲击 → 低调常驻 | 顶级视觉品质
    * @private
@@ -1503,11 +1547,158 @@ class MultiOverlayManager {
         document.body.classList.add('focus-inactive');
       });
       
+      // Phase 8: 状态更新监听
+      window.overlayAPI.onStateUpdate((state) => {
+        const overlay = document.getElementById('overlay');
+        const labelEl = overlay.querySelector('.label');
+        const indicatorEl = overlay.querySelector('.status-indicator');
+        
+        // 更新状态文本
+        const statusText = {
+          idle: 'Connected',
+          reading: 'Reading',
+          writing: 'Writing',
+          processing: 'Processing',
+          error: 'Error',
+        }[state.status] || 'Connected';
+        
+        if (labelEl) {
+          labelEl.textContent = statusText;
+        }
+        
+        // 更新指示器颜色和动画
+        if (indicatorEl) {
+          // 清除之前的状态类
+          indicatorEl.classList.remove('state-idle', 'state-reading', 'state-writing', 'state-processing', 'state-error');
+          indicatorEl.classList.add('state-' + state.status);
+        }
+        
+        // 更新数据流动动画
+        let flowContainer = document.getElementById('data-flow');
+        if (state.status === 'reading' || state.status === 'writing') {
+          if (!flowContainer) {
+            flowContainer = document.createElement('div');
+            flowContainer.id = 'data-flow';
+            flowContainer.className = 'data-flow-container';
+            flowContainer.innerHTML = \`
+              <div class="flow-particle" style="animation-delay: 0s;"></div>
+              <div class="flow-particle" style="animation-delay: 0.2s;"></div>
+              <div class="flow-particle" style="animation-delay: 0.4s;"></div>
+            \`;
+            overlay.appendChild(flowContainer);
+          }
+          flowContainer.className = 'data-flow-container ' + (state.status === 'reading' ? 'flow-in' : 'flow-out');
+          flowContainer.style.display = 'flex';
+        } else if (flowContainer) {
+          flowContainer.style.display = 'none';
+        }
+        
+        // 显示操作描述
+        let actionEl = document.getElementById('action-text');
+        if (state.action) {
+          if (!actionEl) {
+            actionEl = document.createElement('span');
+            actionEl.id = 'action-text';
+            actionEl.className = 'action-text';
+            overlay.appendChild(actionEl);
+          }
+          actionEl.textContent = state.action;
+          actionEl.style.display = 'inline';
+        } else if (actionEl) {
+          actionEl.style.display = 'none';
+        }
+        
+        console.log('[Overlay] State updated:', state.status, state.action || '');
+      });
+      
       console.log('[Overlay] IPC events registered via secure contextBridge');
     } else {
       console.warn('[Overlay] overlayAPI not available - preload may have failed');
     }
   </script>
+  
+  <!-- Phase 8: 动态状态样式 -->
+  <style>
+    /* 数据流动容器 */
+    .data-flow-container {
+      display: none;
+      align-items: center;
+      gap: 3px;
+      margin-left: 8px;
+      padding: 2px 6px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 4px;
+    }
+    
+    .flow-particle {
+      width: 4px;
+      height: 4px;
+      background: #34d399;
+      border-radius: 50%;
+      animation: flowMove 1s infinite;
+    }
+    
+    .flow-in .flow-particle {
+      animation-name: flowMoveIn;
+    }
+    
+    .flow-out .flow-particle {
+      background: #f59e0b;
+      animation-name: flowMoveOut;
+    }
+    
+    @keyframes flowMoveIn {
+      0% { opacity: 0; transform: translateX(8px); }
+      50% { opacity: 1; }
+      100% { opacity: 0; transform: translateX(-8px); }
+    }
+    
+    @keyframes flowMoveOut {
+      0% { opacity: 0; transform: translateX(-8px); }
+      50% { opacity: 1; }
+      100% { opacity: 0; transform: translateX(8px); }
+    }
+    
+    /* 状态指示器颜色变化 */
+    .status-indicator.state-reading {
+      background: radial-gradient(circle at 30% 30%, #34d399 0%, #10b981 50%, #059669 100%) !important;
+      animation: indicatorPulse 0.6s ease-in-out infinite !important;
+    }
+    
+    .status-indicator.state-writing {
+      background: radial-gradient(circle at 30% 30%, #fbbf24 0%, #f59e0b 50%, #d97706 100%) !important;
+      box-shadow: 0 0 12px rgba(245, 158, 11, 0.8) !important;
+      animation: indicatorPulse 0.6s ease-in-out infinite !important;
+    }
+    
+    .status-indicator.state-processing {
+      background: radial-gradient(circle at 30% 30%, #60a5fa 0%, #3b82f6 50%, #2563eb 100%) !important;
+      box-shadow: 0 0 12px rgba(59, 130, 246, 0.8) !important;
+      animation: indicatorSpin 1s linear infinite !important;
+    }
+    
+    .status-indicator.state-error {
+      background: radial-gradient(circle at 30% 30%, #f87171 0%, #ef4444 50%, #dc2626 100%) !important;
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.8) !important;
+    }
+    
+    @keyframes indicatorSpin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    
+    /* 操作文字 */
+    .action-text {
+      display: none;
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-left: 8px;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  </style>
   
   <!-- Phase 7: 预览动画样式 -->
   <style>
@@ -1689,7 +1880,18 @@ function setupMultiOverlayIPC() {
     return { success: true };
   });
 
-  console.log('[MultiOverlayManager] IPC handlers registered (Phase 2 + Phase 7)');
+  // Phase 8: 更新 Overlay 状态（动态状态显示）
+  ipcMain.handle('multi-overlay:update-state', async (event, { hwnd, state }) => {
+    return manager.updateOverlayState(hwnd, state);
+  });
+
+  // Phase 8: 更新所有 Overlay 状态
+  ipcMain.handle('multi-overlay:update-all-states', async (event, { state }) => {
+    manager.updateAllOverlayStates(state);
+    return { success: true };
+  });
+
+  console.log('[MultiOverlayManager] IPC handlers registered (Phase 2 + Phase 7 + Phase 8)');
 }
 
 // ============== 导出 ==============

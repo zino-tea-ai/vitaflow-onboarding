@@ -17,9 +17,15 @@ Usage:
     python hive_server.py
 """
 
+# 【修复】确保用户安装的包可以被找到
+import sys
+import os
+_user_site = os.path.expanduser("~\\AppData\\Roaming\\Python\\Python314\\site-packages")
+if _user_site not in sys.path:
+    sys.path.insert(0, _user_site)
+
 # 【调试】启用 faulthandler 捕获 Segmentation Fault 堆栈
 import faulthandler
-import sys
 faulthandler.enable(file=sys.stderr, all_threads=True)
 
 import warnings
@@ -1948,15 +1954,33 @@ async def generate_ai_sdk_stream(
     """
     import uuid
 
+    # #region debug log D
+    import json as json_lib
+    with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+        f.write(json_lib.dumps({"location":"hive_server.py:1953","message":"Getting agent instance","data":{"engineExists":engine is not None},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"D"})+'\n')
+    # #endregion
+
     # Reuse global agent instance with lock protection
     # This avoids 1-2s initialization overhead per request
     if engine:
         agent = await engine.get_agent()
+        # #region debug log D
+        with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+            f.write(json_lib.dumps({"location":"hive_server.py:1957","message":"Agent retrieved from engine","data":{"agentExists":agent is not None},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"D"})+'\n')
+        # #endregion
     else:
+        # #region debug log D
+        with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+            f.write(json_lib.dumps({"location":"hive_server.py:1959","message":"Creating new ReActAgent","data":{},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"D"})+'\n')
+        # #endregion
         agent = ReActAgent(
             status_server=None,
             max_iterations=20,
         )
+        # #region debug log D
+        with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+            f.write(json_lib.dumps({"location":"hive_server.py:1963","message":"ReActAgent created","data":{"agentExists":agent is not None},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"D"})+'\n')
+        # #endregion
     
     message_id = str(uuid.uuid4())
     text_id = f"text_{uuid.uuid4().hex[:8]}"
@@ -2023,28 +2047,55 @@ async def generate_ai_sdk_stream(
             # Build context from conversation history
             context = None
             if conversation_history:
+                # #region debug log H1
+                import json as json_lib
+                with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                    f.write(json_lib.dumps({"location":"hive_server.py:run_agent","message":"conversation_history received","data":{"history_count":len(conversation_history),"history_preview":[{"role":m.get("role"),"content_len":len(str(m.get("content","")))} for m in conversation_history[:5]]},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"H1"})+'\n')
+                # #endregion
+                
                 # Format previous messages as context
                 context_parts = []
                 for msg in conversation_history[:-1]:  # Exclude current message
                     role = msg.get("role", "")
-                    content = msg.get("content", "")
-                    if isinstance(content, list):
-                        # Handle parts-based format
-                        content = " ".join(
-                            p.get("text", "") for p in content 
-                            if isinstance(p, dict) and p.get("type") == "text"
-                        )
+                    
+                    # #region debug log H2 - inspect message structure
+                    with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                        f.write(json_lib.dumps({"location":"hive_server.py:msg_inspect","message":"Inspecting message","data":{"role":role,"msg_keys":list(msg.keys()),"content_type":type(msg.get("content")).__name__,"parts_exists":"parts" in msg,"content_preview":str(msg.get("content",""))[:200]},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"H2"})+'\n')
+                    # #endregion
+                    
+                    # AI SDK 5.0 uses "parts" array instead of "content" for messages
+                    content = ""
+                    
+                    # Try parts array first (AI SDK 5.0 format)
+                    if "parts" in msg and msg["parts"]:
+                        for part in msg["parts"]:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                content += part.get("text", "")
+                    # Fallback to content field
+                    elif msg.get("content"):
+                        content = msg.get("content", "")
+                        if isinstance(content, list):
+                            # Handle parts-based format in content
+                            content = " ".join(
+                                p.get("text", "") for p in content 
+                                if isinstance(p, dict) and p.get("type") == "text"
+                            )
                     if role == "user":
                         context_parts.append(f"用户: {content}")
                     elif role == "assistant":
-                        # Truncate long assistant responses
-                        if len(content) > 500:
-                            content = content[:500] + "..."
+                        # [FIX] Increased truncation limit from 500 to 2000
+                        # This preserves suggested answers for confirmation flow
+                        if len(content) > 2000:
+                            content = content[:2000] + "..."
                         context_parts.append(f"助手: {content}")
                 
                 if context_parts:
                     context = "## 之前的对话:\n" + "\n".join(context_parts[-6:])  # Keep last 3 turns (6 messages)
                     logger.info(f"[Chat] Injecting {len(context_parts)} previous messages as context")
+                    # #region debug log H1
+                    with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                        f.write(json_lib.dumps({"location":"hive_server.py:context_built","message":"Context built from history","data":{"context_preview":context[:500] if context else "","context_parts_count":len(context_parts)},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"H1"})+'\n')
+                    # #endregion
             
             # Build file context section (Cursor-style auto-injection)
             if file_context:
@@ -2080,6 +2131,12 @@ async def generate_ai_sdk_stream(
                     context = f"## 当前文件上下文:\n{file_context_str}\n\n" + (context or "")
                     logger.info(f"[Chat] Injecting file context: {file_context.get('path', 'unknown')}")
             
+            # #region debug log D,E
+            import json as json_lib
+            with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                f.write(json_lib.dumps({"location":"hive_server.py:2086","message":"Calling agent.run_with_planning","data":{"task":task[:50],"sessionId":session_id},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"D,E"})+'\n')
+            # #endregion
+            
             # 使用 run_with_planning() 激活 Plan-and-Execute 架构
             # - 简单任务：直接执行
             # - 复杂任务：生成计划，逐步执行，失败时重新规划
@@ -2092,6 +2149,11 @@ async def generate_ai_sdk_stream(
                 on_tool_start=tool_start_callback,
                 on_tool_end=tool_end_callback,
             )
+            
+            # #region debug log E
+            with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                f.write(json_lib.dumps({"location":"hive_server.py:2098","message":"Agent run completed","data":{"success":result.success if hasattr(result,'success') else None},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"E"})+'\n')
+            # #endregion
             # Send text-end if text was started
             if text_started:
                 await event_queue.put(sse({"type": "text-end", "id": text_id}))
@@ -2104,7 +2166,27 @@ async def generate_ai_sdk_stream(
                 "finishReason": "stop" if result.success else "error",
             }))
         except Exception as e:
-            logger.error(f"Agent error: {e}")
+            logger.error(f"Agent error: {e}", exc_info=True)
+            # #region debug log E - error details
+            import json as json_lib
+            with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                f.write(json_lib.dumps({"location":"hive_server.py:2135","message":"Agent exception","data":{"error":str(e),"type":type(e).__name__},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"E"})+'\n')
+            # #endregion
+            
+            # Send error message to frontend - MUST send text-start before text-delta
+            error_msg = str(e)
+            if "api" in error_msg.lower() and "key" in error_msg.lower():
+                error_msg = "API Key 配置错误，请检查 api_keys.py"
+            
+            # 【修复】先发送 text-start，再发送 text-delta，最后发送 text-end
+            if not text_started:
+                await event_queue.put(sse({"type": "text-start", "id": text_id}))
+            await event_queue.put(sse({
+                "type": "text-delta", 
+                "id": text_id, 
+                "delta": f"\n\n❌ 错误: {error_msg}"
+            }))
+            await event_queue.put(sse({"type": "text-end", "id": text_id}))
             await event_queue.put(sse({"type": "finish", "finishReason": "error"}))
         finally:
             agent_done.set()
@@ -2113,14 +2195,27 @@ async def generate_ai_sdk_stream(
     agent_task = asyncio.create_task(run_agent())
     agent_task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
     
+    # #region debug log E
+    import json as json_lib
+    with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+        f.write(json_lib.dumps({"location":"hive_server.py:2117","message":"Sending stream start","data":{"messageId":message_id},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"E"})+'\n')
+    # #endregion
+    
     # Send stream start
     yield sse({"type": "start", "messageId": message_id})
     
     try:
+        event_count = 0
         while not agent_done.is_set() or not event_queue.empty():
             try:
                 # Reduced timeout for faster response (was 0.1s, now 0.01s)
                 event = await asyncio.wait_for(event_queue.get(), timeout=0.01)
+                event_count += 1
+                # #region debug log E
+                if event_count <= 5:  # Log first 5 events
+                    with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                        f.write(json_lib.dumps({"location":"hive_server.py:2124","message":"Yielding event","data":{"eventCount":event_count,"eventPreview":event[:100] if isinstance(event,str) else str(event)[:100]},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"E"})+'\n')
+                # #endregion
                 yield event
             except asyncio.TimeoutError:
                 continue
@@ -2146,13 +2241,31 @@ async def chat_endpoint(request: Request):
     
     Frontend uses @ai-sdk/react useChat hook to consume this stream.
     """
+    # #region debug log B
+    import json as json_lib
+    with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+        f.write(json_lib.dumps({"location":"hive_server.py:2141","message":"chat_endpoint called","data":{},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"B"})+'\n')
+    # #endregion
+    
     if not engine:
+        # #region debug log D
+        with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+            f.write(json_lib.dumps({"location":"hive_server.py:2159","message":"engine not ready","data":{},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"D"})+'\n')
+        # #endregion
         raise HTTPException(status_code=503, detail="Engine not ready")
     
     try:
         body = await request.json()
+        # #region debug log C
+        with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+            f.write(json_lib.dumps({"location":"hive_server.py:2163","message":"JSON parsed","data":{"bodyKeys":list(body.keys())},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"C"})+'\n')
+        # #endregion
         logger.info(f"[Chat] Received request: {json.dumps(body, ensure_ascii=False)[:200]}...")
     except Exception as e:
+        # #region debug log C
+        with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+            f.write(json_lib.dumps({"location":"hive_server.py:2167","message":"JSON parse error","data":{"error":str(e)},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"C"})+'\n')
+        # #endregion
         logger.error(f"[Chat] Failed to parse JSON: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
     
@@ -2161,7 +2274,12 @@ async def chat_endpoint(request: Request):
     conversation_history = []
     session_id = body.get("session_id", "default")
     
+    # [FIX] Always extract messages array for conversation history (AI SDK sends both)
+    if "messages" in body and body["messages"]:
+        conversation_history = body["messages"]
+    
     # Format 1: New Vercel AI SDK format { text: "..." }
+    # Note: AI SDK sends BOTH text AND messages array
     if "text" in body and body["text"]:
         user_message = body["text"]
     
@@ -2196,6 +2314,11 @@ async def chat_endpoint(request: Request):
                         break
     
     if not user_message:
+        # #region debug log C
+        import json as json_lib
+        with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+            f.write(json_lib.dumps({"location":"hive_server.py:2198","message":"No user message found","data":{"body":body},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"C"})+'\n')
+        # #endregion
         logger.warning(f"[Chat] No user message found in request: {body}")
         raise HTTPException(status_code=400, detail="No user message found")
     
@@ -2210,6 +2333,12 @@ async def chat_endpoint(request: Request):
         logger.info(f"[Chat] Processing: {user_message[:100]}... (with {len(conversation_history)} history messages)")
     else:
         logger.info(f"[Chat] Processing: {user_message[:100]}...")
+    
+    # #region debug log D,E
+    import json as json_lib
+    with open(r'c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log', 'a', encoding='utf-8') as f:
+        f.write(json_lib.dumps({"location":"hive_server.py:2214","message":"Starting stream generation","data":{"userMessage":user_message[:50],"sessionId":session_id},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"D,E"})+'\n')
+    # #endregion
     
     return StreamingResponse(
         generate_ai_sdk_stream(user_message, session_id, conversation_history, file_context),
@@ -2412,6 +2541,137 @@ async def get_hook_context():
     except Exception as e:
         logger.error(f"Failed to get hook context: {e}")
         return {"context": {}, "prompt": "", "error": str(e)}
+
+
+# ============================================================================
+# CDP Browser Connection API（直接控制用户浏览器）
+# ============================================================================
+
+class CDPConnectRequest(BaseModel):
+    """CDP connection request"""
+    cdp_url: str = "http://localhost:9222"
+
+
+# Global browser session for CDP connection
+_cdp_browser_session = None
+
+
+@app.post("/api/browser/connect-cdp")
+async def connect_browser_cdp(request: CDPConnectRequest):
+    """
+    Connect to user's browser via Chrome DevTools Protocol (CDP).
+    
+    This enables direct DOM manipulation without mouse simulation.
+    
+    User must start Chrome with: chrome.exe --remote-debugging-port=9222
+    
+    Args:
+        cdp_url: CDP endpoint URL (default: http://localhost:9222)
+    
+    Returns:
+        Connection status and current page info
+    """
+    global _cdp_browser_session
+    
+    try:
+        from engine.browser.session import BrowserSession
+        
+        # Stop existing session if any
+        if _cdp_browser_session:
+            try:
+                await _cdp_browser_session.stop()
+            except Exception:
+                pass
+        
+        # Create new session and connect via CDP
+        _cdp_browser_session = BrowserSession()
+        success = await _cdp_browser_session.connect_to_browser(request.cdp_url)
+        
+        if success:
+            # Get current page info
+            title = await _cdp_browser_session.get_title()
+            url = await _cdp_browser_session.get_current_url()
+            
+            # Inject session into Agent's tool registry
+            from engine.tools import get_registry
+            registry = get_registry()
+            registry.set_context("browser_session", _cdp_browser_session)
+            
+            logger.info(f"[CDP] Connected to browser: {title} ({url})")
+            
+            return {
+                "success": True,
+                "message": f"Connected to browser via CDP",
+                "page": {
+                    "title": title,
+                    "url": url,
+                },
+            }
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail="Failed to connect via CDP. Make sure Chrome is running with --remote-debugging-port=9222"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[CDP] Connection failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/browser/cdp-status")
+async def get_cdp_status():
+    """
+    Get CDP connection status.
+    
+    Returns:
+        Connection status and current page info if connected
+    """
+    global _cdp_browser_session
+    
+    if not _cdp_browser_session or not _cdp_browser_session.is_started:
+        return {"connected": False}
+    
+    try:
+        title = await _cdp_browser_session.get_title()
+        url = await _cdp_browser_session.get_current_url()
+        
+        return {
+            "connected": True,
+            "page": {
+                "title": title,
+                "url": url,
+            },
+        }
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
+
+
+@app.post("/api/browser/disconnect-cdp")
+async def disconnect_browser_cdp():
+    """
+    Disconnect from browser CDP session.
+    """
+    global _cdp_browser_session
+    
+    if _cdp_browser_session:
+        try:
+            await _cdp_browser_session.stop()
+            _cdp_browser_session = None
+            
+            # Remove session from registry
+            from engine.tools import get_registry
+            registry = get_registry()
+            registry.set_context("browser_session", None)
+            
+            logger.info("[CDP] Disconnected from browser")
+            return {"success": True, "message": "Disconnected from CDP"}
+        except Exception as e:
+            logger.error(f"[CDP] Disconnect failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    return {"success": True, "message": "No active CDP connection"}
 
 
 # ============================================================================
@@ -2791,6 +3051,105 @@ async def get_pending_confirmations(req: Request):
     
     confirmations = host_agent_manager.get_pending_confirmations()
     return {"pending": confirmations, "count": len(confirmations)}
+
+
+# ============================================================================
+# YC Workflow Confirmation System
+# ============================================================================
+
+# Global pending confirmations for YC workflow
+_yc_pending_confirmations: Dict[str, asyncio.Future] = {}
+
+
+class WorkflowConfirmRequest(BaseModel):
+    """YC workflow confirmation request"""
+    request_id: str
+    confirmed: bool
+
+
+@app.post("/api/workflow/confirm")
+async def confirm_yc_workflow(request: WorkflowConfirmRequest):
+    """
+    Confirm or cancel YC workflow action.
+    
+    Called from frontend ConfirmDialog when user clicks Confirm/Cancel.
+    
+    Args:
+        request_id: The confirmation request ID
+        confirmed: True to proceed, False to cancel
+        
+    Returns:
+        {"success": bool}
+    """
+    request_id = request.request_id
+    confirmed = request.confirmed
+    
+    if request_id not in _yc_pending_confirmations:
+        raise HTTPException(status_code=404, detail=f"Confirmation request {request_id} not found or expired")
+    
+    future = _yc_pending_confirmations.pop(request_id)
+    
+    if not future.done():
+        future.set_result(confirmed)
+        logger.info(f"[YC Workflow] Confirmation {request_id}: {'approved' if confirmed else 'rejected'}")
+    
+    return {"success": True, "request_id": request_id, "confirmed": confirmed}
+
+
+async def request_yc_confirmation(
+    status_server: StatusServer,
+    title: str,
+    question: str,
+    answer: str,
+    execution_count: int,
+    source_file: str = "PITCH_CONTEXT.md",
+) -> bool:
+    """
+    Request user confirmation for YC workflow via WebSocket.
+    
+    Sends a confirm_request event to frontend and waits for response.
+    
+    Args:
+        status_server: WebSocket server for broadcasting
+        title: Dialog title
+        question: YC question text
+        answer: Answer to fill
+        execution_count: Which run this is (1st, 2nd, etc.)
+        source_file: Source document filename
+        
+    Returns:
+        True if user confirmed, False if cancelled
+    """
+    import uuid
+    request_id = f"yc-{uuid.uuid4().hex[:8]}"
+    
+    # Create future for async waiting
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    _yc_pending_confirmations[request_id] = future
+    
+    # Send confirmation request to frontend
+    await status_server.broadcast({
+        "type": "confirm_request",
+        "data": {
+            "request_id": request_id,
+            "title": title,
+            "question": question,
+            "answer": answer,
+            "execution_count": execution_count,
+            "source_file": source_file,
+        }
+    })
+    logger.info(f"[YC Workflow] Sent confirmation request {request_id}")
+    
+    try:
+        # Wait for user response (timeout: 5 minutes)
+        confirmed = await asyncio.wait_for(future, timeout=300)
+        return confirmed
+    except asyncio.TimeoutError:
+        _yc_pending_confirmations.pop(request_id, None)
+        logger.warning(f"[YC Workflow] Confirmation {request_id} timed out")
+        return False
 
 
 @app.get("/api/agent/stats")

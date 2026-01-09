@@ -15,4 +15,10 @@ export { ExecutionStats } from './ExecutionStats';
 export type { ExecutionStatsData } from './ExecutionStats';
 export { ExecutionPlan } from './ExecutionPlan';
 export type { ExecutionPlanData, PlanStep } from './ExecutionPlan';
+// Hook Map - 可视化节点连接
+export { HookMap } from './HookMap';
+export { HookMapPanel } from './HookMapPanel';
+export { LivingCanvas } from './LivingCanvas';
+export { LivingCanvasChat } from './LivingCanvasChat';
+export type { ChatMessage as LivingCanvasChatMessage } from './LivingCanvas';
 

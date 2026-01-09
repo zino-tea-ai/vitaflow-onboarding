@@ -29,9 +29,29 @@ from enum import Enum
 
 logger = logging.getLogger("nogicos.tools.ufo_executor")
 
-# UFO 安装路径
-UFO_PATH = Path(r"C:\Users\WIN\Desktop\UFO")
-PYTHON_PATH = Path(r"C:\Python311\python.exe")
+# UFO 安装路径 - 优先使用环境变量，否则查找常见位置
+def _find_ufo_path() -> Path:
+    """查找 UFO 安装路径"""
+    # 1. 环境变量
+    if os.environ.get("UFO_PATH"):
+        return Path(os.environ["UFO_PATH"])
+    
+    # 2. 常见安装位置
+    candidates = [
+        Path.home() / "Desktop" / "UFO",
+        Path.home() / "UFO",
+        Path(r"C:\UFO"),
+        Path(r"D:\UFO"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    
+    # 3. 默认返回
+    return Path.home() / "Desktop" / "UFO"
+
+UFO_PATH = _find_ufo_path()
+PYTHON_PATH = Path(sys.executable)  # 使用当前 Python
 
 
 class TaskStatus(Enum):

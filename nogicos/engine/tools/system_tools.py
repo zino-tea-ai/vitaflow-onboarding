@@ -400,6 +400,77 @@ def register_system_tools(registry):
         else:
             return f"Timeout: Window '{title}' not found after {timeout}s"
     
+    @registry.action(
+        description="""Request user confirmation before performing sensitive actions.
+
+IMPORTANT: You MUST call this tool before:
+- Filling forms (especially application forms, login forms)
+- Sending messages (WhatsApp, email, chat)
+- Submitting data
+- Making purchases or payments
+- Any action that cannot be easily undone
+
+Args:
+    action_description: What you're about to do (e.g., "Fill YC application form")
+    content_preview: The content you're about to submit (e.g., the answer text)
+
+Returns:
+    "confirmed" if user approves, "cancelled" if user declines
+
+Example:
+    result = request_confirmation(
+        action_description="Fill YC application form",
+        content_preview="We're building NogicOS, a desktop AI assistant..."
+    )
+    if result == "confirmed":
+        # proceed with filling
+    else:
+        # abort and inform user""",
+        category=ToolCategory.SYSTEM,
+    )
+    async def request_confirmation(
+        action_description: str,
+        content_preview: str
+    ) -> str:
+        """Request user confirmation via UI dialog."""
+        import uuid
+        
+        # Get the status server from registry context (set by hive_server)
+        status_server = registry.get_context("status_server")
+        
+        if not status_server:
+            logger.warning("[Confirmation] No status server available, auto-confirming")
+            return "confirmed"
+        
+        # Generate unique request ID
+        request_id = str(uuid.uuid4())[:8]
+        
+        # Send confirmation request to frontend
+        logger.info(f"[Confirmation] Requesting user confirmation: {action_description}")
+        
+        try:
+            # Use the status server's confirmation mechanism
+            confirmed = await status_server.stream_confirm(
+                request_id=request_id,
+                action=action_description,
+                content=content_preview,
+                timeout=120  # 2 minutes to respond
+            )
+            
+            if confirmed:
+                logger.info(f"[Confirmation] User confirmed: {action_description}")
+                return "confirmed"
+            else:
+                logger.info(f"[Confirmation] User cancelled: {action_description}")
+                return "cancelled"
+                
+        except asyncio.TimeoutError:
+            logger.warning(f"[Confirmation] Timeout waiting for user response")
+            return "cancelled"
+        except Exception as e:
+            logger.error(f"[Confirmation] Error: {e}")
+            return "cancelled"
+    
     logger.info("[SystemTools] All system tools registered")
 
 

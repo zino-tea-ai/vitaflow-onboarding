@@ -156,7 +156,25 @@ export function MinimalChatArea({
     id: `chat-${sessionId}`,  // Unique per session
     transport: chatTransport,
     onError: (err) => {
-      console.error('[MinimalChatArea] Error:', err);
+      // #region debug log A,D,E
+      fetch('http://127.0.0.1:7242/ingest/bc94c9ea-7631-4e46-87b6-8d3adb9e38dd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MinimalChatArea.tsx:158',message:'useChat onError',data:{error:err.message,stack:err.stack,name:err.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,D,E'})}).catch(()=>{});
+      // #endregion
+      console.error('[MinimalChatArea] Chat Error:', err);
+      console.error('[MinimalChatArea] Error details:', {
+        message: err.message,
+        stack: err.stack,
+        name: err.name,
+      });
+      // Show user-friendly error
+      if (err.message) {
+        alert(`对话错误: ${err.message}`);
+      }
+    },
+    onFinish: (message) => {
+      // #region debug log E
+      fetch('http://127.0.0.1:7242/ingest/bc94c9ea-7631-4e46-87b6-8d3adb9e38dd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MinimalChatArea.tsx:171',message:'useChat onFinish',data:{messageId:message.id,finishReason:message.finishReason},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+      // #endregion
+      console.log('[MinimalChatArea] Message finished:', message);
     },
   });
   
@@ -399,17 +417,32 @@ export function MinimalChatArea({
     if (localInput.trim() && !isLoading) {
       const messageText = localInput.trim();
       
+      // #region debug log A
+      fetch('http://127.0.0.1:7242/ingest/bc94c9ea-7631-4e46-87b6-8d3adb9e38dd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MinimalChatArea.tsx:409',message:'onSubmit called',data:{messageText,isLoading,apiUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      
       setUserScrolledUp(false);
       setJustSentMessage(true);
       setLocalInput('');
       
       try {
+        // #region debug log A
+        fetch('http://127.0.0.1:7242/ingest/bc94c9ea-7631-4e46-87b6-8d3adb9e38dd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MinimalChatArea.tsx:419',message:'sendMessage called',data:{messageText},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+        
         await sendMessage({ text: messageText });
+        
+        // #region debug log A
+        fetch('http://127.0.0.1:7242/ingest/bc94c9ea-7631-4e46-87b6-8d3adb9e38dd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MinimalChatArea.tsx:422',message:'sendMessage completed',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
       } catch (err) {
+        // #region debug log A
+        fetch('http://127.0.0.1:7242/ingest/bc94c9ea-7631-4e46-87b6-8d3adb9e38dd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MinimalChatArea.tsx:425',message:'sendMessage error',data:{error:err instanceof Error?err.message:String(err)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
         console.error('[MinimalChatArea] Error:', err);
       }
     }
-  }, [localInput, isLoading, sendMessage]);
+  }, [localInput, isLoading, sendMessage, apiUrl]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {

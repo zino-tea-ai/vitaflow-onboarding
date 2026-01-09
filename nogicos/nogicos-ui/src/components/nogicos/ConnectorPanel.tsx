@@ -330,12 +330,25 @@ export function ConnectorPanel({
     e.preventDefault();
     setIsDragging(true);
     
-    const electronAPI = (globalThis as { electronAPI?: {
+    const electronAPI = (window as { electronAPI?: {
       startDragConnector?: () => Promise<{ success: boolean }>;
     } }).electronAPI;
     
     if (electronAPI?.startDragConnector) {
-      await electronAPI.startDragConnector();
+      try {
+        const result = await electronAPI.startDragConnector();
+        console.log('[ConnectorPanel] Drag connector started:', result);
+        if (!result?.success) {
+          console.error('[ConnectorPanel] Failed to start drag connector:', result);
+          setIsDragging(false);
+        }
+      } catch (error) {
+        console.error('[ConnectorPanel] Error starting drag connector:', error);
+        setIsDragging(false);
+      }
+    } else {
+      console.warn('[ConnectorPanel] electronAPI.startDragConnector not available');
+      setIsDragging(false);
     }
   }, []);
 
@@ -349,15 +362,16 @@ export function ConnectorPanel({
 
     setIsDragging(false);
 
-    const electronAPI = (globalThis as { electronAPI?: {
+    const electronAPI = (window as { electronAPI?: {
       endDragConnector?: () => Promise<{ success: boolean; target: { hwnd: number; title: string } | null }>;
     } }).electronAPI;
 
     if (electronAPI?.endDragConnector) {
-      const result = await electronAPI.endDragConnector();
-      console.log('[ConnectorPanel] Drag ended, result:', result);
+      try {
+        const result = await electronAPI.endDragConnector();
+        console.log('[ConnectorPanel] Drag ended, result:', result);
 
-      if (result?.target) {
+        if (result?.target) {
         // 先刷新窗口列表
         await fetchWindows();
 
@@ -381,18 +395,30 @@ export function ConnectorPanel({
           };
           await connectToWindow(fakeWindow);
         }
+      } else {
+        console.log('[ConnectorPanel] Drag ended but no target window');
       }
+      } catch (error) {
+        console.error('[ConnectorPanel] Error ending drag connector:', error);
+      }
+    } else {
+      console.warn('[ConnectorPanel] electronAPI.endDragConnector not available');
     }
   }, [isDragging, fetchWindows, connectToWindow]);
 
   // 监听拖拽自动完成事件（从主进程检测到鼠标释放）
   // 【修复 #31】优化 Effect 依赖，使用 ref 避免过多重新订阅
   useEffect(() => {
-    const electronAPI = (globalThis as { electronAPI?: {
+    const electronAPI = (window as { electronAPI?: {
       onDragConnectorComplete?: (callback: (target: { hwnd: number; title: string }) => void) => () => void;
     } }).electronAPI;
 
-    if (!electronAPI?.onDragConnectorComplete) return;
+    if (!electronAPI?.onDragConnectorComplete) {
+      console.warn('[ConnectorPanel] electronAPI.onDragConnectorComplete not available');
+      return;
+    }
+    
+    console.log('[ConnectorPanel] Setting up drag connector complete listener');
 
     const cleanup = electronAPI.onDragConnectorComplete(async (target) => {
       console.log('[ConnectorPanel] Drag complete from main process:', target);

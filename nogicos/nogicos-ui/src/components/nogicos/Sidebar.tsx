@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { ConnectorPanel, type ConnectedApp } from './ConnectorPanel';
+import { HookMapPanel } from './HookMapPanel';
 
 export interface Session {
   id: string;
@@ -49,6 +50,13 @@ export function Sidebar({
   onConnectedAppsChange,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [connectedApps, setConnectedApps] = useState<ConnectedApp[]>([]);
+
+  // 处理连接应用变化
+  const handleConnectedAppsChange = (apps: ConnectedApp[]) => {
+    setConnectedApps(apps);
+    onConnectedAppsChange?.(apps);
+  };
 
   const filteredSessions = sessions.filter(
     (session) =>
@@ -158,11 +166,20 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      {/* Connector Panel */}
+      {/* Hook Map & Connector Panel */}
       <div className="border-t border-neutral-900 mt-auto">
+        {/* Hook Map Panel - 可视化节点连接 */}
+        <div className="relative px-3 py-2">
+          <HookMapPanel 
+            connectedApps={connectedApps}
+            className="w-full"
+          />
+        </div>
+
+        {/* Connector Panel */}
         <ConnectorPanel 
           defaultExpanded={true} 
-          onConnectedAppsChange={onConnectedAppsChange}
+          onConnectedAppsChange={handleConnectedAppsChange}
         />
       </div>
 

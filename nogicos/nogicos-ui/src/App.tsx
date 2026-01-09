@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { TitleBar, Sidebar, ChatArea, ChatKitArea, ExecutionStats, ExecutionPlan } from '@/components/nogicos';
+import { TitleBar, Sidebar, ChatArea, ChatKitArea, ExecutionStats, ExecutionPlan, LivingCanvasChat } from '@/components/nogicos';
 import type { Session, Message, ToolExecution, ThinkingState, ExecutionStatsData, ExecutionPlanData, ConnectedApp } from '@/components/nogicos';
 import { MinimalChatArea, SystemChatArea, CursorChatArea, PremiumChatArea } from '@/components/chat';
 import type { ChatMessage } from '@/components/chat/MinimalChatArea';
@@ -11,6 +11,8 @@ import { CommandPalette } from '@/components/command/CommandPalette';
 import { useElectron } from '@/hooks/useElectron';
 import { useSessionPersist } from '@/hooks/useSessionPersist';
 import { useAgentWebSocket } from '@/hooks/useAgentWebSocket';
+import { ConfirmDialog, useConfirmDialog } from '@/components/dialog';
+import '@/components/dialog/confirm-dialog.css';
 
 // Config
 const WS_URL = 'ws://localhost:8765';
@@ -19,18 +21,31 @@ const CHATKIT_API_URL = 'http://localhost:8080/chatkit';
 const VERCEL_AI_API_URL = 'http://localhost:8080/api/chat';
 
 // Chat 模式选择
-// - minimal: 极致克制，纯黑白灰 (Recommended)
+// - living: Living Canvas - Hook Map 作为背景的沉浸式体验 (Recommended)
+// - minimal: 极致克制，纯黑白灰
 // - system: 系统级 AI 工具界面
 // - premium: Linear/Raycast 风格聊天界面
 // - cursor: Cursor IDE 风格聊天界面
 // - chatkit: OpenAI ChatKit UI
 // - legacy: 原始自定义聊天界面
-type ChatMode = 'minimal' | 'system' | 'premium' | 'cursor' | 'chatkit' | 'legacy';
-const CHAT_MODE: ChatMode = 'minimal';
+type ChatMode = 'living' | 'minimal' | 'system' | 'premium' | 'cursor' | 'chatkit' | 'legacy';
+const CHAT_MODE: ChatMode = 'living';
 
 function App() {
   // Electron API
   const { isElectron, onNewSession } = useElectron();
+  
+  // YC Workflow Confirmation Dialog
+  const {
+    isOpen: confirmDialogOpen,
+    data: confirmDialogData,
+    showConfirm,
+    handleConfirm: onDialogConfirm,
+    handleCancel: onDialogCancel,
+  } = useConfirmDialog();
+  
+  // Ref to store pending confirm request ID
+  const pendingConfirmId = useRef<string | null>(null);
   
   // Session Persistence - use persistedSessions directly
   const {
@@ -613,17 +628,40 @@ function App() {
         addActionLog('learn', 'New pattern learned and cached');
         break;
 
+      // YC Workflow: Confirmation request from backend
+      case 'confirm_request':
+        if (msg.data) {
+          const confirmData = msg.data as {
+            request_id: string;
+            title: string;
+            question: string;
+            answer: string;
+            execution_count: number;
+            source_file?: string;
+          };
+          pendingConfirmId.current = confirmData.request_id;
+          showConfirm({
+            title: confirmData.title,
+            question: confirmData.question,
+            answer: confirmData.answer,
+            execution_count: confirmData.execution_count,
+            source_file: confirmData.source_file,
+          });
+          addActionLog('confirm', 'Awaiting user confirmation');
+        }
+        break;
+
       default:
         // Ignore unknown types (pong handled by hook)
         break;
     }
-  }, [addActionLog, saveSession, resetExecutionTracker]);
+  }, [addActionLog, saveSession, resetExecutionTracker, showConfirm]);
 
   // Track if we've shown the connected toast
   const [hasShownConnectedToast, setHasShownConnectedToast] = useState(false);
 
   // WebSocket connection with heartbeat
-  const { state: wsState, reconnect } = useWebSocket({
+  const { state: wsState, reconnect, send: wsSend } = useWebSocket({
     url: WS_URL,
     onMessage: handleWsMessage,
     onConnect: () => {
@@ -645,6 +683,31 @@ function App() {
   // Connection state helpers
   const wsConnected = wsState === 'connected';
   const isReconnecting = wsState === 'reconnecting';
+
+  // Confirmation dialog handlers - send response to backend
+  const handleConfirmDialogConfirm = useCallback(() => {
+    if (pendingConfirmId.current) {
+      wsSend({
+        type: 'confirm_response',
+        request_id: pendingConfirmId.current,
+        confirmed: true,
+      });
+      pendingConfirmId.current = null;
+    }
+    onDialogConfirm();
+  }, [wsSend, onDialogConfirm]);
+
+  const handleConfirmDialogCancel = useCallback(() => {
+    if (pendingConfirmId.current) {
+      wsSend({
+        type: 'confirm_response',
+        request_id: pendingConfirmId.current,
+        confirmed: false,
+      });
+      pendingConfirmId.current = null;
+    }
+    onDialogCancel();
+  }, [wsSend, onDialogCancel]);
 
   // Get title based on connection state
   const getTitle = (state: ConnectionState): string => {
@@ -929,7 +992,28 @@ function App() {
       )}
 
       {/* Main Content */}
-      {CHAT_MODE === 'minimal' ? (
+      {CHAT_MODE === 'living' ? (
+        // Living Canvas 模式：Hook Map 作为背景的沉浸式体验
+        <div className="flex-1 flex min-h-0">
+          <Sidebar
+            sessions={sessions}
+            activeSessionId={activeSessionId || undefined}
+            onNewSession={handleNewSession}
+            onSelectSession={handleSelectSession}
+            onDeleteSession={handleDeleteSession}
+            onConnectedAppsChange={setConnectedApps}
+          />
+          <LivingCanvasChat
+            apiUrl={VERCEL_AI_API_URL}
+            sessionId={activeSessionId}
+            connectedApps={connectedApps}
+            initialMessages={chatSessions[activeSessionId] || []}
+            onSessionUpdate={handleSessionUpdate}
+            onMessagesChange={handleMessagesChange}
+            className="flex-1"
+          />
+        </div>
+      ) : CHAT_MODE === 'minimal' ? (
         // Minimal 模式：极致克制（带侧边栏）
         // Render ALL active sessions simultaneously for parallel streaming
         <div className="flex-1 flex min-h-0">
@@ -1074,6 +1158,14 @@ function App() {
           onDismiss={() => setShowExecutionStats(false)}
         />
       )}
+
+      {/* YC Workflow Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={confirmDialogOpen}
+        data={confirmDialogData}
+        onConfirm={handleConfirmDialogConfirm}
+        onCancel={handleConfirmDialogCancel}
+      />
 
       {/* Toast Notifications */}
       <Toaster

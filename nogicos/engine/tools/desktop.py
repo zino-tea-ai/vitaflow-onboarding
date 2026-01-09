@@ -26,7 +26,7 @@ logger = logging.getLogger("nogicos.tools.desktop")
 # #region agent log helper (debug mode)
 import json as _json
 from pathlib import Path as _Path
-_DEBUG_LOG_PATH = _Path(r"c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log")
+_DEBUG_LOG_PATH = _Path(r"c:\Users\TE\532-CorporateHell-Git\nogicos\.cursor\debug.log")
 
 def _desktop_dbg_log(hypothesis_id: str, location: str, message: str, data: dict):
     """Write a single NDJSON debug line to debug.log (append-only)."""
@@ -208,7 +208,7 @@ def register_desktop_tools(registry):
             Success message
         """
         # #region agent log
-        import json as _json; open(r'c:\Users\WIN\Desktop\Cursor Project\.cursor\debug.log','a',encoding='utf-8').write(_json.dumps({"hypothesisId":"C","location":"desktop.py:desktop_type:entry","message":"desktop_type called","data":{"text":text[:50],"interval":interval,"use_clipboard":use_clipboard},"timestamp":__import__('time').time()})+'\n')
+        _desktop_dbg_log("C", "desktop.py:desktop_type:entry", "desktop_type called", {"text": text[:50], "interval": interval, "use_clipboard": use_clipboard})
         # #endregion
         if not PYAUTOGUI_AVAILABLE:
             return "Error: pyautogui not installed"

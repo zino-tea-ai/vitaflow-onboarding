@@ -98,8 +98,29 @@ class BrowserHook(BaseHook):
         连接到浏览器
         
         Args:
-            target: 浏览器类型（chrome, firefox, edge）或 None（自动检测）
+            target: 浏览器类型（chrome, firefox, edge）、HWND（数字字符串）或 None（自动检测）
         """
+        # 【修复】如果 target 是数字字符串（HWND），直接使用该窗口
+        if target and target.isdigit():
+            if not WINDOWS_AVAILABLE:
+                logger.warning("[BrowserHook] HWND connection not supported on this platform")
+                return False
+            try:
+                hwnd = int(target)
+                window = self._get_window_info_windows(hwnd)
+                if window and self._is_browser_window(window):
+                    self._target_hwnd = hwnd
+                    self._target_browser = self._detect_browser_type(window)
+                    logger.info(f"[BrowserHook] Connected to HWND {hwnd}: {window.title}")
+                    return True
+                else:
+                    logger.warning(f"[BrowserHook] HWND {hwnd} is not a valid browser window")
+                    return False
+            except Exception as e:
+                logger.error(f"[BrowserHook] Failed to connect to HWND {target}: {e}")
+                return False
+        
+        # 否则，按浏览器类型查找
         self._target_browser = target
         
         # 检测浏览器窗口
@@ -129,13 +150,18 @@ class BrowserHook(BaseHook):
             BrowserContext 或 None
         """
         try:
-            # 获取当前活跃的浏览器窗口
-            window = await self._find_browser_window(self._target_browser)
-            
-            if not window:
-                return self._last_context
-            
-            self._target_hwnd = window.hwnd
+            # 【修复】如果已有目标 HWND，直接使用它
+            if self._target_hwnd:
+                window = self._get_window_info_windows(self._target_hwnd)
+                if not window:
+                    logger.warning(f"[BrowserHook] Target HWND {self._target_hwnd} no longer valid")
+                    return self._last_context
+            else:
+                # 否则，查找浏览器窗口
+                window = await self._find_browser_window(self._target_browser)
+                if not window:
+                    return self._last_context
+                self._target_hwnd = window.hwnd
             
             # 从窗口标题提取信息
             title, url = self._parse_browser_title(window.title)

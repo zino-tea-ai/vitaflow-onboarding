@@ -10,7 +10,13 @@ Tools:
 - C4.3: Agent decision support
 """
 
+# 【修复】确保用户安装的包可以被找到
+import sys
 import os
+_user_site = os.path.expanduser("~\\AppData\\Roaming\\Python\\Python314\\site-packages")
+if _user_site not in sys.path:
+    sys.path.insert(0, _user_site)
+
 import base64
 import logging
 from typing import Optional
@@ -188,21 +194,26 @@ def register_vision_tools(registry):
     analyzer = VisionAnalyzer()
     
     @registry.action(
-        description="Analyze desktop screenshot with AI vision",
+        description="Analyze desktop screenshot with AI vision. Use 'prompt' or 'question' parameter.",
         category=ToolCategory.LOCAL,
     )
     async def desktop_analyze_screen(
-        prompt: str = "Describe what you see on this screen, focusing on key UI elements and any text.",
+        prompt: Optional[str] = None,
+        question: Optional[str] = None,  # Alias for prompt
     ) -> str:
         """
         C4.2: Take screenshot and analyze with Claude Vision.
         
         Args:
             prompt: What to analyze/look for
+            question: Alias for prompt
             
         Returns:
             AI analysis of the screen
         """
+        # Handle parameter aliases
+        actual_prompt = prompt or question or "Describe what you see on this screen, focusing on key UI elements and any text."
+        
         if not PIL_AVAILABLE:
             return "Error: PIL not installed"
         
@@ -219,7 +230,7 @@ def register_vision_tools(registry):
             image_b64 = base64.b64encode(buffer.getvalue()).decode()
             
             # Analyze
-            result = await analyzer.analyze_screenshot(image_b64, prompt)
+            result = await analyzer.analyze_screenshot(image_b64, actual_prompt)
             return result
             
         except Exception as e:
