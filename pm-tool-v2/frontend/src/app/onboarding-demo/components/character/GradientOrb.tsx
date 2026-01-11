@@ -333,7 +333,7 @@ export function GradientOrb({
   // ============ 眼睛动态系统 ============
   // 统一使用自然眨眼，所有状态都一样
   const [blinkPhase, setBlinkPhase] = useState(0) // 0-3: open, closing, closed, opening
-  const blinkRef = useRef<NodeJS.Timeout>()
+  const blinkRef = useRef<NodeJS.Timeout | null>(null)
   
   useEffect(() => {
     // 眨眼动画：2.5-5秒随机间隔

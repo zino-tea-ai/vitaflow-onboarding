@@ -53,7 +53,7 @@ export function AbstractPremium({
       transition: {
         duration: 4,
         repeat: Infinity,
-        ease: 'easeInOut',
+        ease: 'easeInOut' as const,
       },
     }
 
@@ -67,7 +67,7 @@ export function AbstractPremium({
           transition: {
             duration: 2,
             repeat: Infinity,
-            ease: 'easeInOut',
+            ease: 'easeInOut' as const,
           },
         }
       case 'thinking':
@@ -77,7 +77,7 @@ export function AbstractPremium({
           transition: {
             duration: 3,
             repeat: Infinity,
-            ease: 'easeInOut',
+            ease: 'easeInOut' as const,
           },
         }
       case 'success':
@@ -85,7 +85,7 @@ export function AbstractPremium({
           scale: [1, 1.15, 1],
           transition: {
             duration: 0.6,
-            ease: easingsV5.outBack,
+            ease: [0.34, 1.56, 0.64, 1] as const,
           },
         }
       case 'celebrating':
@@ -94,7 +94,7 @@ export function AbstractPremium({
           rotate: [0, -10, 10, -5, 0],
           transition: {
             duration: 0.8,
-            ease: easingsV5.outBack,
+            ease: [0.34, 1.56, 0.64, 1] as const,
           },
         }
       default:
