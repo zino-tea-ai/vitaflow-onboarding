@@ -3,6 +3,7 @@
 import { motion } from 'framer-motion'
 import * as LucideIcons from 'lucide-react'
 import { LucideIcon } from 'lucide-react'
+import { shadows, cardBorder } from '../../lib/design-tokens'
 
 interface OptionCardProps {
   icon: string
@@ -15,7 +16,7 @@ interface OptionCardProps {
 
 // 动态获取 Lucide 图标
 function getIcon(name: string): LucideIcon {
-  const icons = LucideIcons as Record<string, LucideIcon>
+  const icons = LucideIcons as unknown as Record<string, LucideIcon>
   return icons[name] || LucideIcons.Circle
 }
 
@@ -32,12 +33,13 @@ export function OptionCard({
   return (
     <motion.button
       onClick={onClick}
-      className="relative w-full p-4 rounded-[16px] text-left transition-all duration-200"
+      className="relative w-full p-4 rounded-[12px] text-left transition-all duration-200"
       style={{
         background: '#FFFFFF',
+        border: cardBorder.default,
         boxShadow: selected 
-          ? '0px 0px 0px 2px #2B2735, 0px 0px 8px 0px rgba(43, 39, 53, 0.15)' 
-          : '0px 0px 2px 0px #E8E8E8',
+          ? shadows.cardSelected
+          : shadows.card,
         fontFamily: 'var(--font-outfit)'
       }}
       initial={{ opacity: 0, y: 20 }}
@@ -47,52 +49,64 @@ export function OptionCard({
         delay: index * 0.08,
         ease: [0.25, 0.46, 0.45, 0.94]
       }}
-      whileHover={{ scale: 1.01, boxShadow: '0px 0px 4px 0px #E8E8E8' }}
-      whileTap={{ scale: 0.99 }}
+      whileHover={{ 
+        y: -2,
+        boxShadow: shadows.cardHover
+      }}
+      whileTap={{ scale: 0.98 }}
     >
       <div className="relative flex items-center gap-4">
-        {/* 图标容器 - VitaFlow 样式 */}
+        {/* 图标容器 - Slate 配色 */}
         <motion.div 
-          className="flex-shrink-0 w-12 h-12 rounded-[12px] flex items-center justify-center"
+          className="flex-shrink-0 w-12 h-12 rounded-[8px] flex items-center justify-center"
           style={{
-            background: selected ? '#2B2735' : '#F2F1F6'
+            background: selected ? '#0F172A' : '#F1F5F9'
           }}
           animate={{
-            scale: selected ? [1, 1.05, 1] : 1
+            scale: selected ? [1, 1.05, 1] : 1,
           }}
-          transition={{ duration: 0.3 }}
+          transition={{ 
+            duration: 0.3,
+            ease: 'easeInOut'
+          }}
         >
           <Icon 
             className="w-6 h-6"
-            style={{ color: selected ? '#FFFFFF' : '#2B2735' }}
+            style={{ color: selected ? '#FFFFFF' : '#0F172A' }}
             strokeWidth={2}
           />
         </motion.div>
         
-        {/* 文本 */}
+        {/* 文本 - Figma 规范 */}
         <div className="flex-1 min-w-0">
           <p 
-            className="font-medium text-[15px]"
-            style={{ color: '#2B2735' }}
+            className="font-medium text-[14px]"
+            style={{ 
+              color: '#0F172A',
+              letterSpacing: '-0.4px',
+            }}
           >
             {title}
           </p>
           {subtitle && (
             <p 
-              className="text-[13px] mt-0.5"
-              style={{ color: '#999999' }}
+              className="text-[12px] mt-1"
+              style={{ 
+                color: '#64748B',
+                letterSpacing: '-0.4px',
+              }}
             >
               {subtitle}
             </p>
           )}
         </div>
         
-        {/* 选中指示器 - VitaFlow 样式 */}
+        {/* 选中指示器 - Slate-900 */}
         <motion.div 
           className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center"
           style={{
-            borderColor: selected ? '#2B2735' : '#E8E8E8',
-            background: selected ? '#2B2735' : 'transparent'
+            borderColor: selected ? '#0F172A' : '#CBD5E1',
+            background: selected ? '#0F172A' : 'transparent'
           }}
         >
           {selected && (
@@ -120,7 +134,7 @@ export function OptionCard({
   )
 }
 
-// VitaFlow 多选版本
+// VitaFlow 多选版本 - Figma 规范
 export function OptionCardMulti({ 
   icon, 
   title, 
@@ -134,12 +148,13 @@ export function OptionCardMulti({
   return (
     <motion.button
       onClick={onClick}
-      className="relative w-full p-4 rounded-[16px] text-left transition-all duration-200"
+      className="relative w-full p-3 rounded-[12px] text-left transition-all duration-200"
       style={{
         background: '#FFFFFF',
+        border: cardBorder.default,
         boxShadow: selected 
-          ? '0px 0px 0px 2px #2B2735, 0px 0px 8px 0px rgba(43, 39, 53, 0.15)' 
-          : '0px 0px 2px 0px #E8E8E8',
+          ? shadows.cardSelected
+          : shadows.card,
         fontFamily: 'var(--font-outfit)'
       }}
       initial={{ opacity: 0, y: 20 }}
@@ -149,16 +164,16 @@ export function OptionCardMulti({
         delay: index * 0.06,
         ease: [0.25, 0.46, 0.45, 0.94]
       }}
-      whileHover={{ scale: 1.01, boxShadow: '0px 0px 4px 0px #E8E8E8' }}
+      whileHover={{ boxShadow: shadows.cardHover }}
       whileTap={{ scale: 0.99 }}
     >
       <div className="relative flex items-center gap-3">
-        {/* 复选框 - VitaFlow 样式 */}
+        {/* 复选框 - Slate 配色 */}
         <motion.div 
-          className="flex-shrink-0 w-6 h-6 rounded-[8px] border-2 flex items-center justify-center"
+          className="flex-shrink-0 w-6 h-6 rounded-[6px] border-2 flex items-center justify-center"
           style={{
-            borderColor: selected ? '#2B2735' : '#E8E8E8',
-            background: selected ? '#2B2735' : '#FFFFFF'
+            borderColor: selected ? '#0F172A' : '#CBD5E1',
+            background: selected ? '#0F172A' : '#FFFFFF'
           }}
         >
           {selected && (
@@ -184,30 +199,36 @@ export function OptionCardMulti({
         
         {/* 图标 */}
         <div 
-          className="flex-shrink-0 w-10 h-10 rounded-[12px] flex items-center justify-center"
+          className="flex-shrink-0 w-10 h-10 rounded-[8px] flex items-center justify-center"
           style={{
-            background: selected ? 'rgba(43, 39, 53, 0.1)' : '#F2F1F6'
+            background: selected ? 'rgba(15, 23, 42, 0.1)' : '#F1F5F9'
           }}
         >
           <Icon 
             className="w-5 h-5"
-            style={{ color: selected ? '#2B2735' : '#999999' }}
+            style={{ color: selected ? '#0F172A' : '#64748B' }}
             strokeWidth={2}
           />
         </div>
         
-        {/* 文本 */}
+        {/* 文本 - Figma 规范 */}
         <div className="flex-1 min-w-0">
           <p 
-            className="font-medium text-[15px]"
-            style={{ color: '#2B2735' }}
+            className="font-medium text-[14px]"
+            style={{ 
+              color: '#0F172A',
+              letterSpacing: '-0.4px',
+            }}
           >
             {title}
           </p>
           {subtitle && (
             <p 
-              className="text-[12px] mt-0.5"
-              style={{ color: '#999999' }}
+              className="text-[12px] mt-1"
+              style={{ 
+                color: '#64748B',
+                letterSpacing: '-0.4px',
+              }}
             >
               {subtitle}
             </p>
@@ -217,10 +238,3 @@ export function OptionCardMulti({
     </motion.button>
   )
 }
-
-
-
-
-
-
-

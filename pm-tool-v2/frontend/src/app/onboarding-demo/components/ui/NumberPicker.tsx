@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { motion, useMotionValue, useTransform, animate } from 'framer-motion'
+import { motion, useMotionValue, useTransform, animate, useSpring } from 'framer-motion'
 
 interface NumberPickerProps {
   value: number
@@ -17,7 +17,7 @@ export function NumberPicker({ value, onChange, min, max, step, unit }: NumberPi
   const [isDragging, setIsDragging] = useState(false)
   
   // 生成数字列表
-  const numbers = []
+  const numbers: number[] = []
   for (let i = min; i <= max; i += step) {
     numbers.push(Math.round(i * 10) / 10)
   }
@@ -104,21 +104,28 @@ export function NumberPicker({ value, onChange, min, max, step, unit }: NumberPi
         >
           {numbers.map((num, index) => {
             const distance = Math.abs(index - currentIndex)
-            const scale = distance === 0 ? 1 : distance === 1 ? 0.85 : 0.7
-            const opacity = distance === 0 ? 1 : distance === 1 ? 0.5 : 0.25
+            // V3 升级：更平滑的缩放和透明度
+            const scale = distance === 0 ? 1.2 : distance === 1 ? 0.9 : distance === 2 ? 0.75 : 0.6
+            const opacity = distance === 0 ? 1 : distance === 1 ? 0.6 : distance === 2 ? 0.4 : 0.2
             
             return (
               <motion.div
                 key={num}
                 className="h-[60px] flex items-center justify-center cursor-grab active:cursor-grabbing"
                 style={{
-                  fontSize: distance === 0 ? '28px' : '20px',
-                  fontWeight: distance === 0 ? 600 : 400,
-                  color: distance === 0 ? '#1F2937' : '#9CA3AF'
+                  fontSize: distance === 0 ? '32px' : distance === 1 ? '24px' : '20px',
+                  fontWeight: distance === 0 ? 700 : distance === 1 ? 600 : 400,
+                  color: distance === 0 ? '#2B2735' : '#999999',
+                  fontFamily: 'var(--font-outfit)'
                 }}
                 animate={{
                   scale,
                   opacity: isDragging ? 0.8 : opacity
+                }}
+                transition={{
+                  type: 'spring',
+                  stiffness: 300,
+                  damping: 30
                 }}
                 onClick={() => {
                   if (!isDragging) {

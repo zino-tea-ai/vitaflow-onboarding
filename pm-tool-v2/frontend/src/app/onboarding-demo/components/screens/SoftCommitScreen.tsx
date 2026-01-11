@@ -35,7 +35,7 @@ export function SoftCommitScreen({ config }: SoftCommitScreenProps) {
           className="absolute top-1/3 left-1/2 -translate-x-1/2 w-80 h-80 rounded-full"
           style={{ background: 'radial-gradient(circle, rgba(43, 39, 53, 0.05) 0%, transparent 70%)' }}
           animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.8, 0.5] }}
-          transition={{ duration: 4, repeat: Infinity }}
+          transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
         />
       </div>
       
@@ -52,7 +52,7 @@ export function SoftCommitScreen({ config }: SoftCommitScreenProps) {
             className="w-24 h-24 rounded-[28px] flex items-center justify-center"
             style={{ background: 'rgba(43, 39, 53, 0.08)' }}
             animate={{ rotate: [0, 5, -5, 0] }}
-            transition={{ duration: 3, repeat: Infinity }}
+            transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
           >
             <Sparkles className="w-12 h-12" style={{ color: '#2B2735' }} />
           </motion.div>
@@ -82,7 +82,7 @@ export function SoftCommitScreen({ config }: SoftCommitScreenProps) {
         
         {/* 标题 */}
         <motion.h1
-          className="text-[24px] font-semibold text-center tracking-[-0.5px]"
+          className="text-[24px] font-medium text-center tracking-[-0.4px]"
           style={{ color: '#2B2735' }}
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -105,7 +105,7 @@ export function SoftCommitScreen({ config }: SoftCommitScreenProps) {
       
       {/* 底部按钮 - 带图标的 CTA */}
       <motion.div
-        className="px-5 py-6 space-y-3"
+        className="px-5 py-8 space-y-4"
         style={{ background: '#F2F1F6' }}
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}

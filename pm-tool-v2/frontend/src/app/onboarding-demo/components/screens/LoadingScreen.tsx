@@ -1,121 +1,167 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useOnboardingStore, calculateResults } from '../../store/onboarding-store'
+import { useABTestStore } from '../../store/ab-test-store'
 import { ScreenConfig } from '../../data/screens-config'
 import { personalizeText } from '../../utils/personalize'
+import { Mascot, MascotState } from '../character'
+import { ChatBubble } from '../ui/ChatBubble'
+import { colors } from '../../lib/design-tokens'
 
 interface LoadingScreenProps {
   config: ScreenConfig
 }
 
+/**
+ * Loading Screen - 简洁等待页面
+ * 
+ * 简化设计：
+ * - 移除浮动圆背景动效
+ * - 简化进度环为单色
+ * - 恢复角色 + 气泡陪伴
+ */
 export function LoadingScreen({ config }: LoadingScreenProps) {
   const { userData, setResults, nextStep, isManualNavigation, clearManualNavigation } = useOnboardingStore()
+  const { characterStyle, copyStyle, conversationalFeedbackEnabled } = useABTestStore()
   
-  // 个性化加载步骤
-  const loadingSteps = [
-    { text: personalizeText('Analyzing your profile, {{name}}...', userData.name), icon: '🔍' },
-    { text: 'Calculating your metabolism...', icon: '⚡' },
-    { text: 'Creating your nutrition plan...', icon: '🥗' },
-    { text: personalizeText('Almost done, {{name}}!', userData.name), icon: '✨' }
-  ]
+  // 分步加载动画
+  const loadingSteps = useMemo(() => [
+    { 
+      text: personalizeText('Analyzing your goals, {{name}}...', userData.name), 
+      duration: 1500,
+      progress: 25
+    },
+    { 
+      text: 'Calculating your calorie needs...', 
+      duration: 1500,
+      progress: 50
+    },
+    { 
+      text: 'Creating your personalized plan...', 
+      duration: 1500,
+      progress: 75
+    },
+    { 
+      text: personalizeText('Almost done, {{name}}!', userData.name), 
+      duration: 1000,
+      progress: 100
+    }
+  ], [userData.name])
+  
   const [currentStepIndex, setCurrentStepIndex] = useState(0)
   const [progress, setProgress] = useState(0)
   
+  // 角色状态
+  const mascotState: MascotState = useMemo(() => {
+    if (progress < 30) return 'thinking'
+    if (progress < 70) return 'explaining'
+    if (progress < 95) return 'excited'
+    return 'celebrating'
+  }, [progress])
+  
+  // 气泡文案
+  const bubbleText = useMemo(() => {
+    if (!conversationalFeedbackEnabled) return ''
+    
+    const texts = {
+      witty: progress < 50 
+        ? "Crunching those numbers like a champ..." 
+        : progress < 90 
+          ? "Almost there, hang tight!" 
+          : "Done! You're gonna love this!",
+      warm: progress < 50 
+        ? "I'm working hard to create your perfect plan..." 
+        : progress < 90 
+          ? "Almost ready for you!" 
+          : "All done! Can't wait to show you!",
+      data: progress < 50 
+        ? "Processing nutritional data..." 
+        : progress < 90 
+          ? "Optimizing recommendations..." 
+          : "Analysis complete!"
+    }
+    return texts[copyStyle] || texts.warm
+  }, [progress, copyStyle, conversationalFeedbackEnabled])
+  
   useEffect(() => {
-    // 如果是手动跳转到这个页面，清除标志但不自动跳转
     if (isManualNavigation) {
       clearManualNavigation()
       return
     }
     
-    // 进度动画 - 平滑递增（5秒完成）
-    const progressInterval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(progressInterval)
-          return 100
-        }
-        return prev + 1
-      })
-    }, 50)
+    let totalDuration = 0
+    const stepTimers: NodeJS.Timeout[] = []
     
-    // 步骤切换 - 每个图标显示 1.25 秒，让动画完成且用户看清
-    const stepInterval = setInterval(() => {
-      setCurrentStepIndex(prev => {
-        if (prev >= loadingSteps.length - 1) {
-          clearInterval(stepInterval)
-          return prev
+    loadingSteps.forEach((step, index) => {
+      const timer = setTimeout(() => {
+        setCurrentStepIndex(index)
+        const targetProgress = step.progress
+        const startProgress = index === 0 ? 0 : loadingSteps[index - 1].progress
+        const duration = step.duration
+        const steps = duration / 16
+        
+        let currentStep = 0
+        const progressTimer = setInterval(() => {
+          currentStep++
+          const newProgress = startProgress + ((targetProgress - startProgress) * currentStep) / steps
+          setProgress(newProgress)
+          
+          if (currentStep >= steps) {
+            clearInterval(progressTimer)
+            setProgress(targetProgress)
+          }
+        }, 16)
+        
+        if (index === loadingSteps.length - 1) {
+          setTimeout(() => {
+            const results = calculateResults(userData)
+            if (results) {
+              setResults(results)
+            }
+            nextStep()
+          }, step.duration)
         }
-        return prev + 1
-      })
-    }, 1250)
-    
-    // 计算结果并前进 - 等待所有步骤显示完毕后再跳转
-    const timer = setTimeout(() => {
-      const results = calculateResults(userData)
-      if (results) {
-        setResults(results)
-      }
-      nextStep()
-    }, 5200)
+      }, totalDuration)
+      
+      stepTimers.push(timer)
+      totalDuration += step.duration
+    })
     
     return () => {
-      clearInterval(progressInterval)
-      clearInterval(stepInterval)
-      clearTimeout(timer)
+      stepTimers.forEach(timer => clearTimeout(timer))
     }
-  }, [userData, setResults, nextStep, isManualNavigation, clearManualNavigation])
+  }, [loadingSteps, userData, setResults, nextStep, isManualNavigation, clearManualNavigation])
   
   return (
-    <div className="h-full flex flex-col items-center justify-center px-8" style={{ background: '#F2F1F6', fontFamily: 'var(--font-outfit)' }}>
-      {/* 背景动效 - VitaFlow 风格 */}
-      <div className="absolute inset-0 overflow-hidden">
-        {[...Array(6)].map((_, i) => (
-          <motion.div
-            key={i}
-            className="absolute w-32 h-32 rounded-full"
-            style={{
-              background: `radial-gradient(circle, rgba(43, 39, 53, ${0.03 + i * 0.005}), transparent)`,
-              left: `${(i * 20) % 100}%`,
-              top: `${(i * 15) % 100}%`
-            }}
-            animate={{
-              scale: [1, 1.5, 1],
-              opacity: [0.3, 0.6, 0.3],
-              x: [0, 30, 0],
-              y: [0, -20, 0]
-            }}
-            transition={{
-              duration: 3 + i * 0.5,
-              repeat: Infinity,
-              delay: i * 0.3
-            }}
-          />
-        ))}
-      </div>
-      
-      {/* 主圆环进度 - VitaFlow 风格 */}
-      <div className="relative z-10">
-        <motion.div className="relative w-48 h-48">
-          {/* 外环 - 背景 */}
+    <div 
+      className="h-full flex flex-col items-center justify-center px-8" 
+      style={{ 
+        background: colors.background.primary, 
+        fontFamily: 'var(--font-outfit)' 
+      }}
+    >
+      {/* 简洁圆环进度 */}
+      <div className="relative">
+        <div className="relative w-40 h-40">
+          {/* 背景环 */}
           <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
             <circle
               cx="50"
               cy="50"
               r="42"
               fill="none"
-              stroke="rgba(43, 39, 53, 0.1)"
+              stroke={colors.slate[200]}
               strokeWidth="6"
             />
-            {/* 外环 - 进度 - VitaFlow 深色 */}
+            {/* 进度环 */}
             <circle
               cx="50"
               cy="50"
               r="42"
               fill="none"
-              stroke="#2B2735"
+              stroke={colors.slate[900]}
               strokeWidth="6"
               strokeLinecap="round"
               strokeDasharray={264}
@@ -124,44 +170,24 @@ export function LoadingScreen({ config }: LoadingScreenProps) {
             />
           </svg>
           
-          {/* 中心内容 */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
-            {/* 图标 - 恢复有质感的 spring 动画 */}
-            <AnimatePresence mode="popLayout">
-              <motion.span
-                key={currentStepIndex}
-                className="text-4xl mb-2"
-                initial={{ scale: 0, opacity: 0, rotate: -180 }}
-                animate={{ scale: 1, opacity: 1, rotate: 0 }}
-                exit={{ scale: 0, opacity: 0, rotate: 180 }}
-                transition={{ 
-                  type: 'spring', 
-                  stiffness: 200, 
-                  damping: 15,
-                  duration: 0.4
-                }}
-              >
-                {loadingSteps[currentStepIndex]?.icon}
-              </motion.span>
-            </AnimatePresence>
-            
-            <motion.span 
-              className="text-[24px] font-bold"
-              style={{ color: '#2B2735' }}
+          {/* 中心百分比 */}
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span 
+              className="text-[28px] font-medium"
+              style={{ color: colors.text.primary }}
             >
-              {progress}%
-            </motion.span>
+              {Math.round(progress)}%
+            </span>
           </div>
-          
-        </motion.div>
+        </div>
       </div>
       
-      {/* 加载文本 - VitaFlow 样式 */}
+      {/* 加载文本 */}
       <AnimatePresence mode="wait">
         <motion.p
           key={currentStepIndex}
-          className="mt-8 text-center font-medium text-[15px]"
-          style={{ color: '#2B2735' }}
+          className="mt-6 text-center font-medium text-[15px]"
+          style={{ color: colors.text.primary }}
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -10 }}
@@ -171,23 +197,42 @@ export function LoadingScreen({ config }: LoadingScreenProps) {
         </motion.p>
       </AnimatePresence>
       
-      {/* 底部提示 */}
-      <motion.p
-        className="absolute bottom-12 text-[13px]"
-        style={{ color: '#999999' }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 1 }}
-      >
-        This usually takes just a moment...
-      </motion.p>
+      {/* 角色 + 气泡区域 */}
+      {conversationalFeedbackEnabled && (
+        <motion.div
+          className="mt-8 flex items-start gap-4 max-w-sm"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+        >
+          <Mascot 
+            style={characterStyle}
+            state={mascotState}
+            size="sm"
+          />
+          <div className="flex-1 pt-3">
+            <ChatBubble
+              text={bubbleText}
+              visible={true}
+              position="bottom-right"
+              size="sm"
+            />
+          </div>
+        </motion.div>
+      )}
+      
+      {/* 底部提示 - 无角色时显示 */}
+      {!conversationalFeedbackEnabled && (
+        <motion.p
+          className="absolute bottom-12 text-[13px]"
+          style={{ color: colors.text.tertiary }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 1 }}
+        >
+          This usually takes just a moment...
+        </motion.p>
+      )}
     </div>
   )
 }
-
-
-
-
-
-
-

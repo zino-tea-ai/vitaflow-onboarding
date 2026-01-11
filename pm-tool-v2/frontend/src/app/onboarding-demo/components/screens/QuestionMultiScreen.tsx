@@ -50,7 +50,7 @@ export function QuestionMultiScreen({ config }: QuestionMultiScreenProps) {
       {/* 标题区域 - VitaFlow 样式 */}
       <div className="px-5 pt-4 pb-4">
         <motion.h1
-          className="text-[24px] font-semibold tracking-[-0.5px]"
+          className="text-[24px] font-medium tracking-[-0.4px]"
           style={{ color: '#2B2735' }}
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}

@@ -100,8 +100,8 @@ export function PaywallScreen({ config }: PaywallScreenProps) {
           initial={{ opacity: 0, y: -20, scale: 0.9 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
         >
-          <p className="text-white text-center font-bold text-[14px]">
-            🎉 {discountWon}% OFF Applied!
+          <p className="text-white text-center font-medium text-[14px]">
+            {discountWon}% OFF Applied!
           </p>
         </motion.div>
       )}
@@ -109,7 +109,7 @@ export function PaywallScreen({ config }: PaywallScreenProps) {
       {/* 标题 - VitaFlow 样式 */}
       <div className="px-5 pb-4">
         <motion.h1
-          className="text-[24px] font-semibold text-center tracking-[-0.5px]"
+          className="text-[24px] font-medium text-center tracking-[-0.4px]"
           style={{ color: '#2B2735' }}
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -133,7 +133,7 @@ export function PaywallScreen({ config }: PaywallScreenProps) {
           {features.map((feature, index) => (
             <motion.div
               key={index}
-              className="flex items-center gap-3"
+              className="flex items-center gap-4"
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: 0.2 + index * 0.1 }}
@@ -149,7 +149,7 @@ export function PaywallScreen({ config }: PaywallScreenProps) {
       
       {/* 价格选项 - VitaFlow 风格 */}
       <div className="flex-1 px-5 overflow-y-auto scrollbar-hide">
-        <div className="space-y-3">
+        <div className="space-y-4">
           {plans.map((plan, index) => {
             const finalPrice = (plan.price * discountMultiplier).toFixed(2)
             const finalPerWeek = (plan.perWeek * discountMultiplier).toFixed(2)
@@ -173,13 +173,13 @@ export function PaywallScreen({ config }: PaywallScreenProps) {
                 {/* 推荐标签 - VitaFlow 风格 */}
                 {plan.popular && (
                   <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full" style={{ background: '#2B2735' }}>
-                    <span className="text-[11px] font-bold text-white">BEST VALUE</span>
+                    <span className="text-[11px] font-medium text-white">BEST VALUE</span>
                   </div>
                 )}
                 
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="font-semibold text-[15px]" style={{ color: '#2B2735' }}>{plan.name}</p>
+                    <p className="font-medium text-[15px]" style={{ color: '#2B2735' }}>{plan.name}</p>
                     <p className="text-[12px]" style={{ color: '#999999' }}>
                       ${finalPerWeek}/week
                     </p>
@@ -189,7 +189,7 @@ export function PaywallScreen({ config }: PaywallScreenProps) {
                     {hasDiscount && (
                       <p className="text-[12px] line-through" style={{ color: '#999999' }}>${plan.price}</p>
                     )}
-                    <p className="text-[20px] font-bold" style={{ color: '#2B2735' }}>${finalPrice}</p>
+                    <p className="text-[20px] font-medium" style={{ color: '#2B2735' }}>${finalPrice}</p>
                     {plan.savings && (
                       <p className="text-[11px] font-medium text-green-600">Save {plan.savings}</p>
                     )}
@@ -216,7 +216,7 @@ export function PaywallScreen({ config }: PaywallScreenProps) {
       
       {/* 底部按钮 - VitaFlow 风格 */}
       <motion.div
-        className="px-5 py-4 space-y-3"
+        className="px-5 py-4 space-y-4"
         style={{ background: '#F2F1F6' }}
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}

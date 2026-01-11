@@ -1,6 +1,7 @@
 'use client'
 
 import { motion } from 'framer-motion'
+import { colors } from '../../lib/design-tokens'
 
 interface ProgressBarProps {
   current: number
@@ -8,26 +9,34 @@ interface ProgressBarProps {
   showLabel?: boolean
 }
 
-// VitaFlow 风格进度条
+/**
+ * 简洁进度条
+ * 
+ * - Slate-900 填充
+ * - Slate-200 背景
+ * - 无渐变/光效
+ */
 export function ProgressBar({ current, total, showLabel = false }: ProgressBarProps) {
   const progress = (current / total) * 100
   
   return (
     <div className="w-full px-6 py-3">
-      {/* 进度条容器 - VitaFlow 细线样式 */}
+      {/* 进度条容器 */}
       <div 
         className="relative h-[3px] rounded-full overflow-hidden"
-        style={{ background: 'rgba(43, 39, 53, 0.1)' }}
+        style={{ background: colors.slate[200] }}
       >
-        {/* 进度填充 - VitaFlow 深色 */}
+        {/* 进度填充 */}
         <motion.div
           className="absolute left-0 top-0 h-full rounded-full"
-          style={{ background: '#2B2735' }}
+          style={{ background: colors.slate[900] }}
           initial={{ width: 0 }}
           animate={{ width: `${progress}%` }}
           transition={{ 
-            duration: 0.5,
-            ease: [0.25, 0.46, 0.45, 0.94]
+            type: 'spring',
+            stiffness: 300,
+            damping: 30,
+            mass: 1
           }}
         />
       </div>
@@ -37,7 +46,7 @@ export function ProgressBar({ current, total, showLabel = false }: ProgressBarPr
         <div className="flex justify-between items-center mt-2">
           <motion.span 
             className="text-[11px] font-medium"
-            style={{ color: '#999999', fontFamily: 'var(--font-outfit)' }}
+            style={{ color: colors.text.secondary, fontFamily: 'var(--font-outfit)' }}
             key={current}
             initial={{ opacity: 0, y: 5 }}
             animate={{ opacity: 1, y: 0 }}
@@ -51,9 +60,8 @@ export function ProgressBar({ current, total, showLabel = false }: ProgressBarPr
   )
 }
 
-// VitaFlow 分页点样式
+// 分页点样式
 export function ProgressDots({ current, total }: { current: number; total: number }) {
-  // 只显示当前附近的点
   const visibleCount = Math.min(5, total)
   const startIndex = Math.max(0, Math.min(current - 3, total - visibleCount))
   
@@ -71,7 +79,11 @@ export function ProgressDots({ current, total }: { current: number; total: numbe
             style={{
               width: isActive ? '20px' : '5px',
               height: '5px',
-              background: isActive ? '#2B2735' : isPast ? 'rgba(43, 39, 53, 0.3)' : 'rgba(43, 39, 53, 0.15)'
+              background: isActive 
+                ? colors.slate[900] 
+                : isPast 
+                  ? colors.slate[400] 
+                  : colors.slate[200]
             }}
             initial={false}
             animate={{
@@ -84,10 +96,3 @@ export function ProgressDots({ current, total }: { current: number; total: numbe
     </div>
   )
 }
-
-
-
-
-
-
-

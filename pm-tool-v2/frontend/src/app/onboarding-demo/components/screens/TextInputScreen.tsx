@@ -1,12 +1,17 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { User } from 'lucide-react'
 import { useOnboardingStore, UserData } from '../../store/onboarding-store'
+import { useABTestStore } from '../../store/ab-test-store'
 import { ScreenConfig } from '../../data/screens-config'
 import { Button, BackButton } from '../ui/Button'
 import { ProgressBar } from '../ui/ProgressBar'
+import { Mascot, MascotState } from '../character'
+import { ChatBubble } from '../ui/ChatBubble'
+import { ConversationalLayout, ConversationalInput } from '../ui/ConversationalLayout'
+import { colors, bigTextStyles, shadows, cardBorder } from '../../lib/design-tokens'
 
 interface TextInputScreenProps {
   config: ScreenConfig
@@ -14,6 +19,11 @@ interface TextInputScreenProps {
 
 export function TextInputScreen({ config }: TextInputScreenProps) {
   const { userData, setUserData, nextStep, prevStep, currentStep, totalSteps } = useOnboardingStore()
+  const { currentVersion, prodStyle, characterStyle, copyStyle, conversationalFeedbackEnabled } = useABTestStore()
+  
+  // BigText 模式判断
+  const isBigText = currentVersion === 'production' && prodStyle === 'bigtext'
+  const [mascotState, setMascotState] = useState<MascotState>('idle')
   
   const storeKey = config.storeKey as keyof UserData | undefined
   const currentValue = storeKey ? (userData[storeKey] as string | null) : null
@@ -45,6 +55,49 @@ export function TextInputScreen({ config }: TextInputScreenProps) {
   
   const isValid = value.trim().length > 0
   
+  // 问题文案 - 根据输入状态变化
+  const questionText = useMemo(() => {
+    if (value.trim()) {
+      if (copyStyle === 'witty') return `Nice to meet you, ${value}! Let's get started.`
+      if (copyStyle === 'warm') return `Great name! I'm excited to help you, ${value}.`
+      return `Got it, ${value}. Let's continue.`
+    }
+    return config.title || "What should I call you?"
+  }, [value, copyStyle, config.title])
+
+  // BigText 对话式布局
+  if (isBigText) {
+    return (
+      <ConversationalLayout
+        currentStep={currentStep}
+        totalSteps={totalSteps}
+        onBack={prevStep}
+        mascotState={mascotState}
+        question={questionText}
+        hint={config.subtitle}
+        ctaText="Continue"
+        ctaDisabled={!isValid}
+        onCtaClick={handleContinue}
+      >
+        {/* 输入框作为用户的"回复" */}
+        <ConversationalInput
+          value={value}
+          onChange={(v) => {
+            setValue(v)
+            if (conversationalFeedbackEnabled && v.trim()) {
+              setMascotState('happy')
+            }
+          }}
+          placeholder={config.textConfig?.placeholder || 'Enter your name'}
+          maxLength={config.textConfig?.maxLength || 30}
+          onKeyDown={handleKeyDown}
+          inputRef={inputRef}
+        />
+      </ConversationalLayout>
+    )
+  }
+  
+  // 默认模式渲染
   return (
     <div className="h-full flex flex-col" style={{ background: '#F2F1F6', fontFamily: 'var(--font-outfit)' }}>
       {/* 进度条 */}
@@ -59,7 +112,7 @@ export function TextInputScreen({ config }: TextInputScreenProps) {
       {/* 标题区域 - VitaFlow 样式 */}
       <div className="px-5 pt-4 pb-8">
         <motion.h1
-          className="text-[24px] font-semibold text-center tracking-[-0.5px]"
+          className="text-[24px] font-medium text-center tracking-[-0.4px]"
           style={{ color: '#2B2735' }}
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -104,15 +157,16 @@ export function TextInputScreen({ config }: TextInputScreenProps) {
           <User className="w-10 h-10" style={{ color: '#2B2735' }} />
         </motion.div>
         
-        {/* 输入框 - VitaFlow 样式 */}
+        {/* 输入框 - Figma 规范 */}
         <div className="w-full max-w-xs">
           <motion.div
-            className="relative rounded-[16px] transition-all duration-300"
+            className="relative rounded-[12px] transition-all duration-300"
             style={{
               background: '#FFFFFF',
+              border: cardBorder.default,
               boxShadow: isFocused 
-                ? '0px 0px 0px 2px #2B2735, 0px 0px 8px rgba(43, 39, 53, 0.15)' 
-                : '0px 0px 2px 0px #E8E8E8'
+                ? shadows.cardSelected
+                : shadows.card
             }}
             initial={{ y: 20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}

@@ -48,12 +48,19 @@ export interface CalculatedResults {
   weeklyLoss: number
   bmi: number
   tdee: number
+  // 三大营养素 (grams)
+  protein: number
+  carbs: number
+  fat: number
 }
 
 interface OnboardingState {
   // 当前步骤
   currentStep: number
   totalSteps: number
+  
+  // 单位系统
+  unitSystem: 'metric' | 'imperial'
   
   // 用户数据
   userData: UserData
@@ -76,6 +83,22 @@ interface OnboardingState {
   // 手动导航标志（用于禁用自动跳转）
   isManualNavigation: boolean
   
+  // V3 新增：动画状态
+  animationState: 'idle' | 'transitioning' | 'animating'
+  
+  // V3 新增：用户行为追踪
+  behaviorTracking: {
+    pageViewTimes: Record<number, number>  // 页面ID -> 停留时间(ms)
+    interactions: Array<{
+      pageId: number
+      action: string
+      timestamp: number
+    }>
+  }
+  
+  // V3 新增：里程碑完成状态
+  milestonesCompleted: string[]  // 已完成的阶段ID列表
+  
   // Actions
   nextStep: () => void
   prevStep: () => void
@@ -88,6 +111,13 @@ interface OnboardingState {
   completePayment: (plan: 'weekly' | 'monthly' | 'yearly') => void
   resetDemo: () => void
   setTotalSteps: (total: number) => void  // A/B Test 用
+  setUnitSystem: (system: 'metric' | 'imperial') => void
+  
+  // V3 新增 Actions
+  setAnimationState: (state: 'idle' | 'transitioning' | 'animating') => void
+  trackPageView: (pageId: number, duration: number) => void
+  trackInteraction: (pageId: number, action: string) => void
+  completeMilestone: (phaseId: string) => void
 }
 
 const initialUserData: UserData = {
@@ -117,6 +147,7 @@ export const useOnboardingStore = create<OnboardingState>()(
     (set, get) => ({
       currentStep: 1,
       totalSteps: 37,
+      unitSystem: 'metric' as const,
       userData: initialUserData,
       results: null,
       scanGameCompleted: false,
@@ -126,24 +157,36 @@ export const useOnboardingStore = create<OnboardingState>()(
       selectedPlan: null,
       direction: 1,
       isManualNavigation: false,
+      animationState: 'idle',
+      behaviorTracking: {
+        pageViewTimes: {},
+        interactions: []
+      },
+      milestonesCompleted: [],
       
-      nextStep: () => set((state) => ({
-        currentStep: Math.min(state.currentStep + 1, state.totalSteps),
-        direction: 1,
-        isManualNavigation: false
-      })),
+      nextStep: () => {
+        set((state) => ({
+          currentStep: Math.min(state.currentStep + 1, state.totalSteps),
+          direction: 1,
+          isManualNavigation: false
+        }));
+      },
       
-      prevStep: () => set((state) => ({
-        currentStep: Math.max(state.currentStep - 1, 1),
-        direction: -1,
-        isManualNavigation: false
-      })),
+      prevStep: () => {
+        set((state) => ({
+          currentStep: Math.max(state.currentStep - 1, 1),
+          direction: -1,
+          isManualNavigation: false
+        }));
+      },
       
-      goToStep: (step) => set((state) => ({
-        currentStep: Math.max(1, Math.min(step, state.totalSteps)),
-        direction: step > state.currentStep ? 1 : -1,
-        isManualNavigation: true // 标记为手动导航
-      })),
+      goToStep: (step) => {
+        set((state) => ({
+          currentStep: Math.max(1, Math.min(step, state.totalSteps)),
+          direction: step > state.currentStep ? 1 : -1,
+          isManualNavigation: true
+        }));
+      },
       
       clearManualNavigation: () => set({ isManualNavigation: false }),
       
@@ -183,6 +226,7 @@ export const useOnboardingStore = create<OnboardingState>()(
       
       resetDemo: () => set({
         currentStep: 1,
+        unitSystem: 'metric',
         userData: initialUserData,
         results: null,
         scanGameCompleted: false,
@@ -194,13 +238,49 @@ export const useOnboardingStore = create<OnboardingState>()(
         isManualNavigation: false
       }),
       
-      setTotalSteps: (total) => set({ totalSteps: total })
+      setTotalSteps: (total) => set({ totalSteps: total }),
+      
+      setUnitSystem: (system) => set({ unitSystem: system }),
+      
+      // V3 新增 Actions
+      setAnimationState: (state) => set({ animationState: state }),
+      
+      trackPageView: (pageId, duration) => set((state) => ({
+        behaviorTracking: {
+          ...state.behaviorTracking,
+          pageViewTimes: {
+            ...state.behaviorTracking.pageViewTimes,
+            [pageId]: duration
+          }
+        }
+      })),
+      
+      trackInteraction: (pageId, action) => set((state) => ({
+        behaviorTracking: {
+          ...state.behaviorTracking,
+          interactions: [
+            ...state.behaviorTracking.interactions,
+            {
+              pageId,
+              action,
+              timestamp: Date.now()
+            }
+          ]
+        }
+      })),
+      
+      completeMilestone: (phaseId) => set((state) => ({
+        milestonesCompleted: state.milestonesCompleted.includes(phaseId)
+          ? state.milestonesCompleted
+          : [...state.milestonesCompleted, phaseId]
+      }))
     }),
     {
       name: 'vitaflow-onboarding-demo',
       storage: createJSONStorage(() => sessionStorage),
       partialize: (state) => ({
         currentStep: state.currentStep,
+        unitSystem: state.unitSystem,
         userData: state.userData,
         results: state.results,
         scanGameCompleted: state.scanGameCompleted,
@@ -260,12 +340,45 @@ export function calculateResults(userData: UserData): CalculatedResults | null {
   const heightInM = height / 100
   const bmi = Math.round((currentWeight / (heightInM * heightInM)) * 10) / 10
   
+  // 三大营养素计算
+  const finalCalories = Math.max(1200, Math.round(dailyCalories))
+  
+  // 蛋白质：减重时高蛋白 (30%)，增重时中等 (25%)，维持时标准 (20%)
+  // 碳水：减重时低碳 (40%)，增重时高碳 (50%)，维持时标准 (50%)
+  // 脂肪：填充剩余热量
+  let proteinRatio: number
+  let carbsRatio: number
+  
+  if (weightDiff < 0) {
+    // 减重
+    proteinRatio = 0.30
+    carbsRatio = 0.40
+  } else if (weightDiff > 0) {
+    // 增重
+    proteinRatio = 0.25
+    carbsRatio = 0.50
+  } else {
+    // 维持
+    proteinRatio = 0.20
+    carbsRatio = 0.50
+  }
+  
+  const fatRatio = 1 - proteinRatio - carbsRatio
+  
+  // 蛋白质和碳水：1g = 4kcal，脂肪：1g = 9kcal
+  const protein = Math.round((finalCalories * proteinRatio) / 4)
+  const carbs = Math.round((finalCalories * carbsRatio) / 4)
+  const fat = Math.round((finalCalories * fatRatio) / 9)
+  
   return {
-    dailyCalories: Math.max(1200, Math.round(dailyCalories)),
+    dailyCalories: finalCalories,
     targetDate: targetDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
     weeklyLoss: weightDiff < 0 ? 0.5 : (weightDiff > 0 ? 0.3 : 0),
     bmi,
-    tdee
+    tdee,
+    protein,
+    carbs,
+    fat
   }
 }
 

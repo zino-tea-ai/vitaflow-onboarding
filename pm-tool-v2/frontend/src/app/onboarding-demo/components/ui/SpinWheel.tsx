@@ -76,13 +76,20 @@ export function SpinWheel({ onSpinComplete, forcePrize, disabled }: SpinWheelPro
         }}
       />
       
-      {/* 轮盘 */}
+      {/* 轮盘 - V3 升级：3D 效果 */}
       <motion.div
         className="relative w-[280px] h-[280px] rounded-full shadow-2xl"
         animate={controls}
         style={{
           rotate: rotation,
-          background: '#F9FAFB'
+          background: '#F9FAFB',
+          transformStyle: 'preserve-3d',
+          perspective: '1200px'
+        }}
+        whileHover={{
+          scale: 1.02,
+          rotateY: 2,
+          transition: { duration: 0.2 }
         }}
       >
         <svg viewBox="0 0 100 100" className="w-full h-full">

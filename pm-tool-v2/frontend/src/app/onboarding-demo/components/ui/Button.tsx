@@ -1,7 +1,8 @@
 'use client'
 
-import { ReactNode } from 'react'
+import React, { ReactNode } from 'react'
 import { motion, HTMLMotionProps } from 'framer-motion'
+import { haptic, enableAudioHaptics } from '../../lib/haptics'
 
 interface ButtonProps extends Omit<HTMLMotionProps<'button'>, 'children'> {
   children: ReactNode
@@ -23,35 +24,44 @@ export function Button({
   iconPosition = 'left',
   className = '',
   disabled,
+  onClick,
   ...props
 }: ButtonProps) {
-  // VitaFlow 设计系统样式
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // 首次点击时启用音频系统（iOS 需要用户交互才能播放音频）
+    enableAudioHaptics()
+    if (!disabled && !loading) {
+      haptic('medium')
+    }
+    onClick?.(e)
+  }
+  // VitaFlow 设计系统 - Slate 配色
   const baseStyles = `
     relative inline-flex items-center justify-center gap-2
     transition-all duration-200 overflow-hidden
     disabled:opacity-50 disabled:cursor-not-allowed
   `
   
-  // VitaFlow 风格按钮变体
+  // VitaFlow 风格按钮变体 - 使用 Slate-900 + Pill 样式
   const variants = {
     primary: `
-      bg-[#2B2735] text-white font-medium rounded-[24px]
-      shadow-[0px_1px_4.5px_0px_#b9b9b9]
-      hover:opacity-90
-      active:opacity-80
+      bg-[#0F172A] text-white font-medium rounded-full
+      shadow-[0px_1px_3px_rgba(15,23,42,0.1)]
+      hover:bg-[#1E293B]
+      active:bg-[#334155]
     `,
     secondary: `
-      bg-white text-[#2B2735] font-medium rounded-[24px]
-      shadow-[0px_0px_2px_0px_#E8E8E8]
-      hover:bg-gray-50
+      bg-white text-[#0F172A] font-medium rounded-full
+      shadow-[0px_1px_3px_rgba(15,23,42,0.08)]
+      hover:bg-[#F8FAFC]
     `,
     ghost: `
-      bg-transparent text-[#999] font-medium rounded-[12px]
-      hover:bg-white/50
+      bg-transparent text-[#64748B] font-medium rounded-full
+      hover:bg-[#F1F5F9]
     `,
     outline: `
-      bg-transparent border-2 border-[#E8E8E8] text-[#2B2735] font-medium rounded-[24px]
-      hover:border-[#2B2735]
+      bg-transparent border-2 border-[#CBD5E1] text-[#0F172A] font-medium rounded-full
+      hover:border-[#0F172A]
     `
   }
   
@@ -71,9 +81,16 @@ export function Button({
         ${className}
       `}
       style={{ fontFamily: 'var(--font-outfit)' }}
-      whileHover={{ scale: disabled ? 1 : 1.02 }}
-      whileTap={{ scale: disabled ? 1 : 0.98 }}
+      whileHover={{ 
+        scale: disabled ? 1 : 1.02,
+        transition: { duration: 0.2 }
+      }}
+      whileTap={{ 
+        scale: disabled ? 1 : 0.96,
+        transition: { duration: 0.1 }
+      }}
       disabled={disabled || loading}
+      onClick={handleClick}
       {...props}
     >
       {/* 内容 */}
@@ -108,13 +125,47 @@ export function Button({
   )
 }
 
-// VitaFlow 返回按钮
+// VitaFlow 返回按钮 - 长按回到开头
 export function BackButton({ onClick }: { onClick: () => void }) {
+  const longPressRef = React.useRef<NodeJS.Timeout | null>(null)
+  const [isLongPressing, setIsLongPressing] = React.useState(false)
+  
+  const handleClick = () => {
+    if (isLongPressing) return // 长按后不触发普通点击
+    enableAudioHaptics()
+    haptic('light')
+    onClick()
+  }
+  
+  const handlePressStart = () => {
+    longPressRef.current = setTimeout(() => {
+      setIsLongPressing(true)
+      haptic('success')
+      // 动态导入 store 并重置
+      import('../../store/onboarding-store').then(({ useOnboardingStore }) => {
+        useOnboardingStore.getState().resetDemo()
+      })
+    }, 800) // 长按 800ms 触发
+  }
+  
+  const handlePressEnd = () => {
+    if (longPressRef.current) {
+      clearTimeout(longPressRef.current)
+      longPressRef.current = null
+    }
+    setTimeout(() => setIsLongPressing(false), 100)
+  }
+  
   return (
     <motion.button
-      onClick={onClick}
-      className="w-10 h-10 rounded-[14px] bg-white flex items-center justify-center shadow-[0px_0px_2px_0px_#E8E8E8]"
-      style={{ color: '#2B2735' }}
+      onClick={handleClick}
+      onMouseDown={handlePressStart}
+      onMouseUp={handlePressEnd}
+      onMouseLeave={handlePressEnd}
+      onTouchStart={handlePressStart}
+      onTouchEnd={handlePressEnd}
+      className="w-10 h-10 rounded-full bg-white flex items-center justify-center shadow-[0px_1px_3px_rgba(15,23,42,0.08)]"
+      style={{ color: '#0F172A' }}
       whileHover={{ scale: 1.05 }}
       whileTap={{ scale: 0.95 }}
     >
@@ -133,22 +184,21 @@ export function BackButton({ onClick }: { onClick: () => void }) {
 
 // VitaFlow 跳过按钮
 export function SkipButton({ onClick }: { onClick: () => void }) {
+  const handleClick = () => {
+    enableAudioHaptics()
+    haptic('light')
+    onClick()
+  }
+  
   return (
     <motion.button
-      onClick={onClick}
+      onClick={handleClick}
       className="text-sm font-medium transition-colors"
-      style={{ color: '#999', fontFamily: 'var(--font-outfit)' }}
-      whileHover={{ x: 3, color: '#2B2735' }}
+      style={{ color: '#64748B', fontFamily: 'var(--font-outfit)' }}
+      whileHover={{ x: 3, color: '#0F172A' }}
       whileTap={{ scale: 0.95 }}
     >
       Skip
     </motion.button>
   )
 }
-
-
-
-
-
-
-

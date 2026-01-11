@@ -8,6 +8,7 @@ import { SpinWheel } from '../ui/SpinWheel'
 import { Button, BackButton } from '../ui/Button'
 import { ProgressBar } from '../ui/ProgressBar'
 import { personalizeText } from '../../utils/personalize'
+import { haptic } from '../../lib/haptics'
 
 interface SpinGameScreenProps {
   config: ScreenConfig
@@ -35,19 +36,21 @@ export function SpinGameScreen({ config }: SpinGameScreenProps) {
     setIsSpinning(false)
     
     if (prize === 50) {
+      haptic('celebration')
       setShowCelebration(true)
       setTimeout(() => {
         nextStep()
       }, 2000)
+    } else {
+      haptic('success')
     }
   }
   
   const handleContinue = () => {
+    haptic('medium')
     if (lastPrize === 0 || (lastPrize && lastPrize < 50)) {
-      // 如果没中大奖，进入第二次转盘页面
       nextStep()
     } else if (lastPrize === 50) {
-      // 中了 50%，进入折扣付费墙
       nextStep()
     }
   }
@@ -59,12 +62,12 @@ export function SpinGameScreen({ config }: SpinGameScreenProps) {
         <motion.div
           className="absolute -top-20 -left-20 w-40 h-40 bg-yellow-300/20 rounded-full blur-3xl"
           animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3] }}
-          transition={{ duration: 4, repeat: Infinity }}
+          transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
         />
         <motion.div
           className="absolute -bottom-20 -right-20 w-60 h-60 bg-purple-300/20 rounded-full blur-3xl"
           animate={{ scale: [1.2, 1, 1.2], opacity: [0.3, 0.5, 0.3] }}
-          transition={{ duration: 5, repeat: Infinity }}
+          transition={{ duration: 5, repeat: Infinity, ease: 'easeInOut' }}
         />
       </div>
       
@@ -103,15 +106,15 @@ export function SpinGameScreen({ config }: SpinGameScreenProps) {
       <ProgressBar current={currentStep} total={totalSteps} />
       
       {/* 头部导航 */}
-      <div className="flex items-center justify-between px-6 py-2 relative z-10">
+      <div className="flex items-center justify-between px-5 py-2 relative z-10">
         <BackButton onClick={prevStep} />
         <div />
       </div>
       
       {/* 标题 */}
-      <div className="px-6 pt-2 pb-4 text-center relative z-10">
+      <div className="px-5 pt-2 pb-4 text-center relative z-10">
         <motion.h1
-          className="text-2xl font-bold text-gray-900"
+          className="text-2xl font-medium text-gray-900"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
         >
@@ -150,7 +153,7 @@ export function SpinGameScreen({ config }: SpinGameScreenProps) {
             ) : lastPrize < 50 ? (
               <p className="text-orange-600 font-medium">You got {lastPrize}% off! But wait...</p>
             ) : (
-              <p className="text-purple-600 font-bold text-xl">🎉 Amazing! 50% OFF!</p>
+              <p className="text-purple-600 font-medium text-xl">Amazing! 50% OFF!</p>
             )}
           </motion.div>
         )}
@@ -159,7 +162,7 @@ export function SpinGameScreen({ config }: SpinGameScreenProps) {
       {/* 底部按钮 */}
       {lastPrize !== null && lastPrize !== 50 && !isSpinning && (
         <motion.div
-          className="px-6 py-6 relative z-10"
+          className="px-5 py-8 relative z-10"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
         >
